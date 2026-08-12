@@ -24,7 +24,7 @@ Giving Hermes a read-only Radicale account looks equivalent and isn't:
 
 1. **The calendar holds renders, not data.** `SUMMARY` is generated from
    structured fields ([NAMING.md](NAMING.md)). An agent reading CalDAV would
-   parse `Nora 🏊 · Aquatic Ctr Main` back into child and activity — reverse
+   parse `Nora 🏊 Distance Set` back into child and activity — reverse
    -engineering a string we just generated, and re-breaking every time the
    convention changes.
 2. **The disambiguation context isn't in the VEVENT.** Activity IDs, venue
@@ -255,7 +255,7 @@ POST /v1/events/query
       "tz": "America/New_York",
       "venue": { "id": 12, "canonical_name": "Riverside Aquatic Center",
                  "raw": "Aquatic Ctr Main", "pin_confirmed": true },
-      "summary_rendered": "Nora 🏊 · Aquatic Ctr Main",
+      "summary_rendered": "Nora 🏊",
       "resolution": {
         "venue": { "source_id": "swim-fall-pdf", "tier": 4,
                    "observed_at": "2026-08-09T11:04:00-04:00" }
@@ -316,7 +316,7 @@ POST /v1/sources/{id}/poll           # manual trigger
 
 - **Don't send a display title.** `SUMMARY` is rendered server-side from
   structured fields ([NAMING.md](NAMING.md)). Send `title` as the raw opponent
-  or description only; the API composes `Nora ⚽️ vs Northside · Riverside #4`.
+  or description only; the API composes `Nora ⚽️ vs Northside`.
   This is what lets the naming convention change without re-extracting anything.
 - **Send `kind`, but don't agonize over it.** Routing is binary: `game` /
   `scrimmage` / `tournament` → Games, everything else → Practices. If you can't

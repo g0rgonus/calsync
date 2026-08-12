@@ -16,34 +16,50 @@ convention and re-render every event; the dedup key never depends on it.
 ## 1. Title format
 
 ```
-SUMMARY := kids " " emoji [" " detail] [" · " venue_short]
+SUMMARY := kids " " emoji [" " detail]
 ```
 
 Segments are omitted cleanly when empty — no dangling separators.
+
+**The venue is not in the title.** It has its own field, that field is geocoded
+and tappable (§4), and Apple Calendar shows it under the title in day and list
+views anyway. Repeating it would spend the scarcest thing here — horizontal
+space — on something already on screen.
 
 | Field | Rule |
 |---|---|
 | `kids` | First names. Multiple → joined with `+`, **always in a fixed order** (birth order), so titles are stable. 3+ or whole-family → `Family`. |
 | `emoji` | One per sport: ⚽️ 🏀 ⚾️ 🏐 🏊 🎾. Disambiguates when a kid plays more than one. |
 | `detail` | Games: `vs Opponent` (home) or `@ Opponent` (away) **when the source carries an opponent** — Player360 doesn't, so fall back to a trimmed upstream `SUMMARY`. Routine practice: team short name, **only if** that kid has more than one team this season — otherwise omitted. Any other non-game event: a short type label (`Photos`, `Banquet`, `Tryouts`). See §5. |
-| `venue_short` | Canonical short name from the venue table — `Riverside #4`, not the street address. Address goes in `LOCATION`. |
 
 ### The 12-character rule
 
 iPhone week view truncates to roughly 12–18 characters; month view shows almost
 nothing. **The first 12 characters must answer "which kid, which sport."**
-That's why kid comes first and emoji second. Everything after `·` is a bonus
-that only appears in day and list views.
+That's why kid comes first and emoji second.
+
+With the venue out of the title, most events now clear that budget outright and
+the rule only binds on long opponent or tournament names.
 
 ### Worked examples
 
-| Calendar | Title | Truncated (week view) |
+| Calendar | Title | Week view |
 |---|---|---|
-| Games | `Nora ⚽️ vs Northside · Riverside #4` | `Nora ⚽️ vs No…` |
-| Games | `Jack 🏀 @ Central HS · Central HS Main` | `Jack 🏀 @ Cen…` |
-| Practices | `Nora ⚽️ · Riverside #4` | `Nora ⚽️ · Riv…` |
-| Practices | `Nora+Jack ⚽️ · Meadow Turf` | `Nora+Jack ⚽️…` |
-| Games | `Nora ⚽️ Fall Classic R1 · Tournament Complex` | `Nora ⚽️ Fall…` |
+| Games | `Nora ⚽️ vs Northside` | fits |
+| Games | `Jack 🏀 @ Central HS` | fits |
+| Practices | `James ⚽️ Minicamp` | fits |
+| Practices | `Nora ⚽️` | fits |
+| Practices | `Nora+Jack ⚽️` | fits |
+| Games | `Nora ⚽️ Fall Classic R1` | `Nora ⚽️ Fall…` |
+
+Dropping the venue means most titles now fit **without truncation at all**,
+which was the whole problem the 12-character rule was working around.
+
+A bare `Nora ⚽️` for a routine practice is intentional, not a gap. The calendar
+name says Practices, the color says which kid, and the time and place are right
+there in the event. There is genuinely nothing else to say about a Tuesday
+practice, and inventing filler would just push the useful cases into
+truncation.
 
 `vs` = home, `@` = away. Universal convention, instantly readable, costs one
 character.
@@ -242,10 +258,10 @@ the type whenever it *isn't* a routine practice:
 
 | Event | Title |
 |---|---|
-| Routine practice | `Nora ⚽️ · Riverside #4` |
-| Team photos | `Nora ⚽️ Photos · Riverside #4` |
-| Banquet | `Nora ⚽️ Banquet · Hilton Downtown` |
-| Tryouts | `Jack 🏀 Tryouts · Central HS Main` |
+| Routine practice | `Nora ⚽️` |
+| Team photos | `Nora ⚽️ Photos` |
+| Banquet | `Nora ⚽️ Banquet` |
+| Tryouts | `Jack 🏀 Tryouts` |
 
 Routine practices stay terse; exceptions announce themselves. Silence means
 practice.

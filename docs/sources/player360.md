@@ -60,8 +60,8 @@ the child. Identity comes entirely from the feed binding.
 isn't derivable here, so `detail` falls back to a trimmed `SUMMARY`:
 
 ```
-James ⚽️ Super 8v8 Festival · Randy Custis Park
-James ⚽️ Minicamp · Wolf Trap Park
+James ⚽️ Super 8v8 Festival
+James ⚽️ Minicamp
 ```
 
 `DESCRIPTION` ("8v8 Festival Club Kickoff (2 games)") goes to the event body,
