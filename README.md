@@ -5,16 +5,21 @@ PDFs, and email; normalize them into one source of truth; push them into
 iCloud calendars.
 
 Status: **planning**. See [docs/PLAN.md](docs/PLAN.md) for the architecture,
-gap analysis, and phased roadmap.
+gap analysis, and phased roadmap, and [docs/API.md](docs/API.md) for the
+write API that agents and pollers code against.
 
 ## Shape
 
 ```
-sources → ingest adapters → raw documents → AI/rule extraction
-       → canonical events (versioned, deduped) → CalDAV push to iCloud
-                                              → tokenized ICS feeds
-       → web UI (feed management, review queue, source health)
+Hermes (PDF/photo) ─┐
+email worker       ─┼─→ calsync API ─→ Radicale (CalDAV)  ─→ phone, direct
+ICS pollers        ─┤   (only writer)  SQLite (raw docs,  ─→ iCloud (later)
+web UI / manual    ─┘        │          proposals, sync)  ─→ ICS feeds
+                       review queue
 ```
+
+The API is the only writer. Agents submit *proposals*; the API decides what
+reaches the calendar.
 
 ## Next step
 

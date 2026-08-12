@@ -12,36 +12,46 @@ layers, not in the layers themselves.
 ## 2. Revised architecture
 
 ```
- SOURCES                 INGEST              CORE                    DELIVERY
- ─────────────────────────────────────────────────────────────────────────────
- Official API      ─┐
- ICS/webcal URL    ─┤
- Authed scrape     ─┼─→  adapters  ─→  raw_documents  ─→  extraction  ─┐
- Email (forward)   ─┤    (per src)     (immutable)       (AI + rules)  │
- PDF / photo       ─┤                                                  ▼
- Manual entry      ─┘                                          canonical events
-                                                                (versioned)
-                                                                       │
-                                     ┌─────────────────────────────────┤
-                                     ▼                                 ▼
-                              review queue                      sync targets
-                            (low-confidence)                  ├─ iCloud (CalDAV)
-                                     │                        ├─ ICS feed URLs
-                                     ▼                        └─ Google (optional)
-                              web UI (feeds, review, health)
+  WRITERS                    POLICY                    STORES
+  ───────────────────────────────────────────────────────────────────────────
+  Hermes (PDF/photo) ─┐
+  Email worker       ─┤                            ┌─→ Radicale (CalDAV)
+  ICS pollers        ─┼─→   calsync API      ──────┤   accepted events only
+  Scrapers           ─┤   (the ONLY writer)        │   one collection per
+  Web UI / manual    ─┘          │                 │   child × activity
+                                 │                 │
+                     dedup, validation,            └─→ SQLite
+                     confidence gating,                raw docs, extractions,
+                     provenance, tz rules             sources, proposals,
+                                 │                     sync state, venues
+                                 ▼
+                          review queue ──→ web UI
+                                                          CONSUMERS
+                                 Radicale ──────────────→ iPhone/Mac CalDAV acct
+                                    │                     (direct, via Tailscale)
+                                    └─→ iCloud push ────→ family, off-tailnet
+                                    └─→ tokenized ICS ──→ grandparents
 ```
 
-Two structural changes from the original plan:
+**Self-hosted CalDAV as the event store — yes.** This is better than a bare
+relational store. iCalendar already carries more of the needed semantics than
+I initially credited: `UID` for identity, `SEQUENCE` for versioning,
+`STATUS:CANCELLED` for tombstones, `RECURRENCE-ID` for single-instance
+overrides, and arbitrary `X-` properties for provenance
+(`X-CALSYNC-SOURCE-ID`, `X-CALSYNC-CONFIDENCE`, `X-CALSYNC-DOC-ID`). File-backed
+servers store one `.ics` per event in a directory you can put under git, which
+gives you human-readable diffs and free version history.
 
-**The middleware is a database, not a calendar product.** If the normalized
-layer is a Google/CalDAV calendar, you lose the fields that make the whole
-thing work: source provenance, extraction confidence, event version history,
-dedup keys, review state. Calendars can't hold that. Make Postgres the source
-of truth and treat *every* calendar (including a Google mirror, if you want
-one for family visibility) as an output.
+The real limits are querying and non-event data — see §4.
 
-**The middleware and the web UI are one service.** Don't build three
-deployables. One app, one DB, a worker for scheduled ingest.
+**But the API is the only writer.** Nothing writes to CalDAV directly, not
+Hermes, not the pollers, not you. Every write goes through the API so dedup,
+validation, timezone rules, confidence gating, and provenance capture happen in
+exactly one place. If an agent can write straight to the calendar, all of that
+becomes advisory, and the review queue stops meaning anything.
+
+**The middleware, API, and web UI are one service.** Radicale runs alongside as
+a separate process. Don't build three deployables.
 
 ## 3. What's missing
 
@@ -129,7 +139,20 @@ one place.
 
 ### C. Delivery to iCloud
 
-**C1. You probably don't need the Mac.** Three options, in order:
+**C0. With Radicale as the store, you may not need iCloud at all — at first.**
+iOS and macOS can add a CalDAV account directly (Settings → Calendar →
+Accounts → Add Account → Other → Add CalDAV Account) pointed at Radicale over
+Tailscale. That's real two-way sync, native alerts, native colors, zero sync
+code. **Do this in Phase 1 and defer the iCloud push**, which is the most
+dangerous code in the project.
+
+You'll still want the iCloud path eventually, for reasons worth knowing up
+front: family members who won't install Tailscale, reliability when the home
+box is down (CalDAV clients cache, but stale), and iCloud family sharing. Build
+it when you hit one of those, not before.
+
+**C1. When you do add iCloud, you probably don't need the Mac.** Three options,
+in order:
 
 - **CalDAV directly to `caldav.icloud.com` with an app-specific password.**
   Runs server-side, no Mac awake, no TCC permission prompts, no breakage on
@@ -208,41 +231,99 @@ available and worth doing in Phase 1.
 to a known entity. It needs somewhere to go, and a UI to bind it to the right
 child/team, which then teaches the mapping for next time.
 
-## 4. Data model sketch
+### F. Agent writers (Hermes)
+
+Full contract in [API.md](API.md). The design constraints that matter:
+
+**F1. Agents submit proposals, not events.** `POST /v1/proposals` — the API
+decides whether it auto-accepts, queues for review, or rejects. Hermes should
+not be deciding what lands on your phone, and this means it doesn't need to
+know anything about dedup, trust ranking, or your existing calendar.
+
+**F2. Idempotency is mandatory, because agents retry.** Every proposal carries
+a client-supplied key derived from `(document_sha256, event_ordinal)`. Re-running
+Hermes over the same PDF must be a no-op, not a second set of events. This is
+the single most likely way to end up with a duplicate-riddled calendar.
+
+**F3. Two-step: upload the document, then propose against it.** `POST
+/v1/documents` returns a `document_id`; proposals reference it. This gets you
+the immutable raw copy (§A4), lets the review UI render the source PDF beside
+the extracted fields, and dedups re-uploads by hash for free.
+
+**F4. Validate hard, reject with structured reasons.** Agents emit naive
+datetimes, ambiguous years, `6:00` with no meridiem, and `TBD` times. Require
+explicit IANA timezone and reject rather than guessing — an agent can correct a
+structured 422 far better than you can debug a silently-wrong event six weeks
+later. Ambiguity that can't be resolved should become a low-confidence proposal
+with a flag, not a guess.
+
+**F5. Per-field confidence, plus `raw_text` on every proposal.** Date
+confidence and venue confidence are rarely the same number, and the review UI
+should highlight only the weak fields. `raw_text` (the snippet the extraction
+came from) is what makes a bad parse debuggable.
+
+**F6. Scoped token, proposal-only.** Hermes gets a token that can create
+documents and proposals but cannot approve them or write events directly. Cheap
+privilege separation that makes the review gate structural rather than
+conventional.
+
+## 4. What CalDAV holds, and what it can't
+
+**Radicale holds:** accepted events, one collection per child × activity.
+Canonical `VEVENT`s with `X-` provenance properties. This is the thing your
+phone talks to.
+
+**SQLite holds everything that isn't an event.** CalDAV's query model is a
+time-range `REPORT` with property filters — no joins, no aggregates, no
+"proposals below 0.7 confidence that conflict with an accepted event." At
+family scale you *could* dump the whole collection and filter in memory, but
+these tables have to exist regardless because none of it is a calendar event:
 
 ```
 children          (id, name, color)
-activities        (id, child_id, name, season_start, season_end, tz, alarm_policy)
+activities        (id, child_id, name, collection_path, season_start,
+                   season_end, tz, alarm_policy)
 sources           (id, activity_id, kind, tier, config_json, secret_ref,
                    trust_rank, last_success_at, health)
 ingest_runs       (id, source_id, started_at, status, error)
-raw_documents     (id, ingest_run_id, sha256, mimetype, blob_uri, received_at)
-extractions       (id, raw_document_id, model, prompt_version, confidence,
+raw_documents     (id, sha256, mimetype, blob_uri, received_at, source_id)
+extractions       (id, raw_document_id, extractor, prompt_version,
                    payload_json, created_at)
-events            (id, activity_id, version, supersedes_id, status,
-                   starts_at, ends_at, tz, venue_id, title, notes,
-                   dedup_key, confidence, review_state)
-event_provenance  (event_id, extraction_id, contribution)
-venues            (id, canonical_name, address, lat, lon, aliases[])
-sync_targets      (id, kind, config_json)
-sync_state        (event_id, target_id, remote_uid, etag, last_synced_hash)
+proposals         (id, extraction_id, idempotency_key, state, confidence,
+                   payload_json, conflict_with_uid, decided_at, decided_by)
+event_index       (uid, collection_path, dedup_key, starts_at, venue_id,
+                   sequence, status, last_hash)   -- query cache over CalDAV
+venues            (id, canonical_name, address, lat, lon, aliases)
+sync_state        (uid, target, remote_uid, etag, last_synced_hash)
 ```
 
-`raw_documents` + `extractions` being separate from `events` is what makes
-re-parsing history possible. Don't collapse them.
+Three notes:
+
+- **Proposals are not events.** They live in SQLite until approved, then get
+  written to CalDAV. A proposal may be missing a time or a venue — an invalid
+  `VEVENT` — so it has no business in the calendar store. Clean line, and it
+  keeps unreviewed AI output physically incapable of reaching your phone.
+- **`event_index` is a derived cache**, rebuildable by walking the collections.
+  It exists so dedup lookups and conflict checks are a single indexed query
+  instead of a full CalDAV dump. Never the source of truth.
+- **`raw_documents` + `extractions` separate from events** is what makes
+  re-parsing history possible when you improve a prompt. Don't collapse them.
 
 ## 5. Suggested stack
 
-- **Runtime:** Python (best PDF/vision tooling) or TypeScript (one language
-  across UI + worker). Either is fine; pick the one you'll actually maintain.
-- **DB:** Postgres. `pgvector` later if you want fuzzy venue/team matching.
-- **Queue/schedule:** start with cron + a jobs table. Don't reach for Temporal
-  on day one.
+- **CalDAV server:** **Radicale** — Python, file-backed, trivial to run, and
+  its hook config can `git commit` on every change for free history. Xandikos
+  is natively git-backed if you'd rather. Baikal is more spec-complete but
+  heavier; only worth it if a client misbehaves against Radicale.
+- **Runtime:** Python pairs naturally here (same as Radicale, best PDF/vision
+  tooling). TypeScript is fine if you'd rather share a language with the UI.
+- **DB:** SQLite. Single box, single writer, family scale. Postgres buys you
+  nothing yet.
+- **Queue/schedule:** cron + a jobs table. Don't reach for Temporal.
 - **Extraction:** Claude with structured outputs; version every prompt and
   record `prompt_version` on each extraction.
-- **Calendar libs:** `ical.js` / `icalendar`, and a CalDAV client for iCloud.
-- **Hosting:** a small VPS or a home box behind Tailscale. This is a
-  low-throughput workload; it does not need cloud infrastructure.
+- **Libs:** `icalendar` / `ical.js`, `caldav` client, `vobject`.
+- **Hosting:** home box behind Tailscale. Low-throughput; no cloud needed.
 
 ## 6. Phased roadmap
 
@@ -252,13 +333,17 @@ settings? Does it email? Write the findings down. This determines how much of
 the rest is even needed — if three of your five sources turn out to have ICS
 exports, the AI ingestion layer becomes a fallback rather than the centerpiece.
 
-**Phase 1 — Walking skeleton.** One source (whichever has an ICS URL), DB,
-canonical events, CalDAV push to a *scratch* iCloud calendar. No UI, no AI.
-Proves the hardest part — reliable, idempotent, delete-correct calendar
-writes — before anything else is built on top of it.
+**Phase 1 — Radicale + API + one source.** Stand up Radicale, the API with
+`/documents`, `/proposals`, `/events`, and one ICS poller. Add the Radicale
+account directly to your phone. No iCloud push, no UI, no AI. You get real
+events on your device at the end of this phase, and the dangerous iCloud code
+is deferred.
 
-**Phase 2 — Email + PDF ingestion.** Inbox, raw document storage, AI
-extraction, confidence scoring, review queue. First real UI: review + approve.
+**Phase 2 — Hermes + review queue.** Point Hermes at the proposals endpoint.
+Raw document storage, confidence scoring, idempotency, `pending_review`. First
+real UI: review + approve, with the source PDF rendered alongside.
+
+**Phase 2.5 — Email ingestion.** Same proposal path, different producer.
 
 **Phase 3 — Web UI proper.** Feed management, source health dashboard, venue
 and alias editing, child/activity mapping.
@@ -267,8 +352,9 @@ and alias editing, child/activity mapping.
 surfacing. Deliberately after Phase 3, because you need the UI to inspect
 merges.
 
-**Phase 5 — Distribution.** Tokenized ICS feeds for family, alarm policies,
-school calendars, digests.
+**Phase 5 — Distribution.** iCloud push (when you hit a Radicale-direct limit
+from §C0), tokenized ICS feeds for family, alarm policies, school calendars,
+digests.
 
 Scrapers get built only when a specific source justifies one, and each is
 written expecting to be thrown away.
