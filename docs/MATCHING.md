@@ -11,6 +11,33 @@ Two problems, one matcher:
 Both are "does this candidate refer to the same real-world event as that
 existing one." Same scoring machinery, different callers and thresholds.
 
+## Ownership modes
+
+The `Practices` calendar is really a *kid logistics* calendar. Alongside
+practices it holds haircuts, dentist, orthodontist, birthday parties, school
+concerts — hand-created, with no upstream source, and people will keep adding
+them by hand forever.
+
+That breaks a model where "in `sync_state`" means "calsync owns it." Split
+ownership into three modes:
+
+| Mode | calsync may | calsync may never |
+|---|---|---|
+| `sourced` | create, update, cancel | — |
+| `enhance` | add `GEO` / structured location / alarms; prefix a missing child name | rewrite the body text, delete, cancel |
+| `untouched` | read | write anything |
+
+**The delete rule, stated once and absolutely:**
+
+> calsync may cancel or delete an event only when `mode = sourced` **and** its
+> upstream source stopped reporting it. No source, no delete — ever. Not for
+> looking stale, not for failing reconciliation, not for looking orphaned.
+
+Deletion authority comes from *having a source*, not from being known. A
+haircut has no source, so nothing can ever justify removing it. Stamp
+`X-CALSYNC-MODE` on the event and keep `mode` in `sync_state`, with the
+`sync_state` value authoritative (clients drop unknown `X-` properties).
+
 ## Where it runs
 
 Not in the sync client. The CalDAV/EventKit layer's one job is to be dumb and
@@ -119,8 +146,8 @@ table and a few minutes of clicking beats a clever classifier you'll debug for
 an afternoon and use exactly one time.
 
 ```
-adoptions(uid, calendar, icloud_uid, matched_proposal_id, score,
-          tier, adopted_at, adopted_by, original_ics)
+adoptions(uid, calendar, icloud_uid, mode, category, matched_proposal_id,
+          score, tier, adopted_at, adopted_by, original_ics)
 ```
 
 ### Renaming on adopt
@@ -131,6 +158,64 @@ yes — normalizing is the point — but make it a per-row toggle, since a few
 hand-written titles carry detail the extraction didn't capture.
 
 ---
+
+## 3a. Non-sport events: haircuts, dentist, birthday parties
+
+### Keep them out of adoption entirely
+
+An appointment must never match a sports proposal. The scoring mostly handles
+this on its own — "Nora haircut" 5:00pm vs. an ingested 5:30pm soccer practice
+scores ~0.41 (time 0.21 + child 0.20, nothing from sport, venue, or opponent)
+and falls below the 0.50 floor. But "mostly" isn't a safety property, so add
+an explicit gate:
+
+**Categorize every unowned event first; only `sport` events are adoption
+candidates.** A keyword list gets you most of the way — `haircut`, `dentist`,
+`ortho`, `doctor`, `checkup`, `appt`, `birthday`, `party`, `sleepover`,
+`recital`, `conference` — with an LLM fallback for the ambiguous remainder.
+Anything not classified `sport` is excluded from matching, full stop.
+
+**Run that classification locally.** These titles include medical appointments
+for minors. Category detection belongs on keywords or local Hermes, not shipped
+to an external API. Same rule as venue resolution: the *only* strings that
+should reach a hosted model are venue names for geocoding, and even then, not
+if the title implies a clinic.
+
+### Don't retrofit — redirect
+
+The instinct to run manual events through the tool is right, but retroactive
+rewriting is the wrong shape:
+
+- Rewriting text your spouse typed on a shared calendar is surprising, and if
+  they edit it back you get a fight loop.
+- Editing shared events bumps `SEQUENCE` and can fire change notifications to
+  every subscriber. A bulk normalization pass over a season of history would
+  spam the whole family at once.
+- The marginal value is low. "Nora haircut" already reads fine — the naming
+  convention exists to disambiguate *which kid* among a wall of sports events,
+  and hand-typed entries usually already name the kid.
+
+Better: make the web UI a first-class way to *create* these. An appointment
+added through calsync is `sourced` from birth — normalized title, geocoded
+clickable location, right alarms, no retrofitting. Existing entries stay as
+they are. Going forward the good path is also the easy path.
+
+### For events created outside calsync, enhance conservatively
+
+Your spouse will keep using Apple Calendar, so `enhance` mode has to exist.
+Split it, because the two halves have very different risk:
+
+| Enhancement | Default | Why |
+|---|---|---|
+| Add `GEO` + `X-APPLE-STRUCTURED-LOCATION` from an existing `LOCATION` string | **on** | Additive, invisible, high value — you drive to the pediatrician once a year and don't know the way. |
+| Add a `VALARM` if none exists | **on** | Additive, invisible. |
+| Prefix a missing child name (`Dentist 3pm` → `Jack 🦷 Dentist 3pm`) | **review** | Genuinely useful — an unattributed appointment on a shared calendar is the actual failure case — but it's a text change, so confirm it. Often unattributable, in which case leave it. |
+| Rewrite the title into the naming convention | **off** | Low value, high surprise. |
+
+Enhancement is still a write to a shared calendar, so it goes through the same
+machinery as everything else: `sync_state` row, `original_ics` snapshot,
+`--dry-run` first. And throttle the initial pass — a few events per minute, not
+a season in one burst — so subscribers don't get a notification storm.
 
 ## 4. After adoption: collision detection, not adoption
 

@@ -211,16 +211,24 @@ ship `--dry-run` before any write path goes live.
 ETags you can't do safe updates or deletes, and you'll re-push unchanged
 events forever.
 
-**C3. Hard invariant: never touch an event we didn't create.** Write only to
-dedicated calendars (`Kids — Soccer`, `Kids — School`), never to your personal
-one, and refuse to modify any remote event whose UID isn't in the sync table.
+**C3. Hard invariant: deletion requires a source.** Write only to `Games` and
+`Practices`, never to your personal calendar, and refuse to modify any remote
+event whose UID isn't in `sync_state`.
+
+The stronger rule, because `Practices` also holds haircuts and dentist
+appointments: calsync may cancel an event only when its `sync_state.mode` is
+`sourced` **and** its upstream source stopped reporting it. No source, no
+delete — ever. Ownership modes and the enhance-only path for hand-created
+events are in [MATCHING.md](MATCHING.md).
+
 Add a `--dry-run` that prints the diff. A sync bug that deletes real calendar
 entries is the failure mode that ends the project.
 
-**C4. Decide the story for manual edits in iCloud.** If you drag an event in
-Calendar.app, the next sync will revert it. Simplest coherent answer: our
-calendars are read-only mirrors, you make corrections in the web UI. Say it
-out loud in the design so it's a decision, not a surprise.
+**C4. Decide the story for manual edits in iCloud.** If you drag a *sourced*
+event in Calendar.app, the next sync reverts it. Simplest coherent answer:
+sourced events are read-only mirrors, corrections happen in the web UI. Manual
+and enhanced events are never overwritten, so this only bites on events calsync
+actually owns. Say it out loud so it's a decision, not a surprise.
 
 **C5. Backpressure and rate limits.** iCloud CalDAV throttles. Batch, back off,
 and never let a full re-sync fire hundreds of requests in a burst.
@@ -337,8 +345,10 @@ event_index       (uid, collection, is_game, dedup_key, starts_at, venue_id,
 venues            (id, canonical_name, short_name, address, lat, lon,
                    pin_confirmed_by_human, geocoder, geocode_confidence)
 venue_aliases     (venue_id, alias, source)
-sync_state        (uid, target, calendar, remote_uid, etag, last_synced_hash)
-adoptions         (uid, calendar, icloud_uid, matched_proposal_id, score,
+sync_state        (uid, target, calendar, mode, remote_uid, etag,
+                   last_synced_hash)   -- mode: sourced | enhance | untouched
+adoptions         (uid, calendar, icloud_uid, mode, category,
+                   matched_proposal_id, score,
                    tier, adopted_at, adopted_by, original_ics)
 ```
 
