@@ -106,7 +106,10 @@ sources:
           strip_opponent_age_suffix: true   # only when it matches age_group
       detail_from: [parsed_opponent, summary]   # first non-empty wins
       venue_from: location
+      home_venue: Wolf Trap Park        # venue == home -> "vs", else "@";
+                                        # the SUMMARY always says "vs"
       description_from: description
+      description_skip_if_equals_summary: true   # league matches duplicate it
       # feed carries no kit/uniform or arrival-time field; those come from the
       # relay path or manual entry only
       url_from: url

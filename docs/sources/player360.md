@@ -90,13 +90,20 @@ information worth seeing.
 `TASL` is the league; record it on the activity so it can go in `DESCRIPTION`
 and help disambiguate opponents that appear in more than one league.
 
-**Unknown: does Player360 signal home vs away?** The convention here is `vs`.
-If every match says `vs` regardless of venue, home/away isn't derivable and the
-`@` form in [NAMING.md](../NAMING.md) can never fire from this source — venue
-comparison against a known home field would be the fallback.
+**Home/away comes from the venue, not the string.** Every match reads `vs`
+regardless, so derive it: venue == the activity's home field → `vs`, otherwise
+`@`. Wolf Trap Park hosts both the minicamp practices and the Beach FC match,
+which makes it the likely home ground — set `home_venue` on the activity once
+and the `@` form starts working.
 
-`DESCRIPTION` goes to the event body, and `URL` passes straight through as a
-tappable link back to Player360.
+**`DESCRIPTION` duplicates `SUMMARY` on league matches.** The Beach FC event
+carries the identical string in both. Club events differ ("8v8 Festival Club
+Kickoff (2 games)" against a different title), so the rule is: **include the
+upstream `DESCRIPTION` only when it differs from `SUMMARY`.** Copying it
+unconditionally puts the title in the body of every league game for no reason.
+
+`URL` passes straight through — Apple renders it as a tappable "360Player /
+Open" row above the location.
 
 ## Trap 1: `SEQUENCE` and `LAST-MODIFIED` churn on their own
 
@@ -165,7 +172,40 @@ alias, confirm the pin once. The LLM path is only for strings the regex fails
 on. Still refine the pin by hand: `Randy Custis Memorial Park` is a park, and
 the street address is the entrance, not the field.
 
-## Trap 4: the feed carries past events, and `from` is frozen
+## Trap 4: you are already subscribed to this feed
+
+Apple Calendar currently has the raw feed subscribed as **"360Player Event
+calendar."** The moment calsync starts writing these events into the shared
+`Games` and `Practices` calendars, every Player360 event exists twice on every
+family device — once from the subscription, once from calsync.
+
+**Unsubscribing from "360Player Event calendar" is a required Phase 1 cutover
+step**, not a cleanup task. Do it at the same moment writes are enabled, and
+check whether anyone else in the family subscribed to it independently.
+
+Worth noting what the subscription already does well, since calsync has to beat
+it to be worth the trouble: the raw feed renders a readable title, and Apple's
+data detector linkifies the street address inside `LOCATION` on its own. What
+it can't do is name the child, unify swim and soccer into one place, apply
+alarm policy, or drop a pin on the right corner of the park.
+
+## Trap 5: verify the feed's UTC is actually right
+
+The Beach FC match is `DTSTART` 14:00Z, which is 10:00 EDT at a Yorktown venue
+— plausible for a Saturday U10 match. In the screenshot it displays as
+08:00–09:00 because the device was in a UTC-6 zone at the time, with Apple
+correctly re-rendering the absolute instant.
+
+Two things follow:
+
+- **Confirm once that 10:00 ET is the real kickoff.** If 360Player has the
+  wrong timezone configured on their end, every event is systematically offset
+  and everything downstream inherits it. Cheap to check against one known game.
+- **Travel makes calendar times read oddly**, unavoidably and correctly. If
+  that bites, put venue-local time in `DESCRIPTION` ("Kickoff 10:00 ET") — the
+  body is free, unlike the title.
+
+## Trap 6: the feed carries past events, and `from` is frozen
 
 `from=1783895132` decodes to **2026-07-12T22:25:32Z** — about a month before it
 was handed to us, and it does not move on its own.
@@ -202,9 +242,10 @@ Same treatment as the iCloud app-specific password.
 5. Does the token expire?
 6. Confirm cancellation behavior by watching a real one — this is the only
    trap above that's inferred rather than observed.
-7. **Is `U10DA TASL Match vs Beach FC U10` the ICS `SUMMARY` for that event, or
-   only visible in the Player360 web app?** This matters a lot: if it's in the
-   feed, opponent parsing is free. If it's app-only, getting opponent means an
-   API or a scrape, and it may not be worth it. Check the raw feed for a
-   regular-season match — the original sample contained only preseason events.
-8. Does any match `SUMMARY` use `@` or otherwise mark away games?
+7. **Resolved:** `U10DA TASL Match vs Beach FC U10` is the ICS `SUMMARY` —
+   confirmed in Apple Calendar rendering the subscribed feed. Opponent parsing
+   is free; no API or scrape needed.
+8. **Resolved:** the string always reads `vs`; there is no away marker. Derive
+   home/away by venue instead (see below).
+9. Full `CATEGORIES` vocabulary beyond `match` / `practice`.
+10. Does the token expire?
