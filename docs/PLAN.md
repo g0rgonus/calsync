@@ -490,6 +490,65 @@ share, alarm policies, school calendars, digests.
 Scrapers get built only when a specific source justifies one, and each is
 written expecting to be thrown away.
 
+## 6a. Scope reality check
+
+Written down because a half-built system in November, when the season ends, is
+the realistic failure mode — not a system that doesn't work.
+
+### Where the value actually is
+
+| Component | Value | Effort |
+|---|---|---|
+| PDF/photo → events | high | medium |
+| Geocoded, tappable locations | **highest per unit effort** | low |
+| Normalized titles | high | low |
+| iCloud write path w/ sync_state | required for any of it | medium |
+| Amendment flow (chat → API) | medium | high |
+| Adoption matcher | low | medium |
+| Trust ranking / field contributions | low unless multi-source | medium |
+| Radicale as store | convenience | low |
+
+Roughly **80% of the value is in the first four rows**, which is about a
+quarter of the design.
+
+### What to cut first if you're running out of steam
+
+1. **The adoption matcher.** For a one-time setup problem, deleting the
+   hand-created sports events for the upcoming season and letting calsync
+   repopulate takes ten minutes. Building a fuzzy matcher takes a weekend. The
+   matcher only earns its place for *ongoing* cross-source dedup — so if
+   Phase 0 finds one source per activity, skip it entirely.
+2. **Trust ranking and field contributions.** Dead code unless an activity has
+   two sources that disagree. Ship "last write wins, flagged" and add ranking
+   when you actually observe a conflict.
+3. **Radicale.** A convenience — git history, standard tooling, direct client
+   access — not a necessity. SQLite → iCloud directly is fewer moving parts.
+4. **The amendment flow.** Editing four swim practices by hand in Calendar.app
+   takes about a minute. The chat path has to be *more reliable than that* to
+   be worth using, which is a high bar. It earns its place when changes are
+   frequent and multi-event; it does not earn its place as a demo.
+
+### The assumption most likely to be wrong
+
+This architecture is sized for **reconciling several continuously-updating
+feeds**. Swim already isn't one. If Phase 0 finds that TeamReach and Player360
+also have no ICS export or API, then *every* source is `document` + `relay`,
+and there is nothing to reconcile — no polling, no flapping, no trust conflicts,
+no dedup across sources.
+
+In that world the honest system is much smaller: **a good PDF ingester, a title
+and venue normalizer, an iCloud writer, and a chat path for changes.** Half of
+this document becomes unnecessary. Do Phase 0 before committing to any of it.
+
+### What it doesn't do
+
+It won't pay for itself in time saved. A season is maybe 160 events across the
+family; entering them by hand is a few hours a year against a build measured in
+weeks. The return is in the changes nobody re-enters by hand — the rained-out
+game, the moved pool — and in not having a kid on a curb. Budget it as a
+reliability project you enjoy building, not a labor saver, and the scope
+decisions get easier.
+
 ## 7. Open questions
 
 1. Which platforms are actually in play, and how many kids/activities? (Drives
