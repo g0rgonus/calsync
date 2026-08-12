@@ -101,13 +101,24 @@ first month.
 
 ### B. The core (this is where the real work is)
 
-**B1. Entity resolution and dedup.** The same Saturday game will arrive from
-three sources: a TeamReach post, the season PDF you uploaded in August, and an
-email reminder. Without a dedup strategy you get triplicates in iCloud.
+**B1. Entity resolution, dedup, and adoption.** Full spec in
+[MATCHING.md](MATCHING.md).
 
-Needs a fuzzy match key — roughly `(child, activity, date, start_time ±90min,
-venue_similarity)` — with a confidence score, plus an explicit merge record so
-you can see *why* two things were joined and unjoin them in the UI.
+The same Saturday game arrives from three sources — a TeamReach post, the
+August season PDF, an email reminder — and the shared calendars *already*
+contain hand-created events for the same activities. Both are the same
+question, so one matcher serves both: a blocking key on
+`(local_date, is_game)`, then a weighted score over time proximity, opponent
+similarity, child name, sport, and venue.
+
+A single tuple can't do it, because the high-signal field differs by type:
+games have opponents (`date, time±15m, opponent` is nearly conclusive),
+practices don't (`date, child, activity, time±60m`, and hand-entered times
+drift). It's a cascade, strict → loose, and the loosest tier only ever
+produces review candidates.
+
+Keep an explicit merge record so you can see *why* two things were joined, and
+unjoin them in the UI.
 
 **B2. Event versioning and supersession.** Rescheduled games are the normal
 case, not the edge case. An event needs a version chain so "6pm game moved to
@@ -310,7 +321,7 @@ family scale you *could* dump the whole collection and filter in memory, but
 these tables have to exist regardless because none of it is a calendar event:
 
 ```
-children          (id, name, color)
+children          (id, name, nicknames, birth_order, color)
 activities        (id, child_id, name, sport, emoji, short_name,
                    season_start, season_end, tz, alarm_policy)
 sources           (id, activity_id, kind, tier, config_json, secret_ref,
@@ -323,8 +334,12 @@ proposals         (id, extraction_id, idempotency_key, state, confidence,
                    payload_json, conflict_with_uid, decided_at, decided_by)
 event_index       (uid, collection, is_game, dedup_key, starts_at, venue_id,
                    sequence, status, last_hash)   -- query cache over CalDAV
-venues            (id, canonical_name, address, lat, lon, aliases)
+venues            (id, canonical_name, short_name, address, lat, lon,
+                   pin_confirmed_by_human, geocoder, geocode_confidence)
+venue_aliases     (venue_id, alias, source)
 sync_state        (uid, target, calendar, remote_uid, etag, last_synced_hash)
+adoptions         (uid, calendar, icloud_uid, matched_proposal_id, score,
+                   tier, adopted_at, adopted_by, original_ics)
 ```
 
 Three notes:
@@ -368,9 +383,15 @@ API (`/documents`, `/proposals`, `/events`), one ICS poller, the title renderer,
 and the iCloud CalDAV writer with `sync_state` and `--dry-run`. Run dry against
 the real shared calendars for a week before enabling writes. No UI, no AI yet.
 
-This phase is bigger than the previous draft because the iCloud writer moved
-into it, but it's the right scope: the write path is the risky part and
-everything else stacks on top of it.
+**Phase 1.1 — Adoption pass.** Snapshot both calendars to git, then reconcile
+the existing hand-created events ([MATCHING.md §3](MATCHING.md)). Must happen
+before the first real write, or calsync creates its copy next to yours. Needs
+just enough UI to approve matches — a printed table plus an approve endpoint is
+enough; the full review UI comes in Phase 2.
+
+This phase is bigger than the previous draft because the iCloud writer and
+adoption both moved into it, but it's the right scope: the write path is the
+risky part and everything else stacks on top of it.
 
 **Phase 1.5 — Venue pipeline.** Alias table, LLM disambiguation, geocoder,
 pin confirmation UI. Small, and it's most of the perceived day-to-day value.

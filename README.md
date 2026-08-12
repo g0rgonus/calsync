@@ -7,7 +7,9 @@ iCloud calendars.
 Status: **planning**. See [docs/PLAN.md](docs/PLAN.md) for the architecture,
 gap analysis, and phased roadmap, and [docs/API.md](docs/API.md) for the
 write API that agents and pollers code against. [docs/NAMING.md](docs/NAMING.md)
-covers event title and location conventions.
+covers event title and location conventions, and
+[docs/MATCHING.md](docs/MATCHING.md) covers dedup and adopting the hand-created
+events already in the shared calendars.
 
 ## Shape
 
