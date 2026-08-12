@@ -17,21 +17,30 @@ layers, not in the layers themselves.
   Hermes (PDF/photo) ─┐
   Email worker       ─┤                            ┌─→ Radicale (CalDAV)
   ICS pollers        ─┼─→   calsync API      ──────┤   accepted events only
-  Scrapers           ─┤   (the ONLY writer)        │   one collection per
-  Web UI / manual    ─┘          │                 │   child × activity
+  Scrapers           ─┤   (the ONLY writer)        │   /games  /practices
+  Web UI / manual    ─┘          │                 │   (mirrors iCloud 1:1)
                                  │                 │
                      dedup, validation,            └─→ SQLite
-                     confidence gating,                raw docs, extractions,
-                     provenance, tz rules             sources, proposals,
-                                 │                     sync state, venues
+                     is_game routing,                  raw docs, extractions,
+                     confidence gating,                sources, proposals,
+                     provenance, tz rules              sync state, venues
+                                 │
                                  ▼
                           review queue ──→ web UI
                                                           CONSUMERS
-                                 Radicale ──────────────→ iPhone/Mac CalDAV acct
-                                    │                     (direct, via Tailscale)
-                                    └─→ iCloud push ────→ family, off-tailnet
-                                    └─→ tokenized ICS ──→ grandparents
+                                 Radicale                 iCloud: Games      ─┐
+                                    │                     iCloud: Practices  ─┼→ family
+                                    ├─→ iCloud push ────→ (already shared)    ┘
+                                    ├─→ tokenized ICS ──→ outside the share
+                                    └─→ your own devices, direct (staging/debug)
 ```
+
+Radicale collections **mirror the iCloud calendars 1:1** (`/games`,
+`/practices`) rather than splitting by child. Sync becomes a straight
+collection→calendar map, and the reclassification-move logic
+([NAMING.md §5](NAMING.md)) is identical on both sides instead of being a
+regroup in the middle. Per-child views come from queries and ICS feeds, not
+from the storage layout.
 
 **Self-hosted CalDAV as the event store — yes.** This is better than a bare
 relational store. iCalendar already carries more of the needed semantics than
@@ -139,10 +148,16 @@ corner of a large park, and the park's street address routes you to the wrong
 entrance. LLMs disambiguate the string; a real geocoder produces the lat/lon; a
 human confirms the pin once per venue. Never let a model emit coordinates.
 
-**B7. Event `kind` classification is now load-bearing.** Because the iCloud
-calendars are split by type, every event must be classified `game` /
-`practice` / other *before* it can be routed anywhere. This is a required
-extraction field, not an optional one.
+**B7. Routing is one predicate: `is_game`.** Games go to `Games`; everything
+else — practice, photos, banquet, tryouts, unknown — goes to `Practices`. That
+makes misclassification cheap and self-correcting, so classification must never
+block delivery. Presence of an opponent is a near-perfect signal, so rules
+handle most of it and the LLM only sees genuine ambiguity.
+
+One implementation trap: collections are separate CalDAV URLs, so
+reclassifying an event between calendars is delete-then-create with a new UID,
+not an update — and not a cancellation tombstone. See
+[NAMING.md §5](NAMING.md).
 
 ### C. Delivery to iCloud
 
@@ -296,8 +311,8 @@ these tables have to exist regardless because none of it is a calendar event:
 
 ```
 children          (id, name, color)
-activities        (id, child_id, name, collection_path, season_start,
-                   season_end, tz, alarm_policy)
+activities        (id, child_id, name, sport, emoji, short_name,
+                   season_start, season_end, tz, alarm_policy)
 sources           (id, activity_id, kind, tier, config_json, secret_ref,
                    trust_rank, last_success_at, health)
 ingest_runs       (id, source_id, started_at, status, error)
@@ -306,10 +321,10 @@ extractions       (id, raw_document_id, extractor, prompt_version,
                    payload_json, created_at)
 proposals         (id, extraction_id, idempotency_key, state, confidence,
                    payload_json, conflict_with_uid, decided_at, decided_by)
-event_index       (uid, collection_path, dedup_key, starts_at, venue_id,
+event_index       (uid, collection, is_game, dedup_key, starts_at, venue_id,
                    sequence, status, last_hash)   -- query cache over CalDAV
 venues            (id, canonical_name, address, lat, lon, aliases)
-sync_state        (uid, target, remote_uid, etag, last_synced_hash)
+sync_state        (uid, target, calendar, remote_uid, etag, last_synced_hash)
 ```
 
 Three notes:
@@ -387,13 +402,11 @@ written expecting to be thrown away.
    server-side is more reliable if you're open to it.
 3. Kids' first names and a fixed ordering, plus which sports each plays — needed
    to pin down the title convention and emoji map.
-4. Where do team events that are neither practice nor game go — photos, banquet,
-   tryouts? Third calendar, folded into Practices, or dropped?
-5. Do the existing `Practices` / `Games` calendars already contain hand-entered
+4. Do the existing `Practices` / `Games` calendars already contain hand-entered
    events for these same activities? If so, Phase 1 needs a one-time
    reconciliation pass, not just a clean write path.
-6. Are you the owner of both shared calendars, or is one shared *to* you? Write
+5. Are you the owner of both shared calendars, or is one shared *to* you? Write
    access via CalDAV depends on it.
-7. Is "our events are read-only mirrors, corrections happen in the web UI"
+6. Is "our events are read-only mirrors, corrections happen in the web UI"
    acceptable? Family members editing a shared event in Apple Calendar will get
    reverted on next sync.

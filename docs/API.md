@@ -195,9 +195,11 @@ POST /v1/sources/{id}/poll           # manual trigger
   structured fields ([NAMING.md](NAMING.md)). Send `title` as the raw opponent
   or description only; the API composes `Nora ⚽️ vs Northside · Riverside #4`.
   This is what lets the naming convention change without re-extracting anything.
-- **`kind` is required**, not optional — it routes the event to the `Practices`
-  or `Games` calendar. If you can't tell, send `"kind": "unknown"` and it goes
-  to review. Guessing sends it to the wrong shared calendar.
+- **Send `kind`, but don't agonize over it.** Routing is binary: `game` /
+  `scrimmage` / `tournament` → Games, everything else → Practices. If you can't
+  tell, send `"kind": "unknown"` — it defaults to Practices and is still
+  delivered, just flagged for review. Never withhold an event over `kind`. An
+  opponent in the source text is a strong `is_game` signal.
 - **Send `venue_raw` verbatim.** Don't clean it up, don't expand abbreviations,
   and never emit `lat`/`lon` — venue resolution is a server-side pipeline with
   an alias cache and a real geocoder. `RP Field 4` is more useful to it than

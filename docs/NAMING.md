@@ -25,7 +25,7 @@ Segments are omitted cleanly when empty — no dangling separators.
 |---|---|
 | `kids` | First names. Multiple → joined with `+`, **always in a fixed order** (birth order), so titles are stable. 3+ or whole-family → `Family`. |
 | `emoji` | One per sport: ⚽️ 🏀 ⚾️ 🏐 🏊 🎾. Disambiguates when a kid plays more than one. |
-| `detail` | Games: `vs Opponent` (home) or `@ Opponent` (away). Practices: team short name, **only if** that kid has more than one team this season. |
+| `detail` | Games: `vs Opponent` (home) or `@ Opponent` (away). Routine practice: team short name, **only if** that kid has more than one team this season — otherwise omitted. Any other non-game event: a short type label (`Photos`, `Banquet`, `Tryouts`). See §5. |
 | `venue_short` | Canonical short name from the venue table — `Riverside #4`, not the street address. Address goes in `LOCATION`. |
 
 ### The 12-character rule
@@ -188,17 +188,63 @@ in the review queue. A non-clickable location beats a wrong pin.
 
 ## 5. Calendar routing
 
-With calendars split by type, every event needs a `kind` before it can be
-routed:
+Routing is a single predicate:
 
-| `kind` | Calendar |
+```
+calendar := is_game ? "Games" : "Practices"
+is_game  := kind in (game, scrimmage, tournament)
+```
+
+Everything else — practice, training, clinic, photos, banquet, tryouts,
+parent meeting, unknown — goes to Practices.
+
+`kind` stays as descriptive metadata (it drives titles and alarm policy), but
+routing only ever reads `is_game`.
+
+### Why this matters more than it looks
+
+**`unknown` now has a safe default.** An unclassified event lands in Practices,
+which is at worst a wrong-colored entry on a calendar everyone can still see.
+That's a visible, self-correcting error, not a missed event. So classification
+**must not block delivery** — flag it in the review UI, but ship it.
+
+**The classifier can be mostly rule-based.** With a binary target, presence of
+an opponent is a near-perfect signal for `is_game`. Rules first, LLM only on
+ambiguity.
+
+### Implementation note: reclassification is a move, not an update
+
+Collections are separate CalDAV URLs, so changing an event from Practices to
+Games is **delete-then-create**, and the iCloud UID changes. `sync_state` needs
+an explicit move operation:
+
+```
+if desired_calendar != sync_state.calendar:
+    DELETE old_calendar/old_uid      # real delete, not a tombstone
+    PUT    new_calendar/new_uid
+    update sync_state
+```
+
+A tombstone would be wrong here — the event isn't cancelled, it moved. Getting
+this wrong leaves a ghost copy in the old calendar, which is exactly the
+duplicate-in-a-shared-calendar failure this system exists to avoid.
+
+### Titles in the Practices bucket
+
+Since Practices now holds heterogeneous events, the `detail` segment carries
+the type whenever it *isn't* a routine practice:
+
+| Event | Title |
 |---|---|
-| `game`, `scrimmage`, `tournament` | Games |
-| `practice`, `training`, `clinic` | Practices |
-| `team_event`, `photos`, `banquet`, `tryout` | **open question** |
+| Routine practice | `Nora ⚽️ · Riverside #4` |
+| Team photos | `Nora ⚽️ Photos · Riverside #4` |
+| Banquet | `Nora ⚽️ Banquet · Hilton Downtown` |
+| Tryouts | `Jack 🏀 Tryouts · Central HS Main` |
 
-Multi-kid events are **one event listing both kids**, not one per kid —
-duplicates in a shared calendar are worse than an imperfect title.
+Routine practices stay terse; exceptions announce themselves. Silence means
+practice.
 
-Open: where do non-practice, non-game team events go? Options are a third
-shared calendar, folding them into Practices, or leaving them out entirely.
+### Multi-kid events
+
+**One event listing both kids**, not one per kid. Duplicates in a shared
+calendar are worse than an imperfect title.
