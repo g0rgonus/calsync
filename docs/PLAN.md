@@ -399,8 +399,10 @@ these tables have to exist regardless because none of it is a calendar event:
 
 ```
 children          (id, name, nicknames, birth_order, color)
-activities        (id, child_id, name, sport, emoji, short_name,
-                   season_start, season_end, tz, alarm_policy)
+activities        (id, child_id, name, official_name, sport, emoji,
+                   short_name, season_start, season_end, tz, alarm_policy)
+activity_aliases  (activity_id, alias, source)   -- "U10DA" in a coach email
+                                                 -- must resolve to "Rush"
 sources           (id, activity_id, kind, shape, tier, config_json, secret_ref,
                    trust_rank, last_success_at, health)
                    -- shape: feed | document | relay

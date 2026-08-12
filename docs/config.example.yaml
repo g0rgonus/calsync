@@ -13,13 +13,19 @@ children:
     color: "#2f6fdb"
 
 activities:
-  - id: james-soccer-u10da
+  - id: james-soccer-rush
     child: james
-    name: U10DA — Rush
+    name: Rush                   # human-readable; what shows up in titles
+    official_name: U10DA         # league designation
+    short_name: Rush             # only appears in titles if James picks up a
+                                 # second team; omitted while this is his only one
+    aliases:                     # strings that must resolve to this activity
+      - U10DA                    # when they turn up in a PDF, email, or coach
+      - U10 DA                   # message — official names are exactly what
+      - Rush                     # those sources use
+      - Rush Academy             # observed in the feed DESCRIPTION
     sport: soccer
     emoji: "⚽️"
-    short_name: U10DA            # only appears in titles if James picks up a
-                                 # second team; omitted while this is his only one
     tz: America/New_York         # inferred from Exmore + Yorktown VA venues
     season: { start: 2026-07-01, end: TODO }
     alarm_policy:
@@ -27,8 +33,8 @@ activities:
       practice: 30m
 
 sources:
-  - id: p360-james-u10da
-    activity: james-soccer-u10da
+  - id: p360-james-rush
+    activity: james-soccer-rush
     kind: player360
     shape: feed
     tier: 2                      # ICS export
