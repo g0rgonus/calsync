@@ -120,11 +120,17 @@ season.
 1. Paste.    Bot stores the message as a raw_document
              (source: matrix, sender MXID, room, event_id). Full provenance.
 2. Select.   Hermes calls POST /v1/events/query with a bounded selector
-             → matched UUIDs + current values.
-3. Amend.    Hermes calls POST /v1/amendments with the UUIDs and the patch.
+             → UUIDs, structured fields, and which source owns each value.
+3. Amend.    Hermes calls POST /v1/amendments with the same selector plus
+             the query_id, so the call fails if the set changed underneath.
 4. Gate.     calsync applies or asks, by blast radius (below).
 5. Record.   Prior VEVENTs stored; amendment_id is undoable.
 ```
+
+Step 2 is how Hermes gets UUIDs — through the API, not by reading CalDAV.
+Query and amend take the same selector object, so there's no translation step
+between them. See [API.md](API.md) for why the calendar is the wrong read
+source for an agent.
 
 ```json
 POST /v1/amendments

@@ -7,14 +7,35 @@ Radicale directly.
 Base: `http://calsync.<tailnet>.ts.net/v1`
 Auth: `Authorization: Bearer <token>`, scoped per client.
 
-| Scope | documents | proposals | approve | events (direct) |
-|---|---|---|---|---|
-| `agent` (Hermes) | create | create | — | — |
-| `poller` | create | create | auto | — |
-| `ui` (you) | create | read | yes | yes |
+| Scope | documents | proposals | read events | amend | approve |
+|---|---|---|---|---|---|
+| `agent` (Hermes) | create | create | yes | via task token | — |
+| `poller` | create | create | — | — | auto |
+| `ui` (you) | create | read | yes | yes | yes |
 
-`agent` deliberately cannot approve its own proposals or write events. The
-review gate is structural, not conventional.
+`agent` deliberately cannot approve its own proposals. The review gate is
+structural, not conventional. Reads are standing (low risk, and Hermes needs
+them for the paste flow); amendment writes come from a per-task token scoped to
+named UUIDs.
+
+### Hermes reads through the API, not CalDAV
+
+Giving Hermes a read-only Radicale account looks equivalent and isn't:
+
+1. **The calendar holds renders, not data.** `SUMMARY` is generated from
+   structured fields ([NAMING.md](NAMING.md)). An agent reading CalDAV would
+   parse `Nora 🏊 · Aquatic Ctr Main` back into child and activity — reverse
+   -engineering a string we just generated, and re-breaking every time the
+   convention changes.
+2. **The disambiguation context isn't in the VEVENT.** Activity IDs, venue
+   aliases, confidence, source tiers, and which source currently owns a field
+   all live in SQLite.
+3. **One fewer credential and network path** to manage or misconfigure.
+4. **CalDAV shows published state**, which can lag or lead the database while a
+   sync is in flight. The API presents one coherent view.
+
+A read-only Radicale account is still worth creating — for you, for Thunderbird
+or DAVx5, for debugging. Just not as an agent's data source.
 
 ---
 
@@ -204,6 +225,62 @@ POST /v1/events/query            # bounded selector → UUIDs + current values
 POST /v1/amendments
 POST /v1/amendments/{id}/undo
 ```
+
+### Query, then amend
+
+`events/query` takes **the same selector object** as `amendments`. Query it,
+check the matches, then pass the identical selector (or the returned UUIDs) to
+amend. No translation step between the two calls is where agent errors would
+otherwise creep in.
+
+```json
+POST /v1/events/query
+{ "selector": { "activity": "swim-practice", "child": "nora",
+                "from": "2026-09-14", "to": "2026-09-20" } }
+```
+
+```json
+{
+  "query_id": "q_01J9XR…",
+  "count": 4,
+  "events": [
+    {
+      "uuid": "3f9c1a2e-…@calsync",
+      "child":    { "id": "nora", "name": "Nora" },
+      "activity": { "id": "swim-practice", "name": "Swim — Riverside Aquatics",
+                    "sport": "swim" },
+      "kind": "practice",
+      "is_game": false,
+      "starts_at": "2026-09-14T17:30:00-04:00",
+      "tz": "America/New_York",
+      "venue": { "id": 12, "canonical_name": "Riverside Aquatic Center",
+                 "raw": "Aquatic Ctr Main", "pin_confirmed": true },
+      "summary_rendered": "Nora 🏊 · Aquatic Ctr Main",
+      "resolution": {
+        "venue": { "source_id": "swim-fall-pdf", "tier": 4,
+                   "observed_at": "2026-08-09T11:04:00-04:00" }
+      }
+    }
+  ]
+}
+```
+
+Three things this gives an agent that a calendar read cannot:
+
+- **Structured identity.** `child.id` and `activity.id` as fields, not parsed
+  out of a display string.
+- **`resolution` per field** — which source currently owns this value, its tier
+  and timestamp. Hermes can see that the venue is held by a tier-4 PDF and a
+  tier-1 relay will therefore win, instead of submitting a no-op amendment.
+- **`query_id`** — pass it to `POST /v1/amendments` and the call fails if the
+  matched set changed since the query. Cheap protection against someone adding
+  a swim practice between the two calls.
+
+`summary_rendered` is derived output for display. **Never parse it** — it's a
+render of the fields above ([NAMING.md](NAMING.md)) and it changes whenever the
+naming convention does.
+
+Selectors default to a 14-day window and are always bounded.
 
 ```json
 {
