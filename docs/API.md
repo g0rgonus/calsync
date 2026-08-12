@@ -179,6 +179,51 @@ Purging would leave a stale event on every device that already synced it.
 
 ---
 
+## Tasks (calsync → Hermes)
+
+calsync dispatches work it can't resolve — venue strings, ambiguous names —
+as tasks posted to the Matrix room ([MATRIX.md](MATRIX.md)). Hermes answers on
+the API, not in chat.
+
+```http
+GET  /v1/tasks?state=open
+POST /v1/tasks/{id}/result       # scoped task token, 1h TTL
+GET  /v1/schema/{name}           # JSON Schema, machine copy of this doc
+```
+
+The task token is scoped to that task and the event UUIDs it names. It is not
+a standing credential and cannot write anything the task didn't cover.
+
+## Amendments
+
+Mutating already-published events from a pasted coach message. Higher risk than
+a proposal — these events are already on other people's phones.
+
+```http
+POST /v1/events/query            # bounded selector → UUIDs + current values
+POST /v1/amendments
+POST /v1/amendments/{id}/undo
+```
+
+```json
+{
+  "selector": { "activity": "swim-practice", "child": "nora",
+                "from": "2026-09-14", "to": "2026-09-20" },
+  "patch":    { "venue_raw": "Aquatic Center East" },
+  "rationale": "Coach message: main pool closed for maintenance",
+  "source_document_id": "doc_01J9…",
+  "sticky_until": "2026-09-21"
+}
+```
+
+- **Selectors must be date-bounded.** Open-ended is always rejected.
+- **Blast radius gate:** 1–3 apply · 4–15 confirm in room · >15 refused.
+- **Patches carry `venue_raw`, never coordinates.** Venue resolution stays
+  server-side.
+- Every amendment stores prior VEVENTs and is undoable.
+- Amendments become **overrides** that survive later source syncs — see
+  [MATRIX.md §4](MATRIX.md). Without this the next poll reverts them.
+
 ## Sources & health
 
 ```http

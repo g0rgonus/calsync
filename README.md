@@ -10,6 +10,8 @@ write API that agents and pollers code against. [docs/NAMING.md](docs/NAMING.md)
 covers event title and location conventions, and
 [docs/MATCHING.md](docs/MATCHING.md) covers dedup and adopting the hand-created
 events already in the shared calendars.
+[docs/MATRIX.md](docs/MATRIX.md) covers the Matrix room where calsync, Hermes,
+and you interact.
 
 ## Shape
 
@@ -17,12 +19,17 @@ events already in the shared calendars.
 Hermes (PDF/photo) ─┐                                    ┌─→ iCloud: Games
 email worker       ─┼─→ calsync API ─→ Radicale (CalDAV) ─┼─→ iCloud: Practices
 ICS pollers        ─┤   (only writer)  SQLite (raw docs, ─┤   (shared w/ family)
-web UI / manual    ─┘        │          proposals, sync)  └─→ ICS feeds
+Matrix bot / paste ─┤                  proposals, sync)  └─→ ICS feeds
+web UI (feeds)     ─┘        │
                        review queue
 ```
 
 The API is the only writer. Agents submit *proposals*; the API decides what
-reaches the calendar.
+reaches the calendar. calsync manages sourced events only — hand-created
+appointments are never touched.
+
+Matrix room for the daily loop (capture, approve, amend). Web UI for setup
+(add a feed, bind it to a kid and sport).
 
 ## Next step
 

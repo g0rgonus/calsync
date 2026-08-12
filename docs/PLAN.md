@@ -14,11 +14,12 @@ layers, not in the layers themselves.
 ```
   WRITERS                    POLICY                    STORES
   ───────────────────────────────────────────────────────────────────────────
-  Hermes (PDF/photo) ─┐
-  Email worker       ─┤                            ┌─→ Radicale (CalDAV)
-  ICS pollers        ─┼─→   calsync API      ──────┤   accepted events only
-  Scrapers           ─┤   (the ONLY writer)        │   /games  /practices
-  Web UI / manual    ─┘          │                 │   (mirrors iCloud 1:1)
+  Hermes (PDF/photo) ─┐                            ┌─→ Radicale (CalDAV)
+  Email worker       ─┤                            │   accepted events only
+  ICS pollers        ─┼─→   calsync API      ──────┤   /games  /practices
+  Scrapers           ─┤   (the ONLY writer)        │   (mirrors iCloud 1:1)
+  Matrix bot         ─┤          │                 │
+  Web UI (feeds)     ─┘          │                 │
                                  │                 │
                      dedup, validation,            └─→ SQLite
                      is_game routing,                  raw docs, extractions,
@@ -59,8 +60,14 @@ validation, timezone rules, confidence gating, and provenance capture happen in
 exactly one place. If an agent can write straight to the calendar, all of that
 becomes advisory, and the review queue stops meaning anything.
 
-**The middleware, API, and web UI are one service.** Radicale runs alongside as
-a separate process. Don't build three deployables.
+**The middleware, API, and web UI are one service.** Radicale and the Matrix
+bot run alongside as separate processes. Don't build five deployables.
+
+**The Matrix room is the daily interface** ([MATRIX.md](MATRIX.md)): capture
+(drop a PDF or photo), review (👍 to approve), amendments from pasted coach
+messages, and alerting. The web UI owns configuration — adding a feed and
+binding it to a kid and sport, venue pin placement, the adoption table, source
+health. Chat for the loop you run daily, web for the things you set up once.
 
 ## 3. What's missing
 
@@ -351,6 +358,12 @@ sync_state        (uid, target, calendar, origin, remote_uid, etag,
                    last_synced_hash)   -- origin: ingested | adopted
 adoptions         (uid, calendar, icloud_uid, matched_proposal_id, score,
                    tier, adopted_at, adopted_by, original_ics)
+tasks             (id, type, event_uuid, context_json, state, token_hash,
+                   expires_at, resolved_by, result_json)
+amendments        (id, source_document_id, selector_json, patch_json,
+                   rationale, applied_at, applied_by, prior_ics, undone_at)
+overrides         (id, event_uuid, field, value, amendment_id,
+                   applied_at, expires_at, cleared_at)
 ```
 
 Three notes:
@@ -407,14 +420,21 @@ risky part and everything else stacks on top of it.
 **Phase 1.5 — Venue pipeline.** Alias table, LLM disambiguation, geocoder,
 pin confirmation UI. Small, and it's most of the perceived day-to-day value.
 
-**Phase 2 — Hermes + review queue.** Point Hermes at the proposals endpoint.
-Raw document storage, confidence scoring, idempotency, `pending_review`. First
-real UI: review + approve, with the source PDF rendered alongside.
+**Phase 2 — Hermes + Matrix bot + review.** `calsync_bot` in the room, task
+dispatch to Hermes, document/photo capture from chat, reaction-based approval.
+Raw document storage, confidence scoring, idempotency, `pending_review`. The
+room is the review surface; no web UI needed yet.
 
-**Phase 2.5 — Email ingestion.** Same proposal path, different producer.
+**Phase 2.5 — Amendments + overrides.** Pasted coach messages patching live
+events, with the override layer so source polls don't revert them
+([MATRIX.md §4](MATRIX.md)). Do not ship amendments without overrides — they
+flap.
 
-**Phase 3 — Web UI proper.** Feed management, source health dashboard, venue
-and alias editing, child/activity mapping.
+**Phase 2.75 — Email ingestion.** Same proposal path, different producer.
+
+**Phase 3 — Web UI.** Feed management (add a feed, bind it to a kid and sport),
+venue pin placement, adoption table, source health dashboard. Configuration,
+not daily driving.
 
 **Phase 4 — Dedup and merge.** Multi-source overlap, trust ranking, conflict
 surfacing. Deliberately after Phase 3, because you need the UI to inspect
