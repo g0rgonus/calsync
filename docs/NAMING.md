@@ -114,12 +114,19 @@ rendered if the field is actually populated:
 
 ```
 Soccer · Rush (U10DA)                          ← activity config
-8v8 Festival Club Kickoff (2 games)            ← upstream DESCRIPTION
+Kickoff 10:00 ET                               ← venue-local time, always
+8v8 Festival Club Kickoff (2 games)            ← upstream DESCRIPTION,
+                                                 only if it differs from SUMMARY
 Kit: white                                     ← relay/manual only (see below)
 Arrive: 13:15                                  ← relay/manual only
 Source: Player360 feed, 2026-08-09             ← provenance
 Manage: https://calsync.<tailnet>.ts.net/events/3f9c1a2e
 ```
+
+**Venue-local time is always stated**, because Apple renders events in the
+device's timezone. Anyone reading the calendar from another timezone otherwise
+sees a time that isn't the kickoff — quietly misleading rather than obviously
+wrong.
 
 **Kit and arrival time are not in any feed.** Player360 publishes neither
 ([sources/player360.md](sources/player360.md)), and no ICS source is likely to.

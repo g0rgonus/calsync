@@ -189,21 +189,23 @@ data detector linkifies the street address inside `LOCATION` on its own. What
 it can't do is name the child, unify swim and soccer into one place, apply
 alarm policy, or drop a pin on the right corner of the park.
 
-## Trap 5: verify the feed's UTC is actually right
+## Trap 5: always state venue-local time in the body
 
-The Beach FC match is `DTSTART` 14:00Z, which is 10:00 EDT at a Yorktown venue
-— plausible for a Saturday U10 match. In the screenshot it displays as
-08:00–09:00 because the device was in a UTC-6 zone at the time, with Apple
-correctly re-rendering the absolute instant.
+**The feed's UTC is correct — verified.** `DTSTART` 14:00Z is a 10:00 EDT
+kickoff at the Yorktown venue, confirmed against the real schedule. The
+screenshot showed 08:00 only because the device was in Mountain time; Apple was
+correctly re-rendering the absolute instant. No systematic offset, nothing to
+fix in the adapter.
 
-Two things follow:
+But it's a standing readability problem rather than a one-off: Apple renders in
+the *device's* timezone, so any family member away from Eastern sees a time
+that isn't the kickoff time. Glancing at "08:00" and reasoning about when to
+call, or whether it's already over, goes wrong quietly.
 
-- **Confirm once that 10:00 ET is the real kickoff.** If 360Player has the
-  wrong timezone configured on their end, every event is systematically offset
-  and everything downstream inherits it. Cheap to check against one known game.
-- **Travel makes calendar times read oddly**, unavoidably and correctly. If
-  that bites, put venue-local time in `DESCRIPTION` ("Kickoff 10:00 ET") — the
-  body is free, unlike the title.
+**Put venue-local time in `DESCRIPTION` unconditionally** — `Kickoff 10:00 ET`.
+Don't try to detect travel and add it conditionally; that's state to get wrong,
+and the line costs nothing when you're at home. The body is free, unlike the
+title.
 
 ## Trap 6: the feed carries past events, and `from` is frozen
 
