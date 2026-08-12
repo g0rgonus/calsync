@@ -28,7 +28,7 @@ space — on something already on screen.
 
 | Field | Rule |
 |---|---|
-| `kids` | First names. Multiple → joined with `+`, **always in a fixed order** (birth order), so titles are stable. 3+ or whole-family → `Family`. |
+| `kids` | One kid → full first name. Two → initials joined with `+` (`P+J`). All three → `Kids`. Multi-kid forms are **always in birth order**, so titles never flip. |
 | `emoji` | One per sport: ⚽️ 🏀 ⚾️ 🏐 🏊 🎾. Disambiguates when a kid plays more than one. |
 | `detail` | **Games:** `vs Opponent` (home) or `@ Opponent` (away) when the source carries an opponent — Player360 doesn't, so fall back to a trimmed upstream `SUMMARY`. **Everything else:** an explicit type label — `Practice`, `Photos`, `Banquet`, `Tryouts` — prefixed with the team short name only if that kid has more than one team this season. Never empty. See §5. |
 
@@ -50,7 +50,8 @@ the rule only binds on long opponent or tournament names.
 | Practices | `Patrick 🏊‍♂️ Practice` | fits |
 | Practices | `James ⚽️ Practice` | fits |
 | Practices | `James ⚽️ Minicamp` | fits — upstream label wins |
-| Practices | `James+Patrick ⚽️ Practice` | `James+Patrick…` |
+| Practices | `P+J ⚽️ Practice` | fits |
+| Practices | `Kids ⚽️ Practice` | fits |
 | Games | `James ⚽️ Fall Classic R1` | `James ⚽️ Fall…` |
 
 Dropping the venue means most titles still fit **without truncation** even with
@@ -63,6 +64,20 @@ normal case for a swim PDF.
 
 `vs` = home, `@` = away. Universal convention, instantly readable, costs one
 character.
+
+### Why multi-kid uses initials
+
+`Patrick+James` is 13 characters before the emoji even starts, so week view
+truncates to `Patrick+Jame…` — **losing the sport emoji**, which is the field
+doing the disambiguation work. `P+J` keeps it visible.
+
+Single-kid events keep the full name, since that's the common case and it fits
+comfortably. The small readability cost of initials lands on the rarer form,
+which is the right way round.
+
+This works because Patrick, James, and Millie have distinct initials. A fourth
+kid whose name starts with P, J, or M breaks it — fall back to two-letter
+abbreviations (`Pa+Pe`) at that point, not to full names.
 
 ### Practices say "Practice"
 

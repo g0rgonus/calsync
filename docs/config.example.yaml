@@ -3,20 +3,32 @@
 # Filled in from the one verified source so far: James's U10DA Player360 feed
 # (docs/sources/player360.md). Values marked TODO still need answers.
 
+# color is web-UI only — the iCloud calendars are split by event type, not by
+# child, so Apple Calendar colors events by calendar rather than by kid.
 children:
   - id: james
     name: James
+    initial: J                   # used in 2-kid titles ("P+J"); must be
+                                 # unique across children
     nicknames: [Jamie, J]        # TODO: confirm — used to spot him in
                                  # hand-created titles during adoption
     birth_order: TODO            # fixes ordering in multi-kid titles
-                                 # ("James+Patrick" must never flip)
+                                 # ("P+J" must never render as "J+P")
     color: "#2f6fdb"
 
   - id: patrick
     name: Patrick
+    initial: P
     nicknames: [TODO]
     birth_order: TODO
     color: "#d9663d"
+
+  - id: millie
+    name: Millie
+    initial: M
+    nicknames: [TODO]
+    birth_order: TODO
+    color: "#3da36b"
 
 activities:
   - id: james-soccer-rush
