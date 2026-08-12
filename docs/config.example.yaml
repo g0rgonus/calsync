@@ -96,6 +96,8 @@ sources:
       detail_from: summary              # no opponent field in this feed
       venue_from: location
       description_from: description
+      # feed carries no kit/uniform or arrival-time field; those come from the
+      # relay path or manual entry only
       url_from: url
 
       # Player360 sets SEQUENCE = unix(LAST-MODIFIED) and touches every event

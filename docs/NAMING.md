@@ -106,15 +106,29 @@ never mix.
 
 ## 2. Other fields
 
-**`DESCRIPTION`** — everything that doesn't fit the title:
+**`DESCRIPTION`** — everything that doesn't fit the title. Each line is only
+rendered if the field is actually populated:
 
 ```
-Soccer · Rush (U10DA)
-Arrive 13:15 (45 min before kickoff)
-Uniform: white
-Source: Player360 feed, 2026-08-09 · confidence 0.91
+Soccer · Rush (U10DA)                          ← activity config
+8v8 Festival Club Kickoff (2 games)            ← upstream DESCRIPTION
+Kit: white                                     ← relay/manual only (see below)
+Arrive: 13:15                                  ← relay/manual only
+Source: Player360 feed, 2026-08-09             ← provenance
 Manage: https://calsync.<tailnet>.ts.net/events/3f9c1a2e
 ```
+
+**Kit and arrival time are not in any feed.** Player360 publishes neither
+([sources/player360.md](sources/player360.md)), and no ICS source is likely to.
+They can only arrive through the relay path — a coach message pasted into the
+Matrix room — or manual entry, so treat them as optional event fields that are
+usually absent, and never render an empty label.
+
+Both are worth having as first-class fields rather than free text, because
+"which jersey" is a genuine morning-of question and an amendment can set it
+across a date range in one message ("white kit for all home games in October").
+Keep them out of the title: the budget is tight, and the answer matters on the
+morning rather than at a glance a week out.
 
 **`URL`** — link back to the calsync event page. Apple Calendar renders it as a
 tappable link, which gives you a one-tap path to the source PDF when something
