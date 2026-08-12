@@ -211,8 +211,7 @@ POST /v1/amendments/{id}/undo
                 "from": "2026-09-14", "to": "2026-09-20" },
   "patch":    { "venue_raw": "Aquatic Center East" },
   "rationale": "Coach message: main pool closed for maintenance",
-  "source_document_id": "doc_01J9…",
-  "sticky_until": "2026-09-21"
+  "source_document_id": "doc_01J9…"
 }
 ```
 
@@ -221,8 +220,10 @@ POST /v1/amendments/{id}/undo
 - **Patches carry `venue_raw`, never coordinates.** Venue resolution stays
   server-side.
 - Every amendment stores prior VEVENTs and is undoable.
-- Amendments become **overrides** that survive later source syncs — see
-  [MATRIX.md §4](MATRIX.md). Without this the next poll reverts them.
+- Amendments are recorded as **tier-1 field contributions**, not a separate
+  override layer — see [MATRIX.md §4](MATRIX.md). Trust resolution keeps them
+  from being clobbered by a stale poll or by re-running extraction over the
+  original document.
 
 ## Sources & health
 

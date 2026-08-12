@@ -110,6 +110,12 @@ on reactions (👍/👎) rather than command syntax.
 Pasted text against **already-published events**. Higher risk than a proposal,
 because it mutates what's already on four people's phones.
 
+For document-sourced activities this is not a convenience path, it's *the*
+change channel. Swim's season comes from a PDF and every subsequent change
+arrives by email or text — there is no feed that will ever carry the new pool.
+If this path doesn't work well, swim schedules are wrong for the rest of the
+season.
+
 ```
 1. Paste.    Bot stores the message as a raw_document
              (source: matrix, sender MXID, room, event_id). Full provenance.
@@ -127,8 +133,7 @@ POST /v1/amendments
                 "from": "2026-09-14", "to": "2026-09-20" },
   "patch":    { "venue_raw": "Aquatic Center East" },
   "rationale": "Coach message: main pool closed for maintenance",
-  "source_document_id": "doc_01J9…",
-  "sticky_until": "2026-09-21"
+  "source_document_id": "doc_01J9…"
 }
 ```
 
@@ -155,33 +160,54 @@ Store the prior VEVENT for every touched event and support
 
 ---
 
-## 4. The stickiness trap
+## 4. Amendments are a high-trust source, not an override layer
 
-**This is the one that will bite you.**
+An earlier draft of this doc specced an `overrides` table with expiry, on the
+assumption a poller would keep re-asserting the old value. That's wrong for
+swim: swim is a **PDF ingest** whose changes arrive by email or text. The
+document was read once and nothing re-asserts it, so there's no poll to fight
+and nothing to expire.
 
-Hermes amends swim practice to Aquatic Center East. Fifteen minutes later the
-ICS poller runs, the upstream feed still says the main pool, and the sync
-faithfully reverts everything. Then someone re-pastes, and it flaps.
-
-Amendments must be recorded as **overrides that survive subsequent source
-syncs**:
+Model an amendment as what it is — **a contribution from the highest-trust
+source** — and the existing trust ranking ([PLAN.md §B3](PLAN.md)) resolves
+everything with no new machinery:
 
 ```
-overrides(id, event_uuid, field, value, source_document_id,
-          applied_at, expires_at, cleared_at, amendment_id)
+field value := highest trust tier wins;
+               within a tier, most recent wins
 ```
 
-Sync order becomes: **apply source data → apply live overrides on top → diff →
-push.** An override wins over the feed until one of:
+A coach message relayed by a human is tier 1. A poller re-asserting a stale
+venue is tier 3 and loses. A re-extraction of the original PDF carries that
+*document's* timestamp, not today's, so replaying extraction with a better
+prompt can't clobber a newer amendment.
 
-- `expires_at` passes (default: end of the amendment's date range — an override
-  should not outlive the week it was about),
-- the source itself changes to match, at which point the override is redundant
-  and gets cleared automatically,
-- you clear it explicitly.
+That last point matters more than it looks: re-running extraction over stored
+raw documents is a first-class feature ([PLAN.md §A4](PLAN.md)), and a naive
+implementation would silently wipe every amendment on the next replay.
 
-Post a note to the room when an override expires or gets superseded, so a
-silently-reverted venue is never a surprise on a Saturday morning.
+### The one case that still needs a decision
+
+A **revised PDF** arrives in October, lower trust tier than the amendment but
+genuinely newer information. Rule:
+
+> When a lower-tier source produces a value that is both newer than the current
+> winner and different from it, **do not silently pick either** — flag it to
+> review and post it to the room.
+
+Same principle as everywhere else: automatic when unambiguous, human when not.
+
+### What replaces expiry
+
+Nothing. The date-bounded selector already scoped the amendment to specific
+event UUIDs — "the week of the 14th" touched exactly those events, and once
+that week is past there's nothing left to expire. The bound on the selector is
+the bound on the amendment.
+
+```
+field_contributions(event_uuid, field, value, source_id, trust_tier,
+                    observed_at, contribution_id, superseded_by)
+```
 
 ---
 

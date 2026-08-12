@@ -85,6 +85,25 @@ whiteboard or a paper schedule in a group chat. Same extraction pipeline,
 vision input. Cheap to add if the pipeline takes bytes + mimetype rather than
 "a PDF."
 
+**A3a. Source *shape* matters as much as source tier.** Independent of how you
+fetch it, a source is one of:
+
+- **`feed`** — polled, re-asserts full state every run (ICS, API). Changes
+  arrive through the feed itself.
+- **`document`** — read once, never re-asserts (a season PDF). Changes arrive
+  *out of band*: email, text, a coach's message pasted into chat.
+- **`relay`** — human-forwarded messages. The change channel for document
+  sources.
+
+Swim is `document` + `relay`: the season comes from a PDF, every subsequent
+change comes by email or text. That combination is probably the common case for
+youth sports, not the exception — and it means the amendment path
+([MATRIX.md §3](MATRIX.md)) isn't a convenience feature, it's the only way swim
+stays correct after week one.
+
+Shape drives conflict resolution (§B3), health monitoring (§D1), and whether
+an activity needs a working relay path at all.
+
 **A3. Source capability tiering.** Write the adapter interface so each source
 declares which tier it supports, and always prefer the highest:
 
@@ -136,9 +155,19 @@ these systems quietly fail.
 
 **B3. Source trust ranking for conflict resolution.** When the PDF says 6pm and
 the email says 7pm, something has to decide. Rank sources per activity
-(official API > email from the org > parsed PDF > scrape), prefer recency
-within a tier, and surface unresolved conflicts to the review queue rather
-than silently picking.
+(human-relayed coach message > official API > email from the org > parsed PDF >
+scrape), prefer recency within a tier, and surface unresolved conflicts to the
+review queue rather than silently picking.
+
+This mechanism also absorbs amendments, so they need no separate override
+layer: a pasted coach message is a tier-1 field contribution and simply
+outranks a stale poll. Critically, a **re-extraction carries the original
+document's timestamp**, not today's — otherwise replaying extraction with an
+improved prompt (§A4) would silently wipe every amendment.
+
+The one case needing a human: a lower-tier source producing a value that is
+both newer than the current winner and different from it — a revised PDF in
+October. Don't pick silently; flag it.
 
 **B4. A human review queue.** AI extraction will be wrong sometimes —
 misparsed dates, wrong year, hallucinated venues, a bracket read as a
@@ -244,11 +273,25 @@ and never let a full re-sync fire hundreds of requests in a burst.
 
 ### D. Operations
 
-**D1. Failure notification.** A silent sync failure means a missed game — the
-exact thing this is built to prevent. Track `last_successful_run` per source,
-alarm on staleness (a source that normally updates weekly going quiet for two
-weeks), and push a notification when a scraper breaks or credentials need
-re-auth. Heartbeat the worker itself.
+**D1. Failure notification, and it differs by source shape.** A silent failure
+means a missed game — the exact thing this is built to prevent. But sources
+come in three shapes, and only one of them can be monitored for freshness:
+
+| `shape` | Example | Health signal |
+|---|---|---|
+| `feed` | ICS poller, API | **Staleness.** `last_successful_run` going quiet, HTTP errors, auth expiry. |
+| `document` | Swim season PDF | **Coverage.** A PDF is read once; "no update in 3 weeks" is normal, not an alarm. |
+| `relay` | Coach email, chat paste | **Coverage.** Arrives when it arrives. |
+
+Applying staleness alarming to a document source produces nothing but false
+alarms, and worse, trains you to ignore the channel. The useful signal there is
+a **coverage gap**: *this activity is in season and has no events in the next
+14 days.* That catches the real failure — the swim season rolled into a new
+session and nobody sent you the new PDF — which no amount of polling would ever
+surface.
+
+Alarms go to the Matrix room ([MATRIX.md](MATRIX.md)). Heartbeat the worker
+itself separately.
 
 **D2. Secrets management.** You'll be holding portal logins, OAuth tokens, and
 an iCloud app-specific password. Not `.env` in git — use SOPS+age, 1Password
@@ -341,8 +384,9 @@ these tables have to exist regardless because none of it is a calendar event:
 children          (id, name, nicknames, birth_order, color)
 activities        (id, child_id, name, sport, emoji, short_name,
                    season_start, season_end, tz, alarm_policy)
-sources           (id, activity_id, kind, tier, config_json, secret_ref,
+sources           (id, activity_id, kind, shape, tier, config_json, secret_ref,
                    trust_rank, last_success_at, health)
+                   -- shape: feed | document | relay
 ingest_runs       (id, source_id, started_at, status, error)
 raw_documents     (id, sha256, mimetype, blob_uri, received_at, source_id)
 extractions       (id, raw_document_id, extractor, prompt_version,
@@ -362,8 +406,8 @@ tasks             (id, type, event_uuid, context_json, state, token_hash,
                    expires_at, resolved_by, result_json)
 amendments        (id, source_document_id, selector_json, patch_json,
                    rationale, applied_at, applied_by, prior_ics, undone_at)
-overrides         (id, event_uuid, field, value, amendment_id,
-                   applied_at, expires_at, cleared_at)
+field_contributions(event_uuid, field, value, source_id, trust_tier,
+                   observed_at, contribution_id, superseded_by)
 ```
 
 Three notes:
