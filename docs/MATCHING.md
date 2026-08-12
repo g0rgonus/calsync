@@ -11,32 +11,49 @@ Two problems, one matcher:
 Both are "does this candidate refer to the same real-world event as that
 existing one." Same scoring machinery, different callers and thresholds.
 
-## Ownership modes
+## Scope: calsync manages sourced events only
 
 The `Practices` calendar is really a *kid logistics* calendar. Alongside
 practices it holds haircuts, dentist, orthodontist, birthday parties, school
-concerts — hand-created, with no upstream source, and people will keep adding
-them by hand forever.
+concerts — added by hand, in Calendar.app, in ten seconds, by whoever is
+holding a phone.
 
-That breaks a model where "in `sync_state`" means "calsync owns it." Split
-ownership into three modes:
+**That workflow does not change.** Nobody opens a web app at the house to add
+a haircut. calsync manages events that came from a platform, a PDF, or an
+email; everything else is invisible to it.
 
-| Mode | calsync may | calsync may never |
+| | calsync may | |
 |---|---|---|
-| `sourced` | create, update, cancel | — |
-| `enhance` | add `GEO` / structured location / alarms; prefix a missing child name | rewrite the body text, delete, cancel |
-| `untouched` | read | write anything |
+| **Managed** — in `sync_state`, has an upstream source | create, update, cancel | |
+| **Everything else** — the default | **nothing** | not read into a model, not classified, not enhanced, not touched |
 
-**The delete rule, stated once and absolutely:**
+Two invariants, and they're the whole safety story:
 
-> calsync may cancel or delete an event only when `mode = sourced` **and** its
-> upstream source stopped reporting it. No source, no delete — ever. Not for
-> looking stale, not for failing reconciliation, not for looking orphaned.
+> 1. calsync writes only to UIDs present in `sync_state`.
+> 2. A UID enters `sync_state` only by being created from a source, or by
+>    surviving the one-time adoption pass (§3).
 
-Deletion authority comes from *having a source*, not from being known. A
-haircut has no source, so nothing can ever justify removing it. Stamp
-`X-CALSYNC-MODE` on the event and keep `mode` in `sync_state`, with the
-`sync_state` value authoritative (clients drop unknown `X-` properties).
+Deletion authority follows from having a source: an event is cancelled only
+when its upstream stops reporting it. A haircut has no upstream, so nothing can
+ever justify removing it.
+
+### What this simplification buys
+
+Scoping to sourced events deletes a lot of machinery that was only there to
+make touching manual events safe:
+
+- No enhancement write path, and no risk of a bulk pass firing change
+  notifications at every subscriber on the shared calendar.
+- No ongoing categorization of every event on the calendar — so medical
+  appointment titles for minors never go near a model, local or hosted, because
+  nothing ever needs to look at them.
+- No `enhance` mode, no title-rewrite toggles, no per-event opt-outs.
+- The invariant becomes provable by inspection instead of by argument.
+
+(If you ever want the one genuinely useful piece — silently adding a geocoded
+`GEO` to a hand-typed doctor's address so it's tappable — it's an additive,
+title-preserving flag that can be switched on later. It is **off**, and it
+requires no workflow change on your end. Not part of the build.)
 
 ## Where it runs
 
@@ -146,8 +163,8 @@ table and a few minutes of clicking beats a clever classifier you'll debug for
 an afternoon and use exactly one time.
 
 ```
-adoptions(uid, calendar, icloud_uid, mode, category, matched_proposal_id,
-          score, tier, adopted_at, adopted_by, original_ics)
+adoptions(uid, calendar, icloud_uid, matched_proposal_id, score, tier,
+          adopted_at, adopted_by, original_ics)
 ```
 
 ### Renaming on adopt
@@ -159,74 +176,42 @@ hand-written titles carry detail the extraction didn't capture.
 
 ---
 
-## 3a. Non-sport events: haircuts, dentist, birthday parties
+## 3a. Keeping appointments out of the adoption pass
 
-### Keep them out of adoption entirely
+Adoption is the one moment calsync looks at hand-created events at all, so it's
+the one place an appointment could be mistaken for a practice — and a
+mis-adopted haircut becomes a haircut calsync can later cancel.
 
-An appointment must never match a sports proposal. The scoring mostly handles
-this on its own — "Nora haircut" 5:00pm vs. an ingested 5:30pm soccer practice
-scores ~0.41 (time 0.21 + child 0.20, nothing from sport, venue, or opponent)
-and falls below the 0.50 floor. But "mostly" isn't a safety property, so add
-an explicit gate:
+The scoring mostly handles it already: "Nora haircut" at 5:00 against an
+ingested 5:30 soccer practice scores ~0.41 (time 0.21 + child 0.20, nothing
+from sport, venue, or opponent), under the 0.50 floor. But "mostly" isn't a
+safety property, so gate it explicitly.
 
-**Categorize every unowned event first; only `sport` events are adoption
-candidates.** A keyword list gets you most of the way — `haircut`, `dentist`,
-`ortho`, `doctor`, `checkup`, `appt`, `birthday`, `party`, `sleepover`,
-`recital`, `conference` — with an LLM fallback for the ambiguous remainder.
-Anything not classified `sport` is excluded from matching, full stop.
+**A keyword blocklist excludes an event from candidacy outright:** `haircut`,
+`dentist`, `ortho`, `doctor`, `dr.`, `checkup`, `appt`, `appointment`,
+`birthday`, `party`, `sleepover`, `recital`, `conference`, `therapy`. No model
+involved — a substring match on a fixed list, running once over a bounded
+window at setup. Anything it hits is out, and stays out.
 
-**Run that classification locally.** These titles include medical appointments
-for minors. Category detection belongs on keywords or local Hermes, not shipped
-to an external API. Same rule as venue resolution: the *only* strings that
-should reach a hosted model are venue names for geocoding, and even then, not
-if the title implies a clinic.
+Everything that survives the blocklist still has to clear the score *and* your
+approval, so a false negative in the list costs nothing. That's the right
+asymmetry: the list is a cheap extra floor under a human decision, not a
+classifier anyone depends on.
 
-### Don't retrofit — redirect
+## 4. After setup: flag duplicates, never block or delete
 
-The instinct to run manual events through the tool is right, but retroactive
-rewriting is the wrong shape:
+Once setup is done, everything without a `sync_state` row is human and stays
+that way permanently. Hand-created sports events should become rare — that's
+the point of the system — but someone will still type one in.
 
-- Rewriting text your spouse typed on a shared calendar is surprising, and if
-  they edit it back you get a fight loop.
-- Editing shared events bumps `SEQUENCE` and can fire change notifications to
-  every subscriber. A bulk normalization pass over a season of history would
-  spam the whole family at once.
-- The marginal value is low. "Nora haircut" already reads fine — the naming
-  convention exists to disambiguate *which kid* among a wall of sports events,
-  and hand-typed entries usually already name the kid.
+When an incoming event scores ≥0.50 against an unowned event:
 
-Better: make the web UI a first-class way to *create* these. An appointment
-added through calsync is `sourced` from birth — normalized title, geocoded
-clickable location, right alarms, no retrofitting. Existing entries stay as
-they are. Going forward the good path is also the easy path.
+> **Create it anyway, and flag it.** The review UI shows "this may duplicate an
+> existing entry," with one click to either adopt the manual event (calsync
+> takes it over and drops its own copy) or dismiss the flag.
 
-### For events created outside calsync, enhance conservatively
-
-Your spouse will keep using Apple Calendar, so `enhance` mode has to exist.
-Split it, because the two halves have very different risk:
-
-| Enhancement | Default | Why |
-|---|---|---|
-| Add `GEO` + `X-APPLE-STRUCTURED-LOCATION` from an existing `LOCATION` string | **on** | Additive, invisible, high value — you drive to the pediatrician once a year and don't know the way. |
-| Add a `VALARM` if none exists | **on** | Additive, invisible. |
-| Prefix a missing child name (`Dentist 3pm` → `Jack 🦷 Dentist 3pm`) | **review** | Genuinely useful — an unattributed appointment on a shared calendar is the actual failure case — but it's a text change, so confirm it. Often unattributable, in which case leave it. |
-| Rewrite the title into the naming convention | **off** | Low value, high surprise. |
-
-Enhancement is still a write to a shared calendar, so it goes through the same
-machinery as everything else: `sync_state` row, `original_ics` snapshot,
-`--dry-run` first. And throttle the initial pass — a few events per minute, not
-a season in one burst — so subscribers don't get a notification storm.
-
-## 4. After adoption: collision detection, not adoption
-
-Once setup is done, everything in the calendar without a `sync_state` row is
-assumed human and left alone permanently. But people keep hand-adding events
-after the system is live, so the matcher stays wired in with a different
-outcome:
-
-> Before creating any new event, run the matcher against **unowned** events in
-> the target calendar. Score ≥0.50 → don't create. Send it to review as a
-> collision with a "this may already be on the calendar" flag.
-
-Detection, never silent merge. The cost of a false positive is one review click;
-the cost of a false negative is a duplicate in a calendar four people read.
+Never block creation and never auto-delete the manual one. A missing event is
+worse than a duplicate — same principle as `unknown` routing to Practices
+rather than being withheld. A brief duplicate costs one click; a withheld game
+costs a missed Saturday, and silently deleting something a person typed costs
+you the family's trust in the whole system.
