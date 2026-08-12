@@ -1,0 +1,90 @@
+# calsync configuration — worked example
+#
+# Filled in from the one verified source so far: James's U10DA Player360 feed
+# (docs/sources/player360.md). Values marked TODO still need answers.
+
+children:
+  - id: james
+    name: James
+    nicknames: [Jamie, J]        # TODO: confirm — used to spot him in
+                                 # hand-created titles during adoption
+    birth_order: 1               # TODO: fixes ordering in multi-kid titles
+                                 # ("James+Nora" must never flip)
+    color: "#2f6fdb"
+
+activities:
+  - id: james-soccer-u10da
+    child: james
+    name: U10DA — Rush
+    sport: soccer
+    emoji: "⚽️"
+    short_name: U10DA            # only appears in titles if James picks up a
+                                 # second team; omitted while this is his only one
+    tz: America/New_York         # inferred from Exmore + Yorktown VA venues
+    season: { start: 2026-07-01, end: TODO }
+    alarm_policy:
+      game: 90m                  # away games need travel time
+      practice: 30m
+
+sources:
+  - id: p360-james-u10da
+    activity: james-soccer-u10da
+    kind: player360
+    shape: feed
+    tier: 2                      # ICS export
+    trust_rank: 2                # human relay is 1 and outranks this
+    poll_interval: 20m           # publisher advertises PT5M; 20m is plenty
+
+    # Never store the assembled URL — the token is a bearer credential in the
+    # query string, and `from` goes stale if frozen.
+    url_template: "https://api.360player.com/v1/ics/events.ics\
+      ?token={{secret:p360_token}}\
+      &from={{now-30d|unix}}\
+      &group_ids=68362"
+    secret_ref: p360_token
+
+    sync_window: { back: 7d, forward: 365d }   # don't backfill history into a
+                                               # calendar the family reads
+
+    mapping:
+      uid: passthrough                  # 360Player-event-<id>, stable
+      is_game:
+        match: true
+        practice: false
+        _default: false                 # unseen category → Practices + alarm
+      detail_from: summary              # no opponent field in this feed
+      venue_from: location
+      description_from: description
+      url_from: url
+
+      # Player360 sets SEQUENCE = unix(LAST-MODIFIED) and touches every event
+      # 2-3s after DTEND, so these churn on events that did not change.
+      change_detection: content_hash
+      hash_fields: [DTSTART, DTEND, SUMMARY, LOCATION, CATEGORIES, DESCRIPTION]
+      ignore_fields: [SEQUENCE, LAST-MODIFIED, DTSTAMP]
+      propagate_upstream_sequence: false
+
+    guards:
+      require_valid_vcalendar: true     # empty-but-valid ≠ cancelled
+      require_min_events: 1
+      max_disappearance_pct: 20         # cancellation is signalled only by
+      max_disappearance_count: 3        # disappearance — never mass-process it
+
+    venue_parse:
+      # "Randy Custis Memorial Park 7160 Rescue Ln, Exmore, VA 23350"
+      # -> name="Randy Custis Memorial Park", addr="7160 Rescue Ln, Exmore, VA 23350"
+      split_on_street_number: '^(?<name>.*?)\s+(?<addr>\d+\s+.*)$'
+      on_parse_failure: llm_disambiguate
+
+targets:
+  icloud:
+    account: TODO                # app-specific password in the secret store
+    calendars:
+      games: Games               # TODO: confirm exact calendar names
+      practices: Practices
+      owner: TODO                # you own both, or one is shared *to* you?
+                                 # CalDAV write access depends on it
+
+secrets:
+  backend: sops-age              # or 1password-cli
+  # p360_token, icloud_app_password, geocoder_key

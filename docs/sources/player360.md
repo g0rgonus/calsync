@@ -155,13 +155,19 @@ Same treatment as the iCloud app-specific password.
 
 ## Open questions
 
-1. Does `group_ids` accept a comma-separated list? Even if so, **prefer one
-   feed per (child, activity)** — a feed bound to exactly one pairing needs no
-   per-event child inference.
-2. Is `68362` a team or the whole club? These samples say "Club Kickoff" and
-   "Rush Academy", which reads club-wide. If it spans age groups, some events
-   won't belong to this kid and the binding assumption breaks.
-3. Full `CATEGORIES` vocabulary beyond `match` / `practice`.
-4. Does the token expire?
-5. Confirm cancellation behavior by watching a real one — this is the only
+1. **Resolved:** `group_ids=68362` is James's U10DA team, not the club. The
+   one-feed-per-(child, activity) binding holds, and the generic `SUMMARY`s
+   ("Club Minicamp Kickoff") are club-level *event names* landing in a
+   team-scoped feed — expected, not a scoping error. It does confirm the feed
+   will never identify the child; that comes from the binding.
+2. **Is the token account-scoped or feed-scoped?** If account-scoped, the same
+   token plus a different `group_ids` should return another kid's team — which
+   would make onboarding every Player360 activity a one-credential job. Cheap
+   to test: swap `group_ids` and see whether it 200s.
+3. Does `group_ids` accept a comma-separated list? Even if so, **keep one feed
+   per (child, activity)** — a feed bound to exactly one pairing needs no
+   per-event child inference, and that's the property doing the work.
+4. Full `CATEGORIES` vocabulary beyond `match` / `practice`.
+5. Does the token expire?
+6. Confirm cancellation behavior by watching a real one — this is the only
    trap above that's inferred rather than observed.
