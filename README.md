@@ -11,7 +11,8 @@ covers event title and location conventions, and
 [docs/MATCHING.md](docs/MATCHING.md) covers dedup and adopting the hand-created
 events already in the shared calendars.
 [docs/MATRIX.md](docs/MATRIX.md) covers the Matrix room where calsync, Hermes,
-and you interact.
+and you interact. [docs/sources/](docs/sources/) holds per-source adapter
+notes from the Phase 0 survey.
 
 ## Shape
 

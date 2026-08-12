@@ -113,9 +113,11 @@ declares which tier it supports, and always prefer the highest:
 4. Email notifications.
 5. Manual upload.
 
-**Do the source survey before writing code.** For TeamReach and Player360
-specifically, do not assume an API exists — check for an ICS export in team
-settings first, then fall back to email. Scrapers for these are tier 3 for a
+**Do the source survey before writing code.** Player360 is **confirmed** to
+publish a token'd ICS feed — findings and adapter notes in
+[sources/player360.md](sources/player360.md). For TeamReach, do not assume an
+API exists — check for an ICS export in team settings first, then fall back to
+email. Scrapers for these are tier 3 for a
 reason: they break on every UI change, may violate ToS, and MFA will lock you
 out eventually. Treat any scraper as a temporary bridge with a known expiry.
 
@@ -152,6 +154,21 @@ case, not the edge case. An event needs a version chain so "6pm game moved to
 Related: **cancellation tombstones**. A rain-out must propagate a *delete* to
 iCloud. Naive one-way sync only ever adds, which is the single most common way
 these systems quietly fail.
+
+**Never trust upstream change signals.** Player360 sets `SEQUENCE` equal to
+`unix(LAST-MODIFIED)` and touches every event 2–3 seconds after it ends, so
+both fields churn on events that did not change
+([sources/player360.md](sources/player360.md)). Diff on our own content hash
+over the fields we care about, and manage our own `SEQUENCE` rather than
+propagating theirs — otherwise subscribers get change notifications for games
+that already happened.
+
+**Silent cancellation needs a mass-disappearance guard.** Feeds may signal
+cancellation only by dropping the event, which makes a truncated or
+wrong-scope `200` response indistinguishable from "the season was cancelled."
+Before any delete path goes live: require a structurally valid `VCALENDAR`,
+and if a poll shows >20% of an activity's known future events missing (or >3
+in one poll), cancel nothing, hold prior state, and alarm.
 
 **B3. Source trust ranking for conflict resolution.** When the PDF says 6pm and
 the email says 7pm, something has to decide. Rank sources per activity

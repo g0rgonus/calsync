@@ -25,7 +25,7 @@ Segments are omitted cleanly when empty — no dangling separators.
 |---|---|
 | `kids` | First names. Multiple → joined with `+`, **always in a fixed order** (birth order), so titles are stable. 3+ or whole-family → `Family`. |
 | `emoji` | One per sport: ⚽️ 🏀 ⚾️ 🏐 🏊 🎾. Disambiguates when a kid plays more than one. |
-| `detail` | Games: `vs Opponent` (home) or `@ Opponent` (away). Routine practice: team short name, **only if** that kid has more than one team this season — otherwise omitted. Any other non-game event: a short type label (`Photos`, `Banquet`, `Tryouts`). See §5. |
+| `detail` | Games: `vs Opponent` (home) or `@ Opponent` (away) **when the source carries an opponent** — Player360 doesn't, so fall back to a trimmed upstream `SUMMARY`. Routine practice: team short name, **only if** that kid has more than one team this season — otherwise omitted. Any other non-game event: a short type label (`Photos`, `Banquet`, `Tryouts`). See §5. |
 | `venue_short` | Canonical short name from the venue table — `Riverside #4`, not the street address. Address goes in `LOCATION`. |
 
 ### The 12-character rule
@@ -187,6 +187,12 @@ in the review queue. A non-clickable location beats a wrong pin.
 ---
 
 ## 5. Calendar routing
+
+Where a feed states the type, routing is a lookup, not a classifier —
+Player360 gives `CATEGORIES:match` / `CATEGORIES:practice`
+([sources/player360.md](sources/player360.md)). Treat such vocabularies as
+open: route unseen values to Practices, the safe default, and alarm once so
+the mapping gets extended.
 
 Routing is a single predicate:
 
