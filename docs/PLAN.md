@@ -131,28 +131,43 @@ RRULEs carefully or expand to concrete instances — for youth sports, expansion
 is usually safer, because half of a "recurring" practice series gets
 individually moved anyway.
 
-**B6. Venue normalization with real addresses.** Put a full geocoded address in
-the calendar `LOCATION` field, not "Field 4." That's what makes Apple Maps
-travel-time alerts work, which is most of the day-to-day value. Keep a venue
-table with aliases — "Riverside #4", "Riverside Park Field 4", and "RP4" are
-one place.
+**B6. Venue normalization with real coordinates.** Full spec in
+[NAMING.md §4](NAMING.md). Short version: `LOCATION` needs a real address plus
+`GEO` and `X-APPLE-STRUCTURED-LOCATION` to render as a tappable map with
+travel-time alerts. Coordinates matter more than the address — "Field 4" is a
+corner of a large park, and the park's street address routes you to the wrong
+entrance. LLMs disambiguate the string; a real geocoder produces the lat/lon; a
+human confirms the pin once per venue. Never let a model emit coordinates.
+
+**B7. Event `kind` classification is now load-bearing.** Because the iCloud
+calendars are split by type, every event must be classified `game` /
+`practice` / other *before* it can be routed anywhere. This is a required
+extraction field, not an optional one.
 
 ### C. Delivery to iCloud
 
-**C0. With Radicale as the store, you may not need iCloud at all — at first.**
-iOS and macOS can add a CalDAV account directly (Settings → Calendar →
-Accounts → Add Account → Other → Add CalDAV Account) pointed at Radicale over
-Tailscale. That's real two-way sync, native alerts, native colors, zero sync
-code. **Do this in Phase 1 and defer the iCloud push**, which is the most
-dangerous code in the project.
+**C0. iCloud push is required early — it is not deferrable.** Earlier revisions
+of this doc suggested adding Radicale directly as a phone CalDAV account and
+putting off the iCloud work. That assumed no sharing was set up. It is:
+`Practices` and `Games` already exist in iCloud and are already shared with
+family. A Radicale-direct account only reaches devices on the tailnet, and it
+can't reuse the sharing that already works. iCloud is the delivery target from
+Phase 1.
 
-You'll still want the iCloud path eventually, for reasons worth knowing up
-front: family members who won't install Tailscale, reliability when the home
-box is down (CalDAV clients cache, but stale), and iCloud family sharing. Build
-it when you hit one of those, not before.
+Radicale-direct is still worth adding for yourself as a staging and debugging
+surface — it shows you exactly what the store holds before it's pushed — but
+it's a developer convenience, not the delivery path.
 
-**C1. When you do add iCloud, you probably don't need the Mac.** Three options,
-in order:
+**Consequence: the calendar axis is event type, not child.** Kid identity has
+to live in the event title. See [NAMING.md](NAMING.md).
+
+**Consequence: the target calendars already contain human-created events.**
+The "never touch what we didn't create" invariant (C3) is now the highest-risk
+item in the project — a sync bug deletes your spouse's entries, in a calendar
+several people rely on. Treat `sync_state` as the only ownership authority and
+ship `--dry-run` before any write path goes live.
+
+**C1. You probably don't need the Mac.** Three options, in order:
 
 - **CalDAV directly to `caldav.icloud.com` with an app-specific password.**
   Runs server-side, no Mac awake, no TCC permission prompts, no breakage on
@@ -333,11 +348,17 @@ settings? Does it email? Write the findings down. This determines how much of
 the rest is even needed — if three of your five sources turn out to have ICS
 exports, the AI ingestion layer becomes a fallback rather than the centerpiece.
 
-**Phase 1 — Radicale + API + one source.** Stand up Radicale, the API with
-`/documents`, `/proposals`, `/events`, and one ICS poller. Add the Radicale
-account directly to your phone. No iCloud push, no UI, no AI. You get real
-events on your device at the end of this phase, and the dangerous iCloud code
-is deferred.
+**Phase 1 — Radicale + API + one source + iCloud push.** Stand up Radicale, the
+API (`/documents`, `/proposals`, `/events`), one ICS poller, the title renderer,
+and the iCloud CalDAV writer with `sync_state` and `--dry-run`. Run dry against
+the real shared calendars for a week before enabling writes. No UI, no AI yet.
+
+This phase is bigger than the previous draft because the iCloud writer moved
+into it, but it's the right scope: the write path is the risky part and
+everything else stacks on top of it.
+
+**Phase 1.5 — Venue pipeline.** Alias table, LLM disambiguation, geocoder,
+pin confirmation UI. Small, and it's most of the perceived day-to-day value.
 
 **Phase 2 — Hermes + review queue.** Point Hermes at the proposals endpoint.
 Raw document storage, confidence scoring, idempotency, `pending_review`. First
@@ -352,9 +373,8 @@ and alias editing, child/activity mapping.
 surfacing. Deliberately after Phase 3, because you need the UI to inspect
 merges.
 
-**Phase 5 — Distribution.** iCloud push (when you hit a Radicale-direct limit
-from §C0), tokenized ICS feeds for family, alarm policies, school calendars,
-digests.
+**Phase 5 — Distribution.** Tokenized ICS feeds for family outside the iCloud
+share, alarm policies, school calendars, digests.
 
 Scrapers get built only when a specific source justifies one, and each is
 written expecting to be thrown away.
@@ -365,8 +385,15 @@ written expecting to be thrown away.
    Phase 0.)
 2. Is the Mac a hard requirement, or was it just the path you knew? CalDAV
    server-side is more reliable if you're open to it.
-3. Google Calendar mirror for family visibility — wanted, or is iCloud + ICS
-   feeds enough?
-4. Who else needs read access, and on what devices?
-5. Is "our calendars are read-only mirrors, edits happen in the web UI"
-   acceptable, or do you need write-back from iCloud?
+3. Kids' first names and a fixed ordering, plus which sports each plays — needed
+   to pin down the title convention and emoji map.
+4. Where do team events that are neither practice nor game go — photos, banquet,
+   tryouts? Third calendar, folded into Practices, or dropped?
+5. Do the existing `Practices` / `Games` calendars already contain hand-entered
+   events for these same activities? If so, Phase 1 needs a one-time
+   reconciliation pass, not just a clean write path.
+6. Are you the owner of both shared calendars, or is one shared *to* you? Write
+   access via CalDAV depends on it.
+7. Is "our events are read-only mirrors, corrections happen in the web UI"
+   acceptable? Family members editing a shared event in Apple Calendar will get
+   reverted on next sync.

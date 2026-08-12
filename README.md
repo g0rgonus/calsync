@@ -6,7 +6,8 @@ iCloud calendars.
 
 Status: **planning**. See [docs/PLAN.md](docs/PLAN.md) for the architecture,
 gap analysis, and phased roadmap, and [docs/API.md](docs/API.md) for the
-write API that agents and pollers code against.
+write API that agents and pollers code against. [docs/NAMING.md](docs/NAMING.md)
+covers event title and location conventions.
 
 ## Shape
 

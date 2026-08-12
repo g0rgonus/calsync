@@ -191,6 +191,17 @@ POST /v1/sources/{id}/poll           # manual trigger
 
 ## Notes for agent implementers
 
+- **Don't send a display title.** `SUMMARY` is rendered server-side from
+  structured fields ([NAMING.md](NAMING.md)). Send `title` as the raw opponent
+  or description only; the API composes `Nora ⚽️ vs Northside · Riverside #4`.
+  This is what lets the naming convention change without re-extracting anything.
+- **`kind` is required**, not optional — it routes the event to the `Practices`
+  or `Games` calendar. If you can't tell, send `"kind": "unknown"` and it goes
+  to review. Guessing sends it to the wrong shared calendar.
+- **Send `venue_raw` verbatim.** Don't clean it up, don't expand abbreviations,
+  and never emit `lat`/`lon` — venue resolution is a server-side pipeline with
+  an alias cache and a real geocoder. `RP Field 4` is more useful to it than
+  your best guess at a full address.
 - Send RFC3339 with offset **and** the IANA `tz`. The offset alone loses the
   DST rule, which matters for a season crossing November.
 - One proposal per event occurrence. Don't send RRULEs — the API expands and
