@@ -12,10 +12,10 @@ covers event title and location conventions.
 ## Shape
 
 ```
-Hermes (PDF/photo) ─┐
-email worker       ─┼─→ calsync API ─→ Radicale (CalDAV)  ─→ phone, direct
-ICS pollers        ─┤   (only writer)  SQLite (raw docs,  ─→ iCloud (later)
-web UI / manual    ─┘        │          proposals, sync)  ─→ ICS feeds
+Hermes (PDF/photo) ─┐                                    ┌─→ iCloud: Games
+email worker       ─┼─→ calsync API ─→ Radicale (CalDAV) ─┼─→ iCloud: Practices
+ICS pollers        ─┤   (only writer)  SQLite (raw docs, ─┤   (shared w/ family)
+web UI / manual    ─┘        │          proposals, sync)  └─→ ICS feeds
                        review queue
 ```
 
