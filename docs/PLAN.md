@@ -28,13 +28,31 @@ layers, not in the layers themselves.
                                  │
                                  ▼
                           review queue ──→ web UI
-                                                          CONSUMERS
-                                 Radicale                 iCloud: Games      ─┐
-                                    │                     iCloud: Practices  ─┼→ family
-                                    ├─→ iCloud push ────→ (already shared)    ┘
-                                    ├─→ tokenized ICS ──→ outside the share
-                                    └─→ your own devices, direct (staging/debug)
+
+  ── calsync's responsibility ends at Radicale ──────────────────────────────
+
+  Radicale ──→ [Mac sync tool] ──→ iCloud: Games      ─┐
+   /games          separate           iCloud: Practices ─┼→ family
+   /practices      component          (already shared)   ┘
 ```
+
+**calsync writes to Radicale and stops there.** A separate tool on the Mac
+reads Radicale and syncs into the shared iCloud calendars. That boundary
+matters for where the safety machinery lives:
+
+| Concern | Owner |
+|---|---|
+| Feed polling, extraction, normalization, titles, venues | calsync |
+| Mass-disappearance guard on a *feed* | calsync |
+| Radicale collections `/games`, `/practices` | calsync |
+| iCloud CalDAV credentials and ETags | Mac tool |
+| Never deleting hand-created iCloud events | **Mac tool** |
+| Adoption of existing hand-created events | **Mac tool** |
+| Unsubscribing "360Player Event calendar" at cutover | Mac tool |
+
+calsync therefore needs no iCloud credential at all, and the highest-risk
+code in the project — writing to a shared calendar four people read — sits
+behind a boundary where it can be built and tested separately.
 
 Radicale collections **mirror the iCloud calendars 1:1** (`/games`,
 `/practices`) rather than splitting by child. Sync becomes a straight

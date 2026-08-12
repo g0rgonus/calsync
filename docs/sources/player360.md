@@ -72,8 +72,19 @@ So `SUMMARY` is not one format but at least two, and parsing is worth doing:
 ^(?<team>\S+)\s+(?<league>\S+)\s+Match\s+vs\.?\s+(?<opponent>.+)$
 ```
 
-On a match, use the captured opponent; on a miss, fall back to the trimmed
-`SUMMARY` as before. That yields the ideal title form for league games and
+On a match, use the captured opponent. On a miss, **strip known tokens** —
+`name`, `official_name`, `aliases`, `age_group`, `league` — from `SUMMARY` and
+use what remains, collapsing whitespace. Deterministic, no LLM, no cleverness:
+
+| `SUMMARY` | strip | detail |
+|---|---|---|
+| `U10DA Practice` | `U10DA` | `Practice` |
+| `Super 8v8 Festival Rush Kickoff` | `Rush` | `Super 8v8 Festival Kickoff` |
+| `Club Minicamp Kickoff` | — | `Club Minicamp Kickoff` |
+
+Routine practices already say `Practice` upstream, so `James ⚽️ Practice` falls
+out of the same rule that produces `Patrick 🏊‍♂️ Practice` — no special case
+needed, and upstream still wins whenever it says something more specific. That yields the ideal title form for league games and
 degrades gracefully for club events:
 
 ```
