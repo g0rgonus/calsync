@@ -44,6 +44,9 @@ activities:
       - Rush Academy             # observed in the feed DESCRIPTION
     sport: soccer
     emoji: "⚽️"
+    league: TASL                 # appears in league-match SUMMARY strings
+    age_group: U10               # used to strip the redundant suffix from
+                                 # opponents ("Beach FC U10" -> "Beach FC")
     tz: America/New_York         # inferred from Exmore + Yorktown VA venues
     season: { start: 2026-07-01, end: TODO }
     alarm_policy:
@@ -93,7 +96,15 @@ sources:
         match: true
         practice: false
         _default: false                 # unseen category → Practices + alarm
-      detail_from: summary              # no opponent field in this feed
+      # SUMMARY has at least two formats. League matches embed the opponent:
+      #   "U10DA TASL Match vs Beach FC U10"
+      # Club events don't: "Super 8v8 Festival Rush Kickoff"
+      summary_parse:
+        - name: league_match
+          pattern: '^(?<team>\S+)\s+(?<league>\S+)\s+Match\s+vs\.?\s+(?<opponent>.+)$'
+          sets: [opponent]
+          strip_opponent_age_suffix: true   # only when it matches age_group
+      detail_from: [parsed_opponent, summary]   # first non-empty wins
       venue_from: location
       description_from: description
       # feed carries no kit/uniform or arrival-time field; those come from the

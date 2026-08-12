@@ -30,7 +30,7 @@ space — on something already on screen.
 |---|---|
 | `kids` | One kid → full first name. Two → initials joined with `+` (`P+J`). All three → `Kids`. Multi-kid forms are **always in birth order**, so titles never flip. |
 | `emoji` | One per sport: ⚽️ 🏀 ⚾️ 🏐 🏊 🎾. Disambiguates when a kid plays more than one. |
-| `detail` | **Games:** `vs Opponent` (home) or `@ Opponent` (away) when the source carries an opponent — Player360 doesn't, so fall back to a trimmed upstream `SUMMARY`. **Everything else:** an explicit type label — `Practice`, `Photos`, `Banquet`, `Tryouts` — prefixed with the team short name only if that kid has more than one team this season. Never empty. See §5. |
+| `detail` | **Games:** `vs Opponent` (home) or `@ Opponent` (away) when the opponent is derivable — for Player360 that means parsing it out of `SUMMARY` on league matches ([sources/player360.md](sources/player360.md)); otherwise fall back to a trimmed upstream `SUMMARY`. **Everything else:** an explicit type label — `Practice`, `Photos`, `Banquet`, `Tryouts` — prefixed with the team short name only if that kid has more than one team this season. Never empty. See §5. |
 
 ### The 12-character rule
 
@@ -61,6 +61,9 @@ the type label restored.
 more specific than "Practice", so it renders as `James ⚽️ Minicamp`. The generic
 `Practice` is the fallback for sources that say nothing useful, which is the
 normal case for a swim PDF.
+
+Detail resolution order for games: parsed opponent → trimmed upstream
+`SUMMARY` → nothing.
 
 `vs` = home, `@` = away. Universal convention, instantly readable, costs one
 character.

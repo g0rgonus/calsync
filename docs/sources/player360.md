@@ -37,7 +37,7 @@ SEQUENCE:1785600002
 | Stable identity | **yes** — `UID` | `360Player-event-<id>`, same id as the `URL` path |
 | Real address | **yes** — `LOCATION` | free-text, inconsistently punctuated |
 | Timezone | UTC only | `DTSTART`/`DTEND` are `Z`, no `TZID` |
-| Opponent | **no** | not present in any field |
+| Opponent | **yes, for league matches** | embedded in `SUMMARY` — see below |
 | Child identity | **no** | comes from the feed→child binding, not the feed |
 | Cancellation | **no explicit signal** | no `STATUS`; events presumably vanish |
 
@@ -56,16 +56,47 @@ matcher on the §6a cut list.
 three consecutive practices all read `Club Minicamp Kickoff`, and nothing names
 the child. Identity comes entirely from the feed binding.
 
-**No opponent means the title convention needs a fallback.** `vs Opponent`
-isn't derivable here, so `detail` falls back to a trimmed `SUMMARY`:
+**`SUMMARY` format varies by event type, and league matches carry the
+opponent.** The first sample was three preseason club events, which led me to
+record "no opponent" — wrong. A regular-season league match reads:
 
 ```
-James ⚽️ Super 8v8 Festival
-James ⚽️ Minicamp
+U10DA TASL Match vs Beach FC U10
+└─┬──┘ └─┬─┘ └─┬─┘    └────┬────┘
+ team  league type      opponent
 ```
 
-`DESCRIPTION` ("8v8 Festival Club Kickoff (2 games)") goes to the event body,
-and `URL` passes straight through as a tappable link back to Player360.
+So `SUMMARY` is not one format but at least two, and parsing is worth doing:
+
+```
+^(?<team>\S+)\s+(?<league>\S+)\s+Match\s+vs\.?\s+(?<opponent>.+)$
+```
+
+On a match, use the captured opponent; on a miss, fall back to the trimmed
+`SUMMARY` as before. That yields the ideal title form for league games and
+degrades gracefully for club events:
+
+```
+James ⚽️ vs Beach FC        ← parsed league match
+James ⚽️ Super 8v8 Festival ← unparsed, SUMMARY fallback
+James ⚽️ Minicamp           ← unparsed, SUMMARY fallback
+```
+
+**Strip a redundant age suffix from the opponent** — `Beach FC U10` becomes
+`Beach FC` when the suffix matches our own team's age group, which it will for
+league play. Keep it when it differs, since playing up or down an age band is
+information worth seeing.
+
+`TASL` is the league; record it on the activity so it can go in `DESCRIPTION`
+and help disambiguate opponents that appear in more than one league.
+
+**Unknown: does Player360 signal home vs away?** The convention here is `vs`.
+If every match says `vs` regardless of venue, home/away isn't derivable and the
+`@` form in [NAMING.md](../NAMING.md) can never fire from this source — venue
+comparison against a known home field would be the fallback.
+
+`DESCRIPTION` goes to the event body, and `URL` passes straight through as a
+tappable link back to Player360.
 
 ## Trap 1: `SEQUENCE` and `LAST-MODIFIED` churn on their own
 
@@ -171,3 +202,9 @@ Same treatment as the iCloud app-specific password.
 5. Does the token expire?
 6. Confirm cancellation behavior by watching a real one — this is the only
    trap above that's inferred rather than observed.
+7. **Is `U10DA TASL Match vs Beach FC U10` the ICS `SUMMARY` for that event, or
+   only visible in the Player360 web app?** This matters a lot: if it's in the
+   feed, opponent parsing is free. If it's app-only, getting opponent means an
+   API or a scrape, and it may not be worth it. Check the raw feed for a
+   regular-season match — the original sample contained only preseason events.
+8. Does any match `SUMMARY` use `@` or otherwise mark away games?
