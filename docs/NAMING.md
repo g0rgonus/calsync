@@ -30,7 +30,7 @@ space — on something already on screen.
 |---|---|
 | `kids` | First names. Multiple → joined with `+`, **always in a fixed order** (birth order), so titles are stable. 3+ or whole-family → `Family`. |
 | `emoji` | One per sport: ⚽️ 🏀 ⚾️ 🏐 🏊 🎾. Disambiguates when a kid plays more than one. |
-| `detail` | Games: `vs Opponent` (home) or `@ Opponent` (away) **when the source carries an opponent** — Player360 doesn't, so fall back to a trimmed upstream `SUMMARY`. Routine practice: team short name, **only if** that kid has more than one team this season — otherwise omitted. Any other non-game event: a short type label (`Photos`, `Banquet`, `Tryouts`). See §5. |
+| `detail` | **Games:** `vs Opponent` (home) or `@ Opponent` (away) when the source carries an opponent — Player360 doesn't, so fall back to a trimmed upstream `SUMMARY`. **Everything else:** an explicit type label — `Practice`, `Photos`, `Banquet`, `Tryouts` — prefixed with the team short name only if that kid has more than one team this season. Never empty. See §5. |
 
 ### The 12-character rule
 
@@ -45,30 +45,38 @@ the rule only binds on long opponent or tournament names.
 
 | Calendar | Title | Week view |
 |---|---|---|
-| Games | `Nora ⚽️ vs Northside` | fits |
-| Games | `Jack 🏀 @ Central HS` | fits |
-| Practices | `James ⚽️ Minicamp` | fits |
-| Practices | `Nora ⚽️` | fits |
-| Practices | `Nora+Jack ⚽️` | fits |
-| Games | `Nora ⚽️ Fall Classic R1` | `Nora ⚽️ Fall…` |
+| Games | `James ⚽️ vs Northside` | fits |
+| Games | `James ⚽️ @ Central HS` | fits |
+| Practices | `Patrick 🏊‍♂️ Practice` | fits |
+| Practices | `James ⚽️ Practice` | fits |
+| Practices | `James ⚽️ Minicamp` | fits — upstream label wins |
+| Practices | `James+Patrick ⚽️ Practice` | `James+Patrick…` |
+| Games | `James ⚽️ Fall Classic R1` | `James ⚽️ Fall…` |
 
-Dropping the venue means most titles now fit **without truncation at all**,
-which was the whole problem the 12-character rule was working around.
+Dropping the venue means most titles still fit **without truncation** even with
+the type label restored.
 
-A bare `Nora ⚽️` for a routine practice is intentional, not a gap. The calendar
-name says Practices, the color says which kid, and the time and place are right
-there in the event. There is genuinely nothing else to say about a Tuesday
-practice, and inventing filler would just push the useful cases into
-truncation.
+**When the source carries its own label, it wins** — Player360's "Minicamp" is
+more specific than "Practice", so it renders as `James ⚽️ Minicamp`. The generic
+`Practice` is the fallback for sources that say nothing useful, which is the
+normal case for a swim PDF.
 
 `vs` = home, `@` = away. Universal convention, instantly readable, costs one
 character.
 
+### Practices say "Practice"
+
+Every non-game event carries an explicit type label. With the venue gone
+there's budget for it, and it makes the Practices calendar uniform: each entry
+states what it is rather than relying on "silence means practice." That
+implicit convention was the weaker half of the earlier design — it only worked
+because practices outnumber everything else.
+
+Games don't say "Game": `vs Northside` already reads as one, and it's strictly
+more informative. (Say the word if you'd rather they were symmetric.)
+
 ### What's deliberately absent
 
-- **The word "Practice" or "Game."** The calendar name and its color already
-  say it. Spending 9 characters of a 12-character budget restating the calendar
-  is the most common way these naming schemes fail.
 - **Any ID or tag.** Machine identity goes in properties, not the title (§3).
 
 ### Emoji caveat
@@ -76,7 +84,7 @@ character.
 Emoji render fine in Apple Calendar and in any Unicode-capable client. They do
 affect string search (searching "soccer" won't match ⚽️), so keep the sport
 name in `DESCRIPTION`. If you'd rather have color-blocking than name-scanning,
-emoji-first (`⚽️ Nora vs Northside`) is a defensible alternative — pick one and
+emoji-first (`⚽️ James vs Northside`) is a defensible alternative — pick one and
 never mix.
 
 ---
@@ -86,10 +94,10 @@ never mix.
 **`DESCRIPTION`** — everything that doesn't fit the title:
 
 ```
-Soccer · U12 Riverside FC
+Soccer · Rush (U10DA)
 Arrive 13:15 (45 min before kickoff)
 Uniform: white
-Source: TeamReach post, 2026-08-09 · confidence 0.91
+Source: Player360 feed, 2026-08-09 · confidence 0.91
 Manage: https://calsync.<tailnet>.ts.net/events/3f9c1a2e
 ```
 
@@ -258,13 +266,12 @@ the type whenever it *isn't* a routine practice:
 
 | Event | Title |
 |---|---|
-| Routine practice | `Nora ⚽️` |
-| Team photos | `Nora ⚽️ Photos` |
-| Banquet | `Nora ⚽️ Banquet` |
-| Tryouts | `Jack 🏀 Tryouts` |
+| Routine practice | `Patrick 🏊‍♂️ Practice` |
+| Team photos | `James ⚽️ Photos` |
+| Banquet | `James ⚽️ Banquet` |
+| Tryouts | `James ⚽️ Tryouts` |
 
-Routine practices stay terse; exceptions announce themselves. Silence means
-practice.
+Every entry names its own type — no implicit cases to remember.
 
 ### Multi-kid events
 

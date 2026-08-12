@@ -8,9 +8,15 @@ children:
     name: James
     nicknames: [Jamie, J]        # TODO: confirm — used to spot him in
                                  # hand-created titles during adoption
-    birth_order: 1               # TODO: fixes ordering in multi-kid titles
-                                 # ("James+Nora" must never flip)
+    birth_order: TODO            # fixes ordering in multi-kid titles
+                                 # ("James+Patrick" must never flip)
     color: "#2f6fdb"
+
+  - id: patrick
+    name: Patrick
+    nicknames: [TODO]
+    birth_order: TODO
+    color: "#d9663d"
 
 activities:
   - id: james-soccer-rush
@@ -31,6 +37,23 @@ activities:
     alarm_policy:
       game: 90m                  # away games need travel time
       practice: 30m
+
+  - id: patrick-swim
+    child: patrick
+    name: TODO                   # team/squad name, human-readable
+    official_name: TODO
+    short_name: TODO
+    aliases: [TODO]
+    sport: swimming
+    emoji: "🏊‍♂️"
+    tz: America/New_York
+    season: { start: TODO, end: TODO }
+    alarm_policy:
+      game: 90m                  # meets
+      practice: 30m
+    # shape: document + relay. Season arrives as a PDF via Hermes; changes come
+    # by email or text and land through the amendment path (MATRIX.md §3).
+    # No poller, so health monitoring is coverage-based, not staleness (PLAN §D1).
 
 sources:
   - id: p360-james-rush
