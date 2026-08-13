@@ -527,6 +527,36 @@ share, alarm policies, school calendars, digests.
 Scrapers get built only when a specific source justifies one, and each is
 written expecting to be thrown away.
 
+## 5b. Targets are pluggable
+
+Radicale is one option, not the design. A deployment can write to Google
+Calendar, to iCloud over CalDAV, or to a directory of `.ics` files.
+
+| Target | Notes |
+|---|---|
+| `caldav` | Radicale, iCloud, Baikal, Nextcloud. ETag-guarded writes. |
+| `google` | Google Calendar API. |
+| `ics_file` | A directory of `.ics` files — real `--dry-run` output, git-able. |
+
+**Targets receive a domain object, not an ICS blob.** If the renderer emitted
+iCalendar, every non-CalDAV target would have to parse it back. The wire
+formats are not translations of each other:
+
+- iCalendar carries `X-APPLE-STRUCTURED-LOCATION` — an exact pin plus a
+  friendly title — and arbitrary `X-` properties for provenance.
+- Google has no `X-` properties (`extendedProperties.private` instead), no
+  structured-location equivalent, and **constrains event ids to base32hex**,
+  so `360Player-event-4716716` is rejected outright and ids must be derived
+  deterministically. A random id would duplicate the event on every poll.
+
+**Capabilities are declared, not assumed**, so the writer degrades knowingly
+rather than emitting properties a target silently drops. A hand-refined pin
+survives to CalDAV and is genuinely unavailable on Google — the flag says so.
+
+**Collection changes are moves, everywhere.** In CalDAV a collection is a
+distinct URL; in Google it's an explicit `move` call. Treating either as an
+update leaves a ghost copy in the old calendar.
+
 ## 5a. Configuration is data, not code
 
 No household is baked in. Everything family-specific lives in SQLite and is
