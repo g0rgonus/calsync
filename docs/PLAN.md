@@ -527,6 +527,50 @@ share, alarm policies, school calendars, digests.
 Scrapers get built only when a specific source justifies one, and each is
 written expecting to be thrown away.
 
+## 5a. Configuration is data, not code
+
+No household is baked in. Everything family-specific lives in SQLite and is
+edited through the web UI; YAML is an import/export format, never the runtime
+source of truth.
+
+| Configurable | Where |
+|---|---|
+| Children, initials, birth order, nicknames | `children` |
+| Sports catalog + emoji | `sports` — **prepopulated** with ~27 builtins, extensible |
+| Activities: team, league, age group, home venue, timezone, alarms | `activities` |
+| Venues and the aliases that resolve to them | `venues`, `venue_aliases` |
+| Feeds, poll intervals, credentials by reference | `sources` |
+| Radicale URL and credentials | `settings` |
+| **Which collection an event lands in** | `settings.collection_template` |
+| **Title convention** | `settings.title_template` |
+| Multi-kid style, all-kids label, home/away markers | `settings` |
+| Disappearance-guard thresholds, sync window | `settings` |
+
+Sports are **prepopulated, not user-invented from scratch** — nobody should
+have to choose an emoji for soccer — but the table is editable and accepts new
+rows, and an operator's edit survives re-migration.
+
+Two things that were this family's choices and are now templates:
+
+```
+collection_template   "{type}"          games / practices     (this setup)
+                      "{child}"         one calendar per kid
+                      "{child}-{type}"  both
+                      "family"          everything in one
+
+title_template        "{kids} {emoji} {detail}"        -> James ⚽️ vs Beach FC
+                      "{emoji} {kids}: {detail}"       -> ⚽️ James: vs Beach FC
+```
+
+Fields available to the title template: `{kids} {emoji} {detail} {sport}
+{activity} {venue}`. Empty fields collapse, so a template never leaves a
+dangling separator.
+
+**Adapter-specific parsing stays in code.** A user configures *that* a feed is
+Player360 and which activity it binds to; they never write the regex that
+recovers an opponent from a `SUMMARY`. Anything a deployment would have to
+reverse-engineer belongs in the adapter, not the config surface.
+
 ## 6a. Scope reality check
 
 Written down because a half-built system in November, when the season ends, is

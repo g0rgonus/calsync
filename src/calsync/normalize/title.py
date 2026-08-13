@@ -1,28 +1,33 @@
-"""Render the display title.
+"""Render the display title from a configurable template.
 
-    SUMMARY := kids " " emoji [" " detail]
+Default:  "{kids} {emoji} {detail}"  ->  "James ⚽️ vs Beach FC"
 
 The title is a *render*, not data — see docs/NAMING.md. Nothing downstream
-parses it back, so the convention can change and every event can be re-rendered
-without re-fetching anything.
+parses it back, so a deployment can change the convention and re-render every
+event without re-fetching anything.
 
-The venue is deliberately absent: it has its own geocoded field, and Apple
-Calendar shows it under the title anyway.
+Available fields: {kids} {emoji} {detail} {sport} {activity} {venue}.
+Empty fields collapse, so a template never leaves a dangling separator.
 """
 
 from __future__ import annotations
 
+import re
+
 from ..models import Activity, Child, Event
+from ..settings import Settings
 
-ALL_KIDS = "Kids"
+_WS = re.compile(r"\s+")
 
 
-def render_kids(children: list[Child]) -> str:
-    """One kid -> full name. Two -> initials. Three or more -> "Kids".
+def render_kids(children: list[Child], settings: Settings) -> str:
+    """Collapse a set of children into a label.
 
-    Initials for the two-kid form because "Patrick+James" is 13 characters
-    before the emoji even starts, and week view would truncate away the emoji
-    — which is the field doing the disambiguation work.
+    The default uses initials for the multi-kid form because full names blow
+    the week-view budget: "Patrick+James" is 13 characters before the emoji
+    starts, and truncation would eat the emoji — the field doing the
+    disambiguation work. A deployment with shorter names can set
+    ``multi_kid_style = names``.
     """
     if not children:
         raise ValueError("an event needs at least one child")
@@ -30,26 +35,36 @@ def render_kids(children: list[Child]) -> str:
     ordered = sorted(children, key=lambda c: (c.birth_order, c.name))
     if len(ordered) == 1:
         return ordered[0].name
-    if len(ordered) == 2:
-        return "+".join(c.initial for c in ordered)
-    return ALL_KIDS
+    if len(ordered) >= settings.all_kids_threshold:
+        return settings.all_kids_label
+    if settings.multi_kid_style == "names":
+        return "+".join(c.name for c in ordered)
+    return "+".join(c.initial for c in ordered)
 
 
-def render_detail(event: Event, activity: Activity) -> str | None:
+def render_detail(event: Event, settings: Settings) -> str:
     """Opponent for games, upstream label otherwise.
 
-    Home/away only marks "@" when we positively know it's away. Player360's
-    SUMMARY always reads "vs", so an unknown must not become "@".
+    Away is marked only when positively known. Some feeds phrase every fixture
+    as "vs" regardless of venue, so an undetermined home/away must not silently
+    render as away.
     """
     if event.opponent:
-        prefix = "@" if event.home is False else "vs"
-        return f"{prefix} {event.opponent}"
-    return event.detail or None
+        marker = settings.away_marker if event.home is False else settings.home_marker
+        return f"{marker} {event.opponent}".strip()
+    return event.detail or ""
 
 
-def render(event: Event, activity: Activity, children: list[Child]) -> str:
-    parts = [render_kids(children), activity.emoji]
-    detail = render_detail(event, activity)
-    if detail:
-        parts.append(detail)
-    return " ".join(p for p in parts if p)
+def render(
+    event: Event, activity: Activity, children: list[Child], settings: Settings
+) -> str:
+    emoji = activity.emoji or ""
+    rendered = settings.title_template.format(
+        kids=render_kids(children, settings),
+        emoji=emoji,
+        detail=render_detail(event, settings),
+        sport=activity.sport,
+        activity=activity.name,
+        venue=(event.venue.name if event.venue and event.venue.name else ""),
+    )
+    return _WS.sub(" ", rendered).strip()

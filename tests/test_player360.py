@@ -12,9 +12,11 @@ from pathlib import Path
 
 import pytest
 
+from calsync.db import DEFAULT_SETTINGS
 from calsync.diff import diff_poll
 from calsync.models import Activity, Child
 from calsync.normalize import title as title_norm
+from calsync.settings import Settings
 from calsync.sources import player360
 
 FIXTURE = Path(__file__).parent / "fixtures" / "player360_sample.ics"
@@ -33,6 +35,18 @@ RUSH = Activity(
     emoji="⚽️",
     tz="America/New_York",
 )
+
+def make_settings(**overrides):
+    raw = {**DEFAULT_SETTINGS, **{k: str(v) for k, v in overrides.items()}}
+    import sqlite3
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    conn.executemany("INSERT INTO settings VALUES (?, ?)", list(raw.items()))
+    return Settings.load(conn)
+
+
+SETTINGS = make_settings()
 
 JAMES = Child(id="james", name="James", initial="J", birth_order=2)
 PATRICK = Child(id="patrick", name="Patrick", initial="P", birth_order=1)
@@ -163,8 +177,8 @@ def test_garbage_feed_raises_rather_than_returning_nothing():
 # --- titles -----------------------------------------------------------------
 
 
-def _title(event, kids):
-    return title_norm.render(event, RUSH, kids)
+def _title(event, kids, settings=None):
+    return title_norm.render(event, RUSH, kids, settings or SETTINGS)
 
 
 def test_titles(by_uid):
