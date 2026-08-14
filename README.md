@@ -12,7 +12,8 @@ covers event title and location conventions, and
 events already in the shared calendars.
 [docs/MATRIX.md](docs/MATRIX.md) covers the Matrix room where calsync, Hermes,
 and you interact. [docs/sources/](docs/sources/) holds per-source adapter
-notes from the Phase 0 survey, and [docs/config.example.yaml](docs/config.example.yaml)
+notes from the Phase 0 survey, [docs/deployment/](docs/deployment/) holds
+infrastructure requirements, and [docs/config.example.yaml](docs/config.example.yaml)
 shows a real feed wired up end to end.
 
 ## Shape
