@@ -44,12 +44,31 @@ calsync --db drive.db status
 ```
 
 `--out` writes a directory of `.ics` files — safe to point at a live feed, and
-the output diffs in git. CalDAV and Google targets exist in code but are not yet
-wired to the CLI.
+the output diffs in git. Without it, events go to the CalDAV server configured in
+settings.
+
+## Docker
+
+```bash
+cp -r deploy/radicale/. config/radicale/     # then edit users + rights
+htpasswd -B -c config/radicale/users calsync
+mkdir -p secrets && printf '{"radicale_password":"..."}' > secrets/secrets.json
+chmod 600 secrets/secrets.json
+
+docker compose up -d                                    # Radicale + the poller
+docker compose run --rm calsync import /config/calsync.yaml
+docker compose run --rm calsync stage tr-hawks          # onboarding calendar
+docker compose run --rm calsync promote tr-hawks        # when the parse is clean
+```
+
+Radicale is bound to loopback — reach it over Tailscale, not by opening the
+port ([docs/deployment/radicale.md](docs/deployment/radicale.md) §5). Onboarding
+flow: [docs/ONBOARDING.md](docs/ONBOARDING.md).
 
 ## Next step
 
-Phase 0 for the remaining sources: capture a real payload from TeamReach and the
-flag-football app into `tests/fixtures/`. Identity fields for both are already
-recorded in [docs/sources/](docs/sources/) — TeamReach is a clean passthrough,
-the flag-football feed mints a new UID on every poll.
+The web config UI, built around [docs/ONBOARDING.md](docs/ONBOARDING.md): rec
+teams are recreated every season, so onboarding a feed is recurring work rather
+than one-time setup. Player360 and TeamReach are verified against live feeds;
+the flag-football app is the last unsurveyed source, and the only one whose UIDs
+are not stable.

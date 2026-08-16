@@ -322,6 +322,6 @@ def parse_feed(
         events=events,
         raw_sha256=hashlib.sha256(raw_bytes).hexdigest(),
     )
-    result.unknown_types = sorted(unknown_types)  # type: ignore[attr-defined]
-    result.unidentified = sorted(unidentified)  # type: ignore[attr-defined]
+    result.report("unknown_types", unknown_types)
+    result.report("unidentified", unidentified)
     return result

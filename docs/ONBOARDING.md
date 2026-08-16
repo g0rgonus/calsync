@@ -1,0 +1,147 @@
+# Onboarding a feed
+
+Rec-league teams are recreated every season with new names and new feed ids, so
+onboarding is not one-time setup — it is the **recurring operational work** of
+this system, several times a year, once per kid per sport. James's Rush club team
+(Player360) is the exception: persistent across seasons, configured once.
+
+Everything here optimises for that. Setup screens you use once can be clumsy;
+this one gets used every spring and every autumn.
+
+## 1. Three things only you can supply
+
+1. **The feed URL** — from the app or the coach. Nothing can derive it.
+2. **Which kid** — the feed has no idea.
+3. **Which sport** — inheritable from that kid's previous season, so a confirm.
+
+Everything else is read out of the feed.
+
+## 2. What the feed already tells us
+
+Measured across four real feeds:
+
+| | Player360 / Rush | Hurricanes | Hawks | Comets |
+|---|---|---|---|---|
+| Team name (`X-WR-CALNAME`) | ✗ generic | `Inter HURRICANES` | `Hawks Spring 2026` | `Comets` |
+| Season bounds (min/max `DTSTART`) | ✓ | ✓ | ✓ | ✓ |
+| Our own team token | n/a | n/a | `Hawks` | n/a |
+| Venues | ✓ | ✓ | ✓ | ✓ |
+
+`X-WR-CALNAME` names the team on every TeamReach feed. Player360's is generic,
+which matters little — that feed is configured once.
+
+**The team token falls out of frequency.** In a "us vs them" feed our own name
+appears in every fixture while each opponent appears once or twice: the Hawks
+feed gives `Hawks` 12, `Strikers` 2, `Lightning` 2. Propose the top token, let
+the operator correct it.
+
+That token is load-bearing. `Activity.known_tokens()` is what resolves
+`Hawks vs Strikers` into an opponent and a home/away flag, so a wrong team name
+does not produce wrong data — it produces *no* opponent, reported through
+`PollResult.unidentified`. See [sources/teamreach.md](sources/teamreach.md).
+
+## 3. Venues are stable even though teams are not
+
+Team names churn every season; the parks and schools do not. All three observed
+TeamReach teams share venues — Riverview Farm Park, Passage, Sanford, Menchville,
+Stoney Run.
+
+So venue mapping is a one-time cost per venue that amortises to zero. After a
+season or two the alias table covers the league and new seasons need no venue
+work at all. This is also the only place a model is worth invoking, and only for
+a genuinely new venue, once, written back as an alias.
+
+## 4. Stage to an onboarding calendar
+
+A new feed syncs to a dedicated `onboarding` collection rather than to
+`games`/`practices`.
+
+The point is **seeing it in a real calendar client on your phone**. The
+12-character rule in [NAMING.md](NAMING.md) is about week-view truncation, and no
+amount of reading `.ics` text tells you whether a title survives it.
+
+Promotion is `calsync promote <source>`, which clears `staging_collection`. The
+next sync relocates every event into the real calendars — no duplicates, no
+cleanup, no re-fetch.
+
+That needs two mechanisms, and only the first was free:
+
+1. A collection change is a delete-then-create rather than an update
+   (`targets.move_required`, honoured by both the CalDAV and ics_file targets),
+   and `event_state` records which collection each event is in.
+2. **The sync loop has to notice.** `diff_poll` compares content hashes only, so
+   after promotion an unchanged feed yields nothing but `unchanged` events and
+   nothing is written at all — the staged copies would just sit there. So the
+   loop checks *placement* separately: for every unchanged event, recompute the
+   collection it belongs in and re-write it if that differs from where it is.
+
+The second was missing and is the reason `test_promotion_moves_events_rather_
+than_duplicating` exists. It also generalises: changing `collection_template`
+from `{type}` to `{child}` now relocates the whole calendar on the next sync
+instead of quietly stranding every existing event.
+
+## 5. Probation, not a wizard
+
+**Coaches publish practices first and add the game schedule later.** At
+onboarding a feed may contain nothing but practices, which means:
+
+- Frequency-based team-token detection has nothing to work with; the name must
+  come from `X-WR-CALNAME` or from you.
+- **Fixture parsing cannot be validated at all**, because there are no fixtures.
+
+So staging is not a preview you dismiss at the end of a wizard. A source stays in
+the onboarding collection until real games appear and parse correctly — possibly
+weeks later.
+
+### The promotion gate
+
+Promote when, over the events present:
+
+- `unidentified` is empty — every fixture matched our team on exactly one side
+- `unknown_types` / `unknown_categories` are empty — every event classified
+- every venue resolves to a known venue row
+- at least one fixture has been seen, so the fixture path has actually been exercised
+
+The first three are already emitted by the adapters. Nothing consumes them yet
+(see §7).
+
+## 6. Where AI belongs, and where it does not
+
+**Parsing, not rendering.**
+
+```[text]
+model  →  structured fields  →  deterministic title
+          (opponent, venue,     (title_template)
+           type, home/away)
+       reviewed once, frozen as config
+```
+
+`normalize/summary.py` states the rule this preserves: *"Deterministic by design.
+No model is involved, so the same feed always renders the same title, and a title
+change is always traceable to a config change."*
+
+A model in the render path breaks that twice over. The same event could get a
+different title on different polls with nothing to explain why; and because
+`content_hash` covers *feed* fields only, a title that changed for model reasons
+would not register as a change at all — silent, untraceable drift.
+
+The hard problem was never the naming convention. It is recovering
+`opponent="Strikers", home=true` from whatever a coach typed. That is worth a
+model, its output is reviewable structured data, and once reviewed it becomes an
+alias or a venue row and the feed parses deterministically forever.
+
+Because the title is a render and not data, getting naming wrong is cheap — every
+event re-renders from stored fields without re-fetching. It is not a one-way door
+and does not need a model to be right first time.
+
+## 7. What this needs that does not exist yet
+
+- **Per-source staging.** `collection_template` is an instance-wide setting and
+  `routing.collection_for()` does not take the source, so one feed cannot be
+  staged while others run normally.
+- **Parse diagnostics are dropped.** Adapters set `unknown_types`,
+  `unknown_categories` and `unidentified` on `PollResult`; `sync.py` never reads
+  them and `SyncReport` has no field for them. The promotion gate depends
+  entirely on data that is currently computed and thrown away.
+- **A feed-inspection endpoint** — fetch a URL and return the derivations in §2
+  without creating anything, so the UI can offer them before a source exists.

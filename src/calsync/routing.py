@@ -28,8 +28,27 @@ def slugify(value: str) -> str:
 
 
 def collection_for(
-    event: Event, activity: Activity, child: Child, settings: Settings
+    event: Event,
+    activity: Activity,
+    child: Child,
+    settings: Settings,
+    *,
+    override: str | None = None,
 ) -> str:
+    """Which collection this event belongs in.
+
+    ``override`` sends every event from one source to a single collection —
+    the onboarding calendar (docs/ONBOARDING.md §4). It is per-source rather
+    than a settings change so one new feed can be staged while the rest keep
+    writing to the real calendars.
+
+    Promotion is just clearing it: the collection changes, and a changed
+    collection is a move rather than an update, so the events relocate on the
+    next sync without duplicating.
+    """
+    if override:
+        return slugify(override)
+
     type_label = (
         settings.collection_game_label if event.is_game else settings.collection_practice_label
     )

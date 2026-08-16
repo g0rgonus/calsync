@@ -1,0 +1,63 @@
+# calsync + Radicale.
+#
+# Requirements and acceptance checks: docs/deployment/radicale.md. The parts
+# that matter here:
+#
+#   R4/R5  file-backed storage, so unknown X- properties and Apple's structured
+#          location survive a round-trip by construction
+#   R8     two principals, one read-write (calsync) and one read-only (devices)
+#   §5     no public ingress — bound to loopback, exposed via Tailscale
+#
+# Before first run:
+#   cp -r deploy/radicale/. ./config/radicale/     # then edit users/rights
+#   htpasswd -B -c config/radicale/users calsync
+#   htpasswd -B    config/radicale/users calreader
+#   mkdir -p secrets && printf '{"radicale_password":"..."}' > secrets/secrets.json
+#   chmod 600 secrets/secrets.json
+
+services:
+  radicale:
+    image: tomsquest/docker-radicale:latest
+    restart: unless-stopped
+    # Loopback only. This holds children's names, schedules and physical
+    # locations with timestamps; it does not belong on a public interface.
+    # Reach it over Tailscale (`tailscale serve`) rather than by changing this.
+    ports:
+      - "127.0.0.1:5232:5232"
+    volumes:
+      - radicale-data:/data
+      - ./config/radicale/config:/config/config:ro
+      - ./config/radicale/rights:/config/rights:ro
+      - ./config/radicale/users:/config/users:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:5232/", "-o", "/dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  calsync:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      radicale:
+        condition: service_healthy
+    volumes:
+      - calsync-data:/data
+      # Read-only, and the store refuses a file that is group- or
+      # world-readable. Keep it 600 on the host.
+      - ./secrets:/run/secrets/calsync:ro
+      # Config lives in the database; this is only for `calsync import`.
+      - ./config/calsync:/config:ro
+    environment:
+      CALSYNC_DB: /data/calsync.db
+      CALSYNC_SECRETS: /run/secrets/calsync/secrets.json
+    # Onboarding and inspection run through the same image:
+    #   docker compose run --rm calsync import /config/calsync.yaml
+    #   docker compose run --rm calsync stage tr-hawks
+    #   docker compose run --rm calsync status
+    #   docker compose run --rm calsync promote tr-hawks
+
+volumes:
+  radicale-data:
+  calsync-data:

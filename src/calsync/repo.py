@@ -27,6 +27,7 @@ class Source:
     secret_ref: str | None
     config: dict
     enabled: bool
+    staging_collection: str | None = None
 
 
 def get_child(conn: sqlite3.Connection, child_id: str) -> Child:
@@ -124,21 +125,30 @@ def list_sources(conn: sqlite3.Connection, *, enabled_only: bool = True) -> list
             secret_ref=r["secret_ref"],
             config=json.loads(r["config"] or "{}"),
             enabled=bool(r["enabled"]),
+            staging_collection=r["staging_collection"],
         )
         for r in conn.execute(sql)
     ]
 
 
-def known_hashes(conn: sqlite3.Connection, source_id: str) -> dict[str, str]:
-    """``{uid: content_hash}`` for a source — the left side of a poll diff."""
-    return {
-        r["uid"]: r["content_hash"]
-        for r in conn.execute(
-            "SELECT uid, content_hash FROM event_state "
-            "WHERE source_id = ? AND cancelled = 0",
-            (source_id,),
-        )
-    }
+def known_hashes(
+    conn: sqlite3.Connection, source_id: str, *, since: str | None = None
+) -> dict[str, str]:
+    """``{uid: content_hash}`` for a source — the left side of a poll diff.
+
+    ``since`` must be the sync window's lower bound, and leaving it out is a bug
+    waiting to happen. The incoming side of the diff is window-filtered, so if
+    this side is not, every event that ages past the window looks like it
+    vanished — and a whole season ageing out at once reads as a mass
+    cancellation. Compare like with like.
+    """
+    sql = ("SELECT uid, content_hash FROM event_state "
+           "WHERE source_id = ? AND cancelled = 0")
+    params: tuple = (source_id,)
+    if since is not None:
+        sql += " AND starts_at >= ?"
+        params = (source_id, since)
+    return {r["uid"]: r["content_hash"] for r in conn.execute(sql, params)}
 
 
 @dataclass(frozen=True)
@@ -292,3 +302,28 @@ def resolve_venue_alias(conn: sqlite3.Connection, alias: str) -> Venue | None:
         lon=row["lon"],
         pin_confirmed=bool(row["pin_confirmed"]),
     )
+
+
+def set_staging(conn: sqlite3.Connection, source_id: str, collection: str | None) -> None:
+    """Point a source at an onboarding collection, or clear it to promote.
+
+    Clearing is all promotion takes: the next sync computes a different
+    collection, and a changed collection is a move rather than an update, so the
+    events relocate without duplicating (docs/ONBOARDING.md §4).
+    """
+    conn.execute(
+        "UPDATE sources SET staging_collection = ? WHERE id = ?", (collection, source_id)
+    )
+    conn.commit()
+
+
+def get_source(conn: sqlite3.Connection, source_id: str) -> Source | None:
+    for source in list_sources(conn, enabled_only=False):
+        if source.id == source_id:
+            return source
+    return None
+
+
+def set_enabled(conn: sqlite3.Connection, source_id: str, enabled: bool) -> None:
+    conn.execute("UPDATE sources SET enabled = ? WHERE id = ?", (int(enabled), source_id))
+    conn.commit()

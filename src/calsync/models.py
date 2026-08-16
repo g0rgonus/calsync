@@ -132,3 +132,36 @@ class PollResult:
     events: list[Event] = field(default_factory=list)
     fetched_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     raw_sha256: str | None = None
+
+    #: Parse gaps the adapter could not resolve, keyed by kind — "unknown_types",
+    #: "unknown_categories", "unidentified". Open-ended because each feed fails in
+    #: its own way, and an adapter must be able to report a new kind without a
+    #: schema change.
+    #:
+    #: This is the promotion gate (docs/ONBOARDING.md §5): a staged source is
+    #: ready for the real calendar when every list here is empty. Anything an
+    #: adapter reports here is a question for a human or for Hermes.
+    diagnostics: dict[str, list[str]] = field(default_factory=dict)
+
+    def report(self, kind: str, values) -> None:
+        values = sorted(v for v in values if v)
+        if values:
+            self.diagnostics[kind] = values
+
+    @property
+    def is_clean(self) -> bool:
+        """Nothing the adapter could not account for."""
+        return not any(self.diagnostics.values())
+
+    # Named accessors for the kinds in use, so callers and tests read plainly.
+    @property
+    def unknown_types(self) -> list[str]:
+        return self.diagnostics.get("unknown_types", [])
+
+    @property
+    def unknown_categories(self) -> list[str]:
+        return self.diagnostics.get("unknown_categories", [])
+
+    @property
+    def unidentified(self) -> list[str]:
+        return self.diagnostics.get("unidentified", [])

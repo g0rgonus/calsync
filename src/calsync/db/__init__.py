@@ -9,7 +9,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 
 #: Additive column migrations, applied when absent. `schema.sql` uses
@@ -18,6 +18,8 @@ SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # v2: targets don't all use our UID as their remote identifier.
     ("event_state", "remote_id", "TEXT"),
+    # v3: stage one source to an onboarding calendar without moving others.
+    ("sources", "staging_collection", "TEXT"),
 )
 
 #: Seeded so a fresh install can create an activity without inventing an emoji.

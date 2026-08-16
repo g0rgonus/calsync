@@ -353,3 +353,116 @@ def test_alias_resolution_supplies_what_the_feed_lacks(conn, source, target):
 
     written = "\n".join(p.read_text() for p in target.directory.rglob("*.ics"))
     assert "GEO:37.5;-75.8" in written, "confirmed pin never reached the event"
+
+
+# --- diagnostics reach the report -------------------------------------------
+
+
+def test_adapter_diagnostics_reach_the_report(conn, source, target):
+    """These were computed and dropped; the promotion gate depends on them."""
+    ics = FIXTURE.read_text().replace("CATEGORIES:practice", "CATEGORIES:team photo", 1)
+
+    report = _sync(conn, source, target, raw=ics.encode())
+
+    assert report.diagnostics.get("unknown_categories") == ["team photo"]
+    assert not report.is_clean
+    assert any("unrecognised categories" in line for line in report.diagnostic_lines())
+
+
+def test_unresolved_venues_are_reported(conn, source, target):
+    """Only the sync layer can see this — the adapter has no database."""
+    report = _sync(conn, source, target)
+
+    assert report.diagnostics.get("unresolved_venues"), "no venue rows exist, so all are unresolved"
+    assert not report.is_clean
+
+
+def test_a_resolved_venue_clears_that_diagnostic(conn, source, target):
+    for name in ("Randy Custis Memorial Park", "Wolf Trap Park", "Kiln Creek Park"):
+        conn.execute(
+            "INSERT INTO venues (canonical_name, address) VALUES (?, '1 Somewhere Rd')",
+            (name,),
+        )
+        conn.execute(
+            "INSERT INTO venue_aliases (venue_id, alias, source) "
+            "SELECT id, ?, 'test' FROM venues WHERE canonical_name = ?",
+            (name, name),
+        )
+    conn.commit()
+
+    report = _sync(conn, source, target)
+
+    assert not report.diagnostics.get("unresolved_venues")
+
+
+def test_fixtures_seen_counts_games(conn, source, target):
+    report = _sync(conn, source, target)
+    assert report.fixtures_seen > 0
+
+
+# --- staging and promotion ---------------------------------------------------
+
+
+def _stage(conn, collection="onboarding"):
+    repo.set_staging(conn, "p360-james-rush", collection)
+    return repo.list_sources(conn)[0]
+
+
+def test_staged_source_writes_to_one_collection(conn, target, tmp_path):
+    staged = _stage(conn)
+
+    report = _sync(conn, staged, target)
+
+    assert report.staged_to == "onboarding"
+    written = list((tmp_path / "out").rglob("*.ics"))
+    assert written, "nothing written"
+    assert {p.parent.name for p in written} == {"onboarding"}, "staging did not override routing"
+
+
+def test_promotion_moves_events_rather_than_duplicating(conn, target, tmp_path):
+    """A collection change is a move, so the staged copies must not survive."""
+    staged = _stage(conn)
+    _sync(conn, staged, target)
+    staged_count = len(list((tmp_path / "out" / "onboarding").rglob("*.ics")))
+    assert staged_count > 0
+
+    repo.set_staging(conn, "p360-james-rush", None)
+    promoted = repo.list_sources(conn)[0]
+    _sync(conn, promoted, target)
+
+    assert not list((tmp_path / "out" / "onboarding").rglob("*.ics")), "left ghosts in staging"
+    live = list((tmp_path / "out").rglob("*.ics"))
+    assert len(live) == staged_count, "duplicated events instead of moving them"
+    assert {p.parent.name for p in live} <= {"games", "practices"}
+
+
+def test_promotable_requires_a_clean_parse(conn, source, target):
+    dirty = _sync(conn, source, target, dry_run=True)
+    assert not dirty.promotable, "promotable despite unresolved venues"
+
+
+def test_promotable_requires_a_fixture_to_have_been_seen(conn, source, target):
+    """A practices-only feed has never exercised the opponent path."""
+    report = _sync(conn, source, target, dry_run=True)
+    report.diagnostics = {}
+    report.fixtures_seen = 0
+
+    assert not report.promotable
+
+    report.fixtures_seen = 1
+    assert report.promotable
+
+
+def test_events_ageing_out_of_the_window_are_not_a_mass_cancellation(conn, source, target):
+    """The failure a live container surfaced: a finished season ages past the
+    back window, every tracked event looks missing at once, and the
+    disappearance guard fires on what is really just the passage of time."""
+    _sync(conn, source, target)
+    assert repo.event_states(conn, source.id)
+
+    # A year later, with the same feed still serving the same (now old) events.
+    report = _sync(conn, source, target, now=NOW + timedelta(days=365))
+
+    assert report.status == "ok", f"guard tripped on ageing, not cancellation: {report.held}"
+    assert report.cancelled == 0
+    assert report.skipped_window > 0

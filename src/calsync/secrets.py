@@ -18,6 +18,9 @@ import stat
 from pathlib import Path
 
 ENV_PREFIX = "CALSYNC_SECRET_"
+#: Overrides the default file location. The container sets this so every
+#: subcommand finds the mounted store, not just the one the CMD spells out.
+PATH_ENV = "CALSYNC_SECRETS"
 DEFAULT_FILE = Path.home() / ".config" / "calsync" / "secrets.json"
 
 
@@ -37,7 +40,9 @@ def env_name(ref: str) -> str:
 class SecretStore:
     def __init__(self, *, path: str | Path | None = None, environ: dict | None = None):
         self._environ = os.environ if environ is None else environ
-        self.path = Path(path) if path is not None else DEFAULT_FILE
+        if path is None:
+            path = self._environ.get(PATH_ENV) or DEFAULT_FILE
+        self.path = Path(path)
         self._cache: dict[str, str] | None = None
 
     def _from_file(self) -> dict[str, str]:

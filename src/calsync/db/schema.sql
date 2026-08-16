@@ -101,6 +101,11 @@ CREATE TABLE IF NOT EXISTS sources (
     secret_ref      TEXT,                 -- key into the secret store
     config          TEXT NOT NULL DEFAULT '{}',   -- adapter-specific JSON
     enabled         INTEGER NOT NULL DEFAULT 1,
+    -- While set, every event from this source routes to this one collection
+    -- instead of the normal template: the onboarding calendar
+    -- (docs/ONBOARDING.md). Clearing it promotes the source, and the next
+    -- sync moves the events because a collection change is a move.
+    staging_collection TEXT,
     last_success_at TEXT,
     last_error      TEXT,
     last_error_at   TEXT
