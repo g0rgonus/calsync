@@ -21,6 +21,36 @@ STREET_SPLIT = re.compile(r"^(?P<name>.*?)\s+(?P<addr>\d+\s+\S.*)$", re.DOTALL)
 
 _WS = re.compile(r"\s+")
 
+#: A trailing field/court designator: "#2", "Field 3", "Court 1", "Gym".
+#:
+#: Anchored to the end and requiring a word boundary on the keyword, so
+#: "Riverview Farm Park Soccer Fields" keeps its name intact — "Fields" plural
+#: with no number is part of what the place is called, not which field you want.
+FIELD_TAIL = re.compile(
+    r"\s+(?P<field>"
+    r"#\s*\w+"
+    r"|(?:field|fld|court|diamond|rink|pitch)\b\s*#?\s*[\w-]+"
+    r"|gym(?:nasium)?\b"
+    r")\s*$",
+    re.IGNORECASE,
+)
+
+
+def split_field(text: str) -> tuple[str, str | None]:
+    """Separate the venue from the field within it.
+
+    ``"Riverview #2"`` -> ``("Riverview", "#2")``
+
+    Venue identity is what carries an address and a pin, and every field at a
+    park shares both. Folding the designator into the name would mint a separate
+    venue — and a separate geocode — per field.
+    """
+    match = FIELD_TAIL.search(text or "")
+    if match is None:
+        return (text or "").strip(), None
+    field = _WS.sub(" ", match.group("field")).strip()
+    return text[: match.start()].strip(), field or None
+
 
 def _collapse(text: str) -> str:
     return _WS.sub(" ", text).strip().strip(",").strip()

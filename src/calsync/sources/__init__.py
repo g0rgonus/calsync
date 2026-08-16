@@ -44,4 +44,4 @@ def parse(
     return parser(data, activity, source_id=source_id)
 
 
-from . import player360  # noqa: E402,F401  (populate the registry)
+from . import player360, teamreach  # noqa: E402,F401  (populate the registry)
