@@ -35,6 +35,12 @@ class Activity:
     age_group: str | None = None
     home_venue: str | None = None
     aliases: tuple[str, ...] = ()
+    #: Away games need travel time; practices are usually local.
+    alarm_game_min: int = 90
+    alarm_practice_min: int = 30
+
+    def alarm_minutes(self, *, is_game: bool) -> int:
+        return self.alarm_game_min if is_game else self.alarm_practice_min
 
     @property
     def zone(self) -> ZoneInfo:
@@ -63,6 +69,11 @@ class Venue:
     lat: float | None = None
     lon: float | None = None
     pin_confirmed: bool = False
+    #: Which field/court/gym *within* the venue — "#2", "Field 3", "Gym".
+    #: Deliberately not part of venue identity: "Riverview #2" and
+    #: "Riverview #4" are one place with one pin, and keeping the designator
+    #: out of the name is what lets a single alias row cover them all.
+    field: str | None = None
 
     @property
     def resolved(self) -> bool:

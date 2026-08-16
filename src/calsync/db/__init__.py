@@ -9,8 +9,16 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 SCHEMA_PATH = Path(__file__).parent / "schema.sql"
+
+#: Additive column migrations, applied when absent. `schema.sql` uses
+#: CREATE TABLE IF NOT EXISTS, so it never alters a table that already exists —
+#: anything added to an existing table has to be listed here too.
+ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    # v2: targets don't all use our UID as their remote identifier.
+    ("event_state", "remote_id", "TEXT"),
+)
 
 #: Seeded so a fresh install can create an activity without inventing an emoji.
 #: `builtin` rows are replaceable — a deployment can override the emoji or add
@@ -83,9 +91,17 @@ def connect(path: str | Path) -> sqlite3.Connection:
     return conn
 
 
+def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+
+
 def migrate(conn: sqlite3.Connection) -> None:
     """Create the schema and seed defaults. Safe to run repeatedly."""
     conn.executescript(SCHEMA_PATH.read_text())
+
+    for table, column, decl in ADDED_COLUMNS:
+        if column not in _columns(conn, table):
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
 
     conn.executemany(
         "INSERT OR IGNORE INTO sports (id, name, emoji, builtin) VALUES (?, ?, ?, 1)",

@@ -29,9 +29,13 @@ class Diff:
     unchanged: list[Event] = field(default_factory=list)
     cancelled: list[str] = field(default_factory=list)
 
-    #: Set when the disappearance guard trips. Cancellations are withheld and
-    #: must be confirmed by a human before anything is deleted.
+    #: Set when a guard trips. Affected operations are withheld and must be
+    #: confirmed by a human before anything reaches the calendar.
     anomaly: str | None = None
+
+    #: Which guard tripped: "disappearance" or "identity". They withhold
+    #: different things, so the caller has to be able to tell them apart.
+    anomaly_kind: str | None = None
 
     @property
     def is_anomalous(self) -> bool:
@@ -77,6 +81,27 @@ def diff_poll(
             result.unchanged.append(event)
 
     missing = [uid for uid in known if uid not in incoming_by_uid]
+
+    # Total identity turnover: nothing we knew is present, and nothing present
+    # is anything we knew. A real season never rolls over this cleanly — this is
+    # the signature of a feed whose UIDs aren't stable (one observed source
+    # embeds a generation timestamp, so every poll mints fresh UIDs for the same
+    # events).
+    #
+    # Unlike a disappearance, BOTH halves are withheld. Applying the creations
+    # would duplicate the entire season, which is the failure the disappearance
+    # guard alone does not catch.
+    if known and incoming and len(missing) == len(known) and not result.updated \
+            and not result.unchanged:
+        result.anomaly = (
+            f"none of {len(known)} tracked events matched any of {len(incoming)} "
+            f"incoming events — the feed's UIDs look unstable; holding everything "
+            f"pending confirmation"
+        )
+        result.anomaly_kind = "identity"
+        result.created = []
+        return result
+
     if not missing:
         return result
 
@@ -91,6 +116,7 @@ def diff_poll(
             f"from the feed in one poll — holding all cancellations pending "
             f"confirmation"
         )
+        result.anomaly_kind = "disappearance"
         return result
 
     result.cancelled = missing

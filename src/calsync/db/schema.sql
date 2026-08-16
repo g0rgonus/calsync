@@ -108,10 +108,16 @@ CREATE TABLE IF NOT EXISTS sources (
 CREATE INDEX IF NOT EXISTS sources_activity ON sources(activity_id);
 
 -- What we have already written, and the hash that decides whether to rewrite.
+--
+-- remote_id is what the *target* calls this event, which is not always our UID:
+-- Google requires base32hex ids and derives one, while CalDAV and ics_file use
+-- the UID as the resource name. Storing it keeps the state layer from having to
+-- know how any particular target mints identifiers.
 CREATE TABLE IF NOT EXISTS event_state (
     uid             TEXT PRIMARY KEY,
     source_id       TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
     collection      TEXT NOT NULL,
+    remote_id       TEXT,
     content_hash    TEXT NOT NULL,
     remote_etag     TEXT,
     starts_at       TEXT NOT NULL,

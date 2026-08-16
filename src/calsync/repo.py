@@ -102,6 +102,8 @@ def get_activity(conn: sqlite3.Connection, activity_id: str) -> Activity:
         age_group=row["age_group"],
         home_venue=row["home_venue_name"],
         aliases=aliases,
+        alarm_game_min=row["alarm_game_min"],
+        alarm_practice_min=row["alarm_practice_min"],
     )
 
 
@@ -137,6 +139,133 @@ def known_hashes(conn: sqlite3.Connection, source_id: str) -> dict[str, str]:
             (source_id,),
         )
     }
+
+
+@dataclass(frozen=True)
+class EventState:
+    """What we last wrote for one event, and where we wrote it.
+
+    Deliberately not a ``TargetRef``: the state layer records identifiers, and
+    stays ignorant of how any given target mints them.
+    """
+
+    uid: str
+    source_id: str
+    collection: str
+    remote_id: str | None
+    content_hash: str
+    remote_etag: str | None
+    starts_at: str
+    cancelled: bool
+
+
+def event_states(conn: sqlite3.Connection, source_id: str) -> dict[str, EventState]:
+    """Everything we have written for a source, cancelled rows included.
+
+    Cancelled rows are kept so a resurrected event is recognised as the same
+    event rather than written a second time.
+    """
+    return {
+        r["uid"]: EventState(
+            uid=r["uid"],
+            source_id=r["source_id"],
+            collection=r["collection"],
+            remote_id=r["remote_id"],
+            content_hash=r["content_hash"],
+            remote_etag=r["remote_etag"],
+            starts_at=r["starts_at"],
+            cancelled=bool(r["cancelled"]),
+        )
+        for r in conn.execute("SELECT * FROM event_state WHERE source_id = ?", (source_id,))
+    }
+
+
+def record_event_state(
+    conn: sqlite3.Connection,
+    *,
+    uid: str,
+    source_id: str,
+    collection: str,
+    remote_id: str | None,
+    content_hash: str,
+    remote_etag: str | None,
+    starts_at: str,
+) -> None:
+    """Record a successful write. Call this only *after* the target accepted it.
+
+    Writing state first would make a failed target write look synced, and the
+    event would never be retried.
+
+    ``cancelled`` resets to 0: an event that comes back after being cancelled
+    upstream is live again, and its row has to say so or the next diff will
+    treat it as new.
+    """
+    conn.execute(
+        """
+        INSERT INTO event_state
+            (uid, source_id, collection, remote_id, content_hash, remote_etag,
+             starts_at, cancelled, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 0, datetime('now'))
+        ON CONFLICT(uid) DO UPDATE SET
+            source_id    = excluded.source_id,
+            collection   = excluded.collection,
+            remote_id    = excluded.remote_id,
+            content_hash = excluded.content_hash,
+            remote_etag  = excluded.remote_etag,
+            starts_at    = excluded.starts_at,
+            cancelled    = 0,
+            updated_at   = excluded.updated_at
+        """,
+        (uid, source_id, collection, remote_id, content_hash, remote_etag, starts_at),
+    )
+
+
+def mark_event_cancelled(conn: sqlite3.Connection, uid: str) -> None:
+    """Tombstone a row rather than delete it.
+
+    The row is the only record that this UID was ever ours. Deleting it would
+    let the event be adopted from scratch if it reappeared, losing the history
+    that says we put it there.
+    """
+    conn.execute(
+        "UPDATE event_state SET cancelled = 1, updated_at = datetime('now') WHERE uid = ?",
+        (uid,),
+    )
+
+
+def record_poll_run(
+    conn: sqlite3.Connection,
+    *,
+    source_id: str,
+    status: str,
+    detail: str | None = None,
+    raw_sha256: str | None = None,
+) -> int:
+    """Log a poll. ``status`` is ok | error | held.
+
+    A held run is the one that most needs a record: the guard tripped, nothing
+    was cancelled, and somebody has to go look at why.
+    """
+    cursor = conn.execute(
+        "INSERT INTO poll_runs (source_id, status, detail, raw_sha256) VALUES (?, ?, ?, ?)",
+        (source_id, status, detail, raw_sha256),
+    )
+    return int(cursor.lastrowid or 0)
+
+
+def record_source_success(conn: sqlite3.Connection, source_id: str) -> None:
+    conn.execute(
+        "UPDATE sources SET last_success_at = datetime('now'), "
+        "last_error = NULL, last_error_at = NULL WHERE id = ?",
+        (source_id,),
+    )
+
+
+def record_source_error(conn: sqlite3.Connection, source_id: str, error: str) -> None:
+    conn.execute(
+        "UPDATE sources SET last_error = ?, last_error_at = datetime('now') WHERE id = ?",
+        (error, source_id),
+    )
 
 
 def resolve_venue_alias(conn: sqlite3.Connection, alias: str) -> Venue | None:

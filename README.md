@@ -18,7 +18,7 @@ shows a real feed wired up end to end.
 
 ## Shape
 
-```
+```[text]
 Hermes (PDF/photo) ─┐                                    ┌─→ iCloud: Games
 email worker       ─┼─→ calsync API ─→ Radicale (CalDAV) ─┼─→ iCloud: Practices
 ICS pollers        ─┤   (only writer)  SQLite (raw docs, ─┤   (shared w/ family)
@@ -34,7 +34,22 @@ appointments are never touched.
 Matrix room for the daily loop (capture, approve, amend). Web UI for setup
 (add a feed, bind it to a kid and sport).
 
+## Running it
+
+```bash
+calsync --db drive.db init-db
+calsync --db drive.db import config.yaml
+calsync --db drive.db sync --out ./out --dry-run   # then drop --dry-run
+calsync --db drive.db status
+```
+
+`--out` writes a directory of `.ics` files — safe to point at a live feed, and
+the output diffs in git. CalDAV and Google targets exist in code but are not yet
+wired to the CLI.
+
 ## Next step
 
-Phase 0: survey each real source for an API or ICS export before writing any
-ingestion code.
+Phase 0 for the remaining sources: capture a real payload from TeamReach and the
+flag-football app into `tests/fixtures/`. Identity fields for both are already
+recorded in [docs/sources/](docs/sources/) — TeamReach is a clean passthrough,
+the flag-football feed mints a new UID on every poll.

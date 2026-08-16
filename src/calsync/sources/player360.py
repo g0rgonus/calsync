@@ -21,6 +21,7 @@ from icalendar import Calendar
 from ..models import Activity, Event, PollResult, Venue
 from ..normalize import summary as summary_norm
 from ..normalize import venue as venue_norm
+from . import register
 
 #: CATEGORIES values that route to the Games calendar. Treat as an open
 #: vocabulary: anything unseen falls to Practices (the safe default) and is
@@ -83,6 +84,7 @@ def content_hash(component) -> str:
     return digest.hexdigest()
 
 
+@register("player360")
 def parse_feed(
     data: str | bytes,
     activity: Activity,

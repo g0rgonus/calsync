@@ -70,6 +70,9 @@ def build_body(
         lines.append(f"Kit: {event.kit}")
     if event.arrive_at:
         lines.append(f"Arrive: {event.arrive_at.astimezone(local.tzinfo):%H:%M}")
+    if event.venue and event.venue.field:
+        # Which field, kept out of LOCATION so the map pin stays navigable.
+        lines.append(f"Field: {event.venue.field}")
     if event.venue and event.venue.address:
         lines.append(event.venue.address)
     if event.source_id:
