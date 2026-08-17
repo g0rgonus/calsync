@@ -319,3 +319,20 @@ def test_google_move_between_calendars_is_explicit(rendered):
     # An update against the new calendar would create a second copy.
     assert "/move?destination=g@x" in calls[0][1]
     assert calls[1][0] == "PUT"
+
+
+def test_caldav_reads_an_etag_however_the_transport_cased_it(rendered):
+    """urllib title-cases headers, so a real server's `ETag` arrives as `Etag`.
+
+    Looking it up by exact spelling dropped every ETag: remote_etag stayed NULL,
+    later writes fell back to `If-None-Match: *`, and every update to an event
+    that already existed failed 412 — permanently, against any real server. The
+    fakes here previously used the one spelling the target asked for, which is
+    exactly why nothing caught it.
+    """
+    for spelling in ("ETag", "Etag", "etag", "ETAG"):
+        target = CalDavTarget(
+            base_url="http://dav.example/calsync",
+            transport=FakeTransport(FakeResponse(201, {spelling: '"v1"'})),
+        )
+        assert target.upsert(rendered).etag == '"v1"', f"dropped {spelling}"

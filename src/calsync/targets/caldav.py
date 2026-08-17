@@ -59,6 +59,26 @@ class CalDavTarget:
     def resource_url(self, collection: str, uid: str) -> str:
         return f"{self.base_url}/{quote(collection)}/{quote(uid)}.ics"
 
+    @staticmethod
+    def _header(response, name: str) -> str | None:
+        """Read a response header without caring how the transport cased it.
+
+        HTTP header names are case-insensitive, and transports normalise them
+        differently — urllib's `.title()` turns `ETag` into `Etag`. Looking one
+        up by exact spelling silently returned None for every ETag Radicale
+        ever sent, so `event_state.remote_etag` was always NULL, every later
+        write fell back to `If-None-Match: *`, and every genuine update to an
+        existing event failed 412 forever. The unit tests missed it because
+        their fake transport spelled the header exactly the way this module
+        happened to ask for it.
+        """
+        headers = getattr(response, "headers", None) or {}
+        wanted = name.casefold()
+        for key, value in headers.items():
+            if key.casefold() == wanted:
+                return value
+        return None
+
     def _call(self, method: str, url: str, *, body: bytes | None = None,
               headers: dict[str, str] | None = None):
         if self._transport is None:
@@ -73,16 +93,26 @@ class CalDavTarget:
             raise TargetError(f"could not create collection {collection!r}: {response.status}")
 
     def upsert(self, event: RenderedEvent, previous: TargetRef | None = None) -> TargetRef:
-        if previous is not None and previous.collection != event.collection:
+        moved = previous is not None and previous.collection != event.collection
+        if moved:
             # A collection is a distinct URL, so reclassification is
             # delete-then-create. Skipping the delete leaves a ghost copy.
             self.cancel(previous)
 
         url = self.resource_url(event.collection, event.uid)
         headers = {"Content-Type": "text/calendar; charset=utf-8"}
-        if previous is not None and previous.etag:
+        if previous is not None and previous.etag and not moved:
             headers["If-Match"] = previous.etag
         else:
+            # A move has just deleted the old resource and is now writing a new
+            # URL where nothing exists, so the old ETag cannot match and
+            # `If-Match` would fail every time. The precondition that expresses
+            # the intent here is "create this", the same as a first write.
+            #
+            # This was invisible while ETags were being dropped on the floor:
+            # `previous.etag` was always empty, so every write took this branch
+            # and happened to be right for the wrong reason. Promotion off the
+            # onboarding calendar is the path that exercises it.
             headers["If-None-Match"] = "*"
 
         sequence = 0 if previous is None else 1
@@ -99,7 +129,7 @@ class CalDavTarget:
         return TargetRef(
             collection=event.collection,
             remote_id=event.uid,
-            etag=response.headers.get("ETag"),
+            etag=self._header(response, "ETag"),
         )
 
     def cancel(self, ref: TargetRef) -> None:

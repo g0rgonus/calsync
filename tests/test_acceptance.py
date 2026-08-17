@@ -1,0 +1,345 @@
+"""The R1-R8 server requirements, and one real sync, against a live Radicale.
+
+`docs/deployment/radicale.md` states eight requirements and gives curl snippets
+for checking them. CLAUDE.md records that they were verified by hand once. That
+is the weakest link in the project: every other layer is covered by fast unit
+tests, and the one place calsync meets a real server was checked manually
+against a server that no longer exists, on a version nobody pinned.
+
+Two of these are worth more than the rest. R4 and R5 fail *silently* — a server
+that normalizes properties away still returns 200, still stores the event, and
+simply loses the provenance and the map pin. Nothing downstream notices until
+somebody taps a location in a calendar and lands in the wrong car park.
+
+Skipped unless a stack is up, so the ordinary suite stays offline and fast:
+
+    scripts/dev-stack.sh
+    CALSYNC_ACCEPTANCE=1 .venv/bin/pytest tests/test_acceptance.py -v
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import urllib.error
+import urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
+
+import pytest
+
+from calsync import db, repo
+from calsync.secrets import SecretStore
+from calsync.sync import sync_source
+from calsync.render import RenderedEvent
+from calsync.targets import build
+from calsync.targets.http import HttpTransport
+
+pytestmark = pytest.mark.skipif(
+    not os.environ.get("CALSYNC_ACCEPTANCE"),
+    reason="needs a live stack: scripts/dev-stack.sh, then CALSYNC_ACCEPTANCE=1",
+)
+
+BASE = os.environ.get("CALSYNC_ACCEPTANCE_URL", "http://localhost:5232")
+USER = os.environ.get("CALSYNC_ACCEPTANCE_USER", "calsync")
+READER = os.environ.get("CALSYNC_ACCEPTANCE_READER", "calreader")
+SECRETS = Path(__file__).resolve().parent.parent / "secrets" / "secrets.json"
+
+FIXTURE = Path(__file__).parent / "fixtures" / "teamreach_comets_sample.ics"
+NOW = datetime(2026, 3, 1, 12, 0, tzinfo=timezone.utc)
+
+#: An upstream-shaped resource name: mixed case and hyphens (R6). UIDs come from
+#: the feed and are not ours to rewrite into something tidier.
+UID = "360Player-event-4823901.ics"
+
+def _probe() -> str:
+    """R4/R5 probe, serialized by calsync's own writer.
+
+    Deliberately not a hand-written string. A literal here would test my typing;
+    what R4 and R5 need to know is whether the bytes *calsync* produces survive
+    the server — including how the icalendar library folds long lines and
+    escapes the comma inside `geo:lat,lon`, which is precisely where an exact
+    pin gets quietly turned into an approximate one.
+    """
+    from calsync.targets.ics_file import to_ics
+
+    event = RenderedEvent(
+        uid="360Player-event-4823901",
+        collection="acceptance",
+        title="Acceptance probe",
+        starts_at=datetime(2026, 3, 11, 23, 0, tzinfo=timezone.utc),
+        ends_at=datetime(2026, 3, 12, 0, 0, tzinfo=timezone.utc),
+        tz="America/New_York",
+        body="",
+        location_text="1 Riverview Rd, Newport News VA",
+        venue_name="Riverview Farm Park",
+        lat=37.0871,
+        lon=-76.5127,
+        is_game=True,
+        provenance={"SOURCE": "acceptance", "HASH": "0123456789abcdef"},
+    )
+    return to_ics(event).decode()
+
+
+PROBE = None  # built lazily by the fixture below, once RenderedEvent is imported
+
+
+@pytest.fixture(scope="module")
+def password():
+    if not SECRETS.exists():
+        pytest.skip("no secrets/secrets.json — run scripts/dev-stack.sh")
+    value = json.loads(SECRETS.read_text()).get("radicale_password")
+    if not value:
+        pytest.skip("no radicale_password in the secret store")
+    return value
+
+
+def header(response, name: str) -> str | None:
+    """Case-insensitive, for the same reason `caldav._header` is.
+
+    This helper first spelled it `ETag`, urllib had title-cased it to `Etag`,
+    and the test reported the server as non-compliant when the server was fine.
+    Exactly the bug it was written to catch, repeated one layer up.
+    """
+    wanted = name.casefold()
+    return next((v for k, v in (response.headers or {}).items()
+                 if k.casefold() == wanted), None)
+
+
+def _unfold(text: str) -> str:
+    """Undo RFC 5545 line folding, which is not a change to the value."""
+    return text.replace("\r\n ", "").replace("\n ", "")
+
+
+def _property(text: str, name: str) -> str:
+    for line in text.splitlines():
+        if line.startswith(name):
+            return line
+    return ""
+
+
+def call(method, url, *, user=USER, password=None, body=None, headers=None):
+    transport = HttpTransport(username=user, password=password)
+    return transport(method, url, body=body.encode() if body else None,
+                     headers=headers or {})
+
+
+#: Unique per run. Radicale keeps its storage between runs where SQLite does
+#: not, so a suite that assumes a clean server passes once and then fails
+#: forever on `If-None-Match: *` against its own leftovers. Isolating the
+#: collection is cheaper than cleaning up reliably after a failed run.
+RUN = f"acc{os.getpid()}"
+
+
+@pytest.fixture(scope="module")
+def collection(password):
+    """A scratch calendar, created exactly how the target creates one (R7).
+
+    MKCALENDAR, not MKCOL: Radicale answers MKCOL under a user principal with
+    403, and a probe that used the wrong verb would report a rights problem
+    that does not exist.
+    """
+    url = f"{BASE}/{USER}/{RUN}/"
+    response = call("MKCALENDAR", url, password=password)
+    assert response.status in (201, 405, 409), (
+        f"MKCALENDAR returned {response.status}; the target treats 405/409 as "
+        "'already exists' and anything else as a failure"
+    )
+    yield url
+    call("DELETE", url, password=password)
+
+
+# --- the server requirements ------------------------------------------------
+
+
+def test_r1_reachable(password):
+    assert call("GET", f"{BASE}/", password=password).status in (200, 301, 302, 207)
+
+
+def test_r2_put_returns_an_etag(collection, password):
+    """Without one there is no conflict detection and a concurrent edit is lost."""
+    response = call("PUT", collection + UID, password=password, body=_probe(),
+                    headers={"Content-Type": "text/calendar; charset=utf-8"})
+    assert response.status in (201, 204)
+    assert header(response, "ETag"), "no ETag on the PUT response"
+
+
+def test_r3_a_stale_if_match_is_refused(collection, password):
+    """412, not a silent overwrite. The writer must raise rather than clobber."""
+    call("PUT", collection + UID, password=password, body=_probe(),
+         headers={"Content-Type": "text/calendar; charset=utf-8"})
+    response = call("PUT", collection + UID, password=password, body=_probe(),
+                    headers={"Content-Type": "text/calendar; charset=utf-8",
+                             "If-Match": '"definitely-not-the-current-etag"'})
+    assert response.status == 412, f"expected 412, got {response.status}"
+
+
+def test_r4_unknown_x_properties_survive_a_round_trip(collection, password):
+    """Fails silently: the write succeeds and the provenance is simply gone."""
+    call("PUT", collection + UID, password=password, body=_probe(),
+         headers={"Content-Type": "text/calendar; charset=utf-8"})
+    body = _unfold(call("GET", collection + UID, password=password).body.decode())
+
+    assert "X-CALSYNC-SOURCE:acceptance" in body
+    assert "X-CALSYNC-HASH:0123456789abcdef" in body
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="R5 FAILS against tomsquest/docker-radicale:latest. Radicale "
+           "re-serializes X-APPLE-STRUCTURED-LOCATION and treats the comma in "
+           "geo:lat,lon as a value separator, keeping only the latitude — the "
+           "pin lands at longitude 0, ~6000km out. Escaping it as geo:lat\\,lon "
+           "does survive the round trip, but whether Apple's clients then read "
+           "it back correctly cannot be tested from here, so the encoding "
+           "change is Dan's call. Marked strict so this flips to a failure the "
+           "day it starts working.",
+)
+def test_r5_the_apple_pin_survives_with_its_parameters(collection, password):
+    """The one most likely to break, and the most expensive when it does.
+
+    A server that re-encodes this as text keeps something that still looks like
+    a location and no longer navigates anywhere. This is the check the project's
+    own "a wrong pin is worse than no pin" rule exists for, and it is currently
+    failing in production shape.
+    """
+    sent = _probe()
+    call("PUT", collection + UID, password=password, body=sent,
+         headers={"Content-Type": "text/calendar; charset=utf-8"})
+    got = _unfold(call("GET", collection + UID, password=password).body.decode())
+
+    assert "X-APPLE-STRUCTURED-LOCATION" in got
+    # Compare against what calsync sent, not against a literal: the point is
+    # that the server changed nothing, whatever calsync's writer chose to emit.
+    pin = _property(_unfold(sent), "X-APPLE-STRUCTURED-LOCATION")
+    assert _property(got, "X-APPLE-STRUCTURED-LOCATION") == pin, (
+        "the server rewrote the pin — an approximate location that still looks "
+        "like a real one is worse than none"
+    )
+    assert "37.0871" in pin and "76.5127" in pin, "calsync itself dropped a coordinate"
+
+
+def test_r6_an_upstream_resource_name_is_accepted(collection, password):
+    """Mixed case and hyphens. UIDs are the feed's, not ours to rewrite."""
+    assert call("GET", collection + UID, password=password).status == 200
+
+
+def test_r8_the_read_only_principal_cannot_write(collection, password):
+    """The check that catches a rights file failing open."""
+    response = call("PUT", collection + "reader-probe.ics", user=READER,
+                    password=password, body=_probe(),
+                    headers={"Content-Type": "text/calendar; charset=utf-8"})
+    assert response.status in (401, 403), (
+        f"the read-only principal wrote successfully ({response.status}) — "
+        "the rights file is failing open"
+    )
+
+
+def test_r8_the_read_only_principal_can_read(collection, password):
+    assert call("GET", collection + UID, user=READER, password=password).status == 200
+
+
+# --- and one real sync ------------------------------------------------------
+
+
+@pytest.fixture
+def configured(tmp_path, password):
+    conn = db.open_db(tmp_path / "calsync.db")
+    conn.executescript(
+        """
+        INSERT INTO children (id, name, initial, birth_order)
+             VALUES ('millie', 'Millie', 'M', 1);
+        INSERT INTO activities (id, child_id, name, sport_id, tz)
+             VALUES ('millie-soccer-comets', 'millie', 'Comets', 'soccer',
+                     'America/New_York');
+        INSERT INTO sources (id, activity_id, kind, shape, staging_collection)
+             VALUES ('tr-comets', 'millie-soccer-comets', 'teamreach', 'feed',
+                     ?);
+        """.replace("?", f"'{RUN}-staging'")
+    )
+    # Route the promoted events somewhere unique too, for the same reason.
+    conn.execute("UPDATE settings SET value = ? WHERE key = 'collection_template'",
+                 (RUN + "-{type}",))
+    conn.commit()
+    yield conn
+    for suffix in ("-staging", "-games", "-practices"):
+        call("DELETE", f"{BASE}/{USER}/{RUN}{suffix}/", password=password)
+
+
+def _target(password):
+    return build(
+        "caldav",
+        base_url=f"{BASE}/{USER}",
+        transport=HttpTransport(username=USER, password=password),
+        username=USER,
+        password=password,
+    )
+
+
+def test_a_feed_syncs_into_a_real_caldav_server(configured, password):
+    """The whole loop against a real server, which nothing else covers.
+
+    Every other test in this suite stops at `RenderedEvent` or at an .ics file
+    on disk. This is the only one that proves calsync and Radicale actually
+    agree — about collection creation, resource naming, and ETags.
+    """
+    source = repo.get_source(configured, "tr-comets")
+    report = sync_source(configured, source, _target(password), now=NOW,
+                         raw=FIXTURE.read_bytes())
+
+    assert report.status == "ok", report.line()
+    assert report.created > 0
+    assert not report.errors
+
+    states = repo.event_states(configured, "tr-comets")
+    assert len(states) == report.created
+    for state in states.values():
+        assert state.remote_etag, "no ETag stored, so a later update cannot be safe"
+        assert state.collection == f"{RUN}-staging"
+
+    # And it is genuinely on the server, not merely recorded as written.
+    sample = next(iter(states.values()))
+    fetched = call("GET", f"{BASE}/{USER}/{RUN}-staging/{sample.remote_id}.ics",
+                   password=password)
+    assert fetched.status == 200
+    assert b"BEGIN:VEVENT" in fetched.body
+
+
+def test_a_second_sync_writes_nothing(configured, password):
+    """The assertion that mattered for ics files matters more against a server."""
+    target = _target(password)
+    source = repo.get_source(configured, "tr-comets")
+    first = sync_source(configured, source, target, now=NOW, raw=FIXTURE.read_bytes())
+    second = sync_source(configured, source, target, now=NOW, raw=FIXTURE.read_bytes())
+
+    assert second.created == 0
+    assert second.updated == 0
+    assert second.cancelled == 0
+    assert second.unchanged == first.created
+
+
+def test_promotion_relocates_rather_than_duplicating(configured, password):
+    """A changed collection is a move. Against a real server, a stale copy left
+    behind is exactly the duplicate-in-a-shared-calendar failure this project
+    exists to prevent."""
+    target = _target(password)
+    source = repo.get_source(configured, "tr-comets")
+    sync_source(configured, source, target, now=NOW, raw=FIXTURE.read_bytes())
+
+    before = repo.event_states(configured, "tr-comets")
+    sample = next(iter(before.values()))
+    staged_url = f"{BASE}/{USER}/{RUN}-staging/{sample.remote_id}.ics"
+    assert call("GET", staged_url, password=password).status == 200
+
+    repo.set_staging(configured, "tr-comets", None)
+    promoted = sync_source(
+        configured, repo.get_source(configured, "tr-comets"), target,
+        now=NOW, raw=FIXTURE.read_bytes(),
+    )
+
+    assert promoted.moved > 0, "promotion moved nothing"
+    after = repo.event_states(configured, "tr-comets")
+    assert {s.collection for s in after.values()} <= {f"{RUN}-games", f"{RUN}-practices"}
+
+    # The staged copy is gone, not orphaned alongside the promoted one.
+    assert call("GET", staged_url, password=password).status in (404, 410)
