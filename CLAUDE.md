@@ -32,7 +32,12 @@ them, and nothing but calsync writes to Radicale. "It's on a private tailnet" is
 not a reason to weaken those — the risk there is an agent acting on a bad parse,
 not a stranger on the internet.
 
-The Google target is implemented and tested but not wired to the CLI.
+The Google target is selectable (`--target google`, or `target_kind`) but has no
+authenticated transport, so it refuses at selection time and says so. Its payload
+builder is complete and tested; only the OAuth exchange is missing.
+
+Nothing runs `calsync digest --send` on a schedule — the command exists and no
+cron or compose service fires it.
 
 ## Setup and tests
 
