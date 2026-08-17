@@ -1189,3 +1189,85 @@ def test_every_route_is_exercised_by_some_test():
         if not re.search(pattern, tests_src):
             missing.append(path)
     assert not missing, f"routes no test calls: {missing}"
+
+
+# --- retiring a season ------------------------------------------------------
+
+
+class CollectingTarget:
+    """A calendar that remembers. Writes so a season can exist, cancels so it
+    can be taken away, and records both so a test can check the real thing
+    happened rather than that a counter moved."""
+
+    def __init__(self):
+        self.written = {}
+        self.cancelled = []
+
+    def ensure_collection(self, _collection):
+        pass
+
+    def upsert(self, event, _previous=None):
+        from calsync.targets import TargetRef
+
+        self.written[event.uid] = event.collection
+        return TargetRef(collection=event.collection, remote_id=event.uid,
+                         etag='"v1"')
+
+    def cancel(self, ref):
+        self.cancelled.append(ref.remote_id)
+        self.written.pop(ref.remote_id, None)
+
+
+@pytest.fixture
+def retiring(tmp_path, secrets_path, feed):
+    calendar = CollectingTarget()
+    app = web_app.create_app(
+        tmp_path / "calsync.db",
+        secrets=SecretStore(path=secrets_path, environ={}),
+        fetcher=feed,
+        clock=lambda: NOW,
+        retire_target=calendar,
+    )
+    client = Client(app)
+    conn = db.open_db(tmp_path / "calsync.db")
+    conn.executescript(
+        "INSERT INTO children (id, name, initial, birth_order) "
+        "VALUES ('patrick', 'Patrick', 'P', 1);"
+    )
+    conn.commit()
+    conn.close()
+    return client, calendar
+
+
+def test_the_source_page_offers_to_retire_the_season(client, tmp_path):
+    onboard(client)
+    conn = db.connect(tmp_path / "calsync.db")
+    source_id = repo.list_sources(conn, enabled_only=False)[0].id
+
+    page = client.get(f"/sources/{source_id}")["body"]
+    assert "End of season" in page
+    assert "Not a delete" in page
+
+
+def test_retiring_from_the_console_clears_the_calendar_and_stops_polling(
+    retiring, tmp_path
+):
+    client, calendar = retiring
+    onboard(client)
+    conn = db.connect(tmp_path / "calsync.db")
+    source_id = repo.list_sources(conn, enabled_only=False)[0].id
+
+    # Give it something to remove: a real sync through the same target.
+    from calsync.sync import sync_source
+    sync_source(conn, repo.get_source(conn, source_id), calendar,
+                now=NOW, raw=HAWKS)
+    live = repo.tracked_events(conn, source_id)
+    assert live > 0
+
+    assert client.post(f"/sources/{source_id}/retire")["status"] == 303
+
+    conn = db.connect(tmp_path / "calsync.db")
+    assert len(calendar.cancelled) == live
+    assert calendar.written == {}, "events left on the calendar"
+    assert repo.tracked_events(conn, source_id) == 0
+    assert not repo.get_source(conn, source_id).enabled

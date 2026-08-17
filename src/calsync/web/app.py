@@ -19,7 +19,7 @@ import bottle
 from bottle import Bottle, redirect, request, static_file, template
 
 from .. import config as config_mod
-from .. import db, matrix, repo, sources
+from .. import db, matrix, repo, retire, sources
 from ..fetch import FetchError, http_fetch, render_url
 from ..inspection import InspectionError, inspect_feed
 from ..normalize import venue as venue_norm
@@ -33,6 +33,8 @@ from ..onboarding import (
 from ..routing import slugify
 from ..secrets import SecretError, SecretStore
 from ..settings import Settings, set_setting
+from ..targets import TargetError, build
+from ..targets.http import HttpTransport
 from ..sync import sync_source
 from . import gate
 
@@ -76,6 +78,7 @@ def create_app(
     clock=None,
     trusted_origins=(),
     matrix_opener=None,
+    retire_target=None,
 ) -> Bottle:
     """Build the console.
 
@@ -402,6 +405,42 @@ def create_app(
             _require_source(conn, source_id)
             repo.set_staging(conn, source_id, collection or None)
         redirect(f"/sources/{source_id}?ok=" + _q(f"Staged to {collection}."))
+
+    @app.post("/sources/<source_id>/retire")
+    def retire_source_route(source_id):
+        """The end of a season: clear the calendar, then stop polling.
+
+        Needs a real target, unlike everything else on this page — it is the one
+        console action that writes to the family's calendars, because removing
+        an event is a write. A preview cannot do it.
+        """
+        with connect() as conn:
+            source = _require_source(conn, source_id)
+            settings = Settings.load(conn)
+            try:
+                target = build(
+                    "caldav",
+                    base_url=settings.radicale_url,
+                    transport=HttpTransport(
+                        username=settings.radicale_user,
+                        password=secrets.get(settings.radicale_secret_ref),
+                    ),
+                    username=settings.radicale_user,
+                    password=secrets.get(settings.radicale_secret_ref),
+                ) if retire_target is None else retire_target
+                report = retire.retire_source(conn, source, target)
+            except (SecretError, TargetError) as exc:
+                raise Refused(f"could not reach the calendar: {exc}") from exc
+
+        if not report.ok:
+            raise Refused(
+                f"{len(report.errors)} event(s) could not be removed, so polling "
+                "is still on and a later run will retry them: "
+                + "; ".join(report.errors[:3])
+            )
+        redirect(f"/sources/{source_id}?ok=" + _q(
+            f"Retired. {report.cancelled} events removed from the calendar and "
+            "polling stopped."))
 
     @app.post("/sources/<source_id>/enabled")
     def set_enabled(source_id):

@@ -24,6 +24,7 @@ from . import config as config_mod
 from . import db, repo
 from .secrets import SecretStore
 from .settings import Settings
+from . import retire
 from .sync import sync_source
 from .targets import build
 from .targets.http import HttpTransport
@@ -222,6 +223,34 @@ def cmd_promote(args) -> int:
     return 0
 
 
+def cmd_retire(args) -> int:
+    """Take a finished season off the calendars and stop polling it.
+
+    Not a delete: the source row and its tombstones stay, because they are the
+    record that these events were ours. `--forget` drops the row afterwards,
+    and refuses while anything is still live.
+    """
+    conn = db.open_db(args.db)
+    source = repo.get_source(conn, args.source)
+    if source is None:
+        print(f"error: no source {args.source!r}", file=sys.stderr)
+        return 2
+
+    secrets = _secrets(args)
+    report = retire.retire_source(conn, source, _target(conn, args, secrets))
+    print(report.line())
+    if not report.ok:
+        print("\nnothing was disabled: some events could not be removed, so the",
+              file=sys.stderr)
+        print("source stays enabled and a later run will retry them.", file=sys.stderr)
+        return 1
+
+    if args.forget:
+        retire.forget_source(conn, args.source)
+        print(f"forgot {args.source}; its row is gone")
+    return 0
+
+
 def cmd_web(args) -> int:
     """Serve the onboarding console.
 
@@ -316,6 +345,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_promote.add_argument("--force", action="store_true",
                            help="promote despite an incomplete parse")
     p_promote.set_defaults(fn=cmd_promote)
+
+    p_retire = sub.add_parser(
+        "retire", help="cancel a finished season's events and stop polling it")
+    target_args(p_retire)
+    p_retire.add_argument("source")
+    p_retire.add_argument("--forget", action="store_true",
+                          help="also drop the source row, once nothing is left live")
+    p_retire.set_defaults(fn=cmd_retire)
 
     p_web = sub.add_parser("web", help="serve the onboarding console")
     p_web.add_argument("--host", default="127.0.0.1",

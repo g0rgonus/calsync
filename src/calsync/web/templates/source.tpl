@@ -222,3 +222,24 @@
 % end
   </div>
 </div>
+
+<h2>End of season</h2>
+<div class="card">
+  <p class="note">
+    Rec teams are not renamed between seasons, they are replaced — so when this
+    one finishes, its last few events are still sitting in the family's
+    calendars. Retiring removes them and stops polling, in that order.
+  </p>
+  <p class="note">
+    Not a delete. The source row and its record of what was written stay, which
+    is what stops a reused event id from being picked up as new next season.
+% if tracked:
+    <strong>{{ tracked }}</strong> events would come off the calendar.
+% else:
+    Nothing is on the calendar, so this only stops the polling.
+% end
+  </p>
+  <form method="post" action="/sources/{{ source.id }}/retire">
+    <button class="btn btn-danger" type="submit">Retire {{ activity.name }}</button>
+  </form>
+</div>
