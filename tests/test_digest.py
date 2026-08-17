@@ -257,3 +257,44 @@ def test_a_credential_never_appears_in_a_push_error():
     with pytest.raises(notify.NotifyError) as raised:
         notify.send(notify.PushoverConfig(), Store(), "x")
     assert "pushover_token" in str(raised.value)
+
+
+# --- when it goes out -------------------------------------------------------
+
+
+from datetime import date  # noqa: E402
+
+MORNING = datetime(2026, 3, 4, 7, 30, tzinfo=timezone.utc)
+
+
+def test_no_send_time_means_never():
+    """A deployment that never asked for a digest should not get one."""
+    assert not digest.due(now_local=MORNING, send_at="", last_sent_on=None)
+    assert not digest.due(now_local=MORNING, send_at="   ", last_sent_on=None)
+
+
+def test_it_is_due_once_the_hour_has_passed():
+    assert digest.due(now_local=MORNING, send_at="07:00", last_sent_on=None)
+    assert not digest.due(now_local=MORNING, send_at="08:00", last_sent_on=None)
+
+
+def test_it_goes_out_once_a_day():
+    assert not digest.due(now_local=MORNING, send_at="07:00",
+                          last_sent_on=date(2026, 3, 4))
+    assert digest.due(now_local=MORNING, send_at="07:00",
+                      last_sent_on=date(2026, 3, 3))
+
+
+def test_late_beats_never():
+    """A poller started at 09:00 with a 07:00 digest still sends today's.
+
+    Otherwise restarting the container in the morning silently costs the day's
+    message, which is not a rule anyone remembers when wondering where it went.
+    """
+    nine = MORNING.replace(hour=9)
+    assert digest.due(now_local=nine, send_at="07:00", last_sent_on=None)
+
+
+def test_a_malformed_time_sends_nothing_rather_than_everything():
+    for bad in ("half seven", "7", "25:00", ":"):
+        assert not digest.due(now_local=MORNING, send_at=bad, last_sent_on=None), bad

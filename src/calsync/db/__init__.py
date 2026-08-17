@@ -103,6 +103,10 @@ DEFAULT_SETTINGS: dict[str, str] = {
     # you. Both credentials live in the secret store; these name them.
     "pushover_token_ref": "pushover_token",
     "pushover_user_ref": "pushover_user",
+    # Daily digest to Matrix. Empty means never — the poller carries it, so
+    # there is no cron to forget about and no second container holding secrets.
+    "digest_send_at": "",
+    "digest_window_hours": "24",
     # When a quiet feed is presumed to be a season that ended. Rows rather than
     # constants because a league with a longer off-season is a different
     # household's problem, not a different build.

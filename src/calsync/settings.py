@@ -30,6 +30,8 @@ class Settings:
     max_disappearance_count: int
     sync_window_back_days: int
     sync_window_forward_days: int
+    digest_send_at: str
+    digest_window_hours: int
     season_nudge_days: int
     season_shutoff_days: int
     default_tz: str
@@ -58,6 +60,8 @@ class Settings:
             max_disappearance_count=int(raw["max_disappearance_count"]),
             sync_window_back_days=int(raw["sync_window_back_days"]),
             sync_window_forward_days=int(raw["sync_window_forward_days"]),
+            digest_send_at=raw["digest_send_at"],
+            digest_window_hours=int(raw["digest_window_hours"]),
             season_nudge_days=int(raw["season_nudge_days"]),
             season_shutoff_days=int(raw["season_shutoff_days"]),
             default_tz=raw["default_tz"],

@@ -628,6 +628,19 @@ def create_app(
             set_setting(conn, "matrix_user_id", _field("matrix_user_id").strip())
             set_setting(conn, "matrix_room_id", _field("matrix_room_id").strip())
             set_setting(conn, "matrix_secret_ref", ref)
+            # Validated on the way in: `digest.due` treats anything it cannot
+            # parse as "never", so a typo would otherwise look configured and
+            # quietly send nothing for the rest of the season.
+            send_at = _field("digest_send_at").strip()
+            if send_at and not _reads_as_a_time(send_at):
+                raise Refused(
+                    f"{send_at!r} is not a time of day — use HH:MM, like 07:30, "
+                    "or leave it empty for no digest"
+                )
+            set_setting(conn, "digest_send_at", send_at)
+            hours = _field("digest_window_hours").strip()
+            if hours:
+                set_setting(conn, "digest_window_hours", str(_whole("hours", hours)))
             # The token is a bearer credential; it goes to the secret store and
             # never to the database, same as the Radicale password.
             token = _field("matrix_access_token")
@@ -935,6 +948,14 @@ def _whole(name: str, value: str, *, default: int | None = None) -> int:
         return int(value)
     except ValueError:
         raise Refused(f"{name} has to be a whole number, not {value!r}") from None
+
+
+def _reads_as_a_time(value: str) -> bool:
+    try:
+        hour, minute = (int(part) for part in value.split(":", 1))
+    except ValueError:
+        return False
+    return 0 <= hour <= 23 and 0 <= minute <= 59
 
 
 def _field(name: str, default: str = "") -> str:

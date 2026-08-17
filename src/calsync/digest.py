@@ -24,13 +24,41 @@ row. A digest is a read, and a read that quietly advanced sync state would make
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from . import repo, sources
 from .fetch import http_fetch, render_url
 from .render import render
 from .settings import Settings
+
+
+def due(
+    *,
+    now_local: datetime,
+    send_at: str,
+    last_sent_on: date | None,
+) -> bool:
+    """Is today's digest due? Pure, because the loop around it is not testable.
+
+    ``send_at`` is "HH:MM" local, and empty means never — a deployment that has
+    not asked for a digest should not get one at midnight because a default
+    looked harmless.
+
+    Late is better than never: a poller started at 09:00 with a 07:00 digest
+    still sends today's. The alternative is that restarting the container in the
+    morning silently costs you the day's message, which is the kind of rule
+    nobody remembers when wondering where it went.
+    """
+    if not send_at.strip():
+        return False
+    try:
+        hour, minute = (int(part) for part in send_at.strip().split(":", 1))
+    except ValueError:
+        return False
+    if last_sent_on == now_local.date():
+        return False
+    return (now_local.hour, now_local.minute) >= (hour, minute)
 
 
 @dataclass(frozen=True)

@@ -148,6 +148,11 @@ def cmd_poll(args) -> int:
     signal.signal(signal.SIGINT, stop)
 
     schedule = polling.Schedule()
+    # In memory rather than a row: the Matrix transaction id is the date, so a
+    # restart that re-sends updates the same message instead of posting twice.
+    # Persisting this would buy nothing and be one more thing to migrate.
+    digest_sent_on = None
+
     while not stopping["now"]:
         clock = time.monotonic()
         live = repo.list_sources(conn, enabled_only=True)
@@ -192,6 +197,8 @@ def cmd_poll(args) -> int:
                       f"next attempt in {delay // 60}m", flush=True)
             sys.stdout.flush()
 
+        digest_sent_on = _maybe_digest(conn, secrets, digest_sent_on)
+
         if args.once:
             return 0
         for _ in range(TICK_S):
@@ -199,6 +206,43 @@ def cmd_poll(args) -> int:
                 break
             time.sleep(1)
     return 0
+
+
+def _maybe_digest(conn, secrets, sent_on):
+    """Send the daily digest if it is due. Never takes the poller down.
+
+    Lives in the poll loop because that is already a long-running process with
+    the database and the secret store to hand — a cron entry or a second
+    container would be another place for credentials to live and another thing
+    to notice had stopped.
+    """
+    from zoneinfo import ZoneInfo
+
+    try:
+        settings = Settings.load(conn)
+        if not settings.digest_send_at.strip():
+            return sent_on
+        now_local = datetime.now(ZoneInfo(settings.default_tz))
+        if not digest.due(now_local=now_local, send_at=settings.digest_send_at,
+                          last_sent_on=sent_on):
+            return sent_on
+
+        now = _now(None)
+        result = digest.collect(conn, now=now, hours=settings.digest_window_hours,
+                                secrets=secrets)
+        if result.empty and not result.unavailable:
+            print("digest: nothing on, not sending", flush=True)
+            return now_local.date()
+
+        matrix.send(matrix.load(conn), secrets, result.text(),
+                    transaction_id=f"calsync-digest-{now_local.date().isoformat()}")
+        print(f"digest: sent for {now_local.date()}", flush=True)
+        return now_local.date()
+    except Exception as exc:  # noqa: BLE001 — a digest is not worth a crash
+        print(f"digest: not sent ({exc})", flush=True)
+        # Marked as done for today anyway: retrying a broken send every thirty
+        # seconds until midnight is worse than missing one message.
+        return datetime.now(timezone.utc).date()
 
 
 def cmd_stage(args) -> int:

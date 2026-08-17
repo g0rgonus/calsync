@@ -1534,3 +1534,22 @@ def test_the_matrix_section_describes_what_is_actually_built(client):
     assert "Nothing sends a Matrix message yet" not in page
     assert "calsync digest --send" in page
     assert "nothing listens" in page
+
+
+def test_a_digest_time_that_cannot_be_parsed_is_refused(client, tmp_path):
+    """`digest.due` reads anything it cannot parse as "never", so a typo would
+    otherwise look configured and quietly send nothing all season."""
+    result = client.post("/settings/matrix", {"digest_send_at": "half seven"})
+    assert "not a time of day" in result["body"]
+
+    conn = db.connect(tmp_path / "calsync.db")
+    assert Settings.load(conn).digest_send_at == ""
+
+
+def test_a_digest_time_round_trips(client, tmp_path):
+    client.post("/settings/matrix", {"digest_send_at": "07:30",
+                                     "digest_window_hours": "36"})
+    conn = db.connect(tmp_path / "calsync.db")
+    settings = Settings.load(conn)
+    assert settings.digest_send_at == "07:30"
+    assert settings.digest_window_hours == 36

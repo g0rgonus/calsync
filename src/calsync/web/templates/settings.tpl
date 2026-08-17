@@ -303,6 +303,27 @@
 
   <form method="post" action="/settings/matrix">
     <div class="row">
+      <label class="field" style="margin-bottom:0.8rem;flex:0 1 11rem">
+        <span class="label">Send a digest at</span>
+        <input type="text" name="digest_send_at" class="mono"
+               value="{{ settings.digest_send_at }}" placeholder="07:30" autocomplete="off">
+      </label>
+      <label class="field" style="margin-bottom:0.8rem;flex:0 1 11rem">
+        <span class="label">Covering the next</span>
+        <input type="number" name="digest_window_hours" min="1"
+               value="{{ settings.digest_window_hours }}">
+      </label>
+      <div class="field" style="margin-bottom:0.8rem">
+        <span class="label">&nbsp;</span>
+        <span class="note">
+          Local time, blank for never. The poller sends it — there is no cron to
+          forget and no second container holding a token. A day with nothing on
+          is not sent.
+        </span>
+      </div>
+    </div>
+
+    <div class="row">
       <label class="field" style="margin-bottom:0.8rem">
         <span class="label">Homeserver</span>
         <input type="text" name="matrix_homeserver" class="mono"
