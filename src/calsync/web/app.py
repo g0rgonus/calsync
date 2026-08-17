@@ -166,7 +166,8 @@ def create_app(
     def _oops(err):
         cause = getattr(err, "exception", None)
         if isinstance(cause, (Refused, OnboardingError, SecretError, FetchError,
-                              InspectionError, config_mod.ConfigError, KeyError)):
+                              InspectionError, config_mod.ConfigError,
+                              repo.NotFound)):
             return render("problem.tpl", title="Stopped", message=str(cause))
         return render(
             "problem.tpl",
@@ -278,7 +279,9 @@ def create_app(
                 token=_field("token").strip() or None,
                 season_start=_field("season_start") or None,
                 season_end=_field("season_end") or None,
-                poll_interval_s=max(int(_field("poll_interval_s") or 1200), 60),
+                poll_interval_s=max(
+                    _whole("check interval", _field("poll_interval_s"), default=1200), 60
+                ),
                 # getall has no unicode variant, but these keys are our own
                 # ("path", "query:<name>") and never free text.
                 secret_keys=tuple(request.forms.getall("vault")),
@@ -683,7 +686,7 @@ def create_app(
             raise Refused("pick a venue to merge into")
         with connect() as conn:
             losing = repo.get_venue_detail(conn, venue_id)
-            winning = repo.get_venue_detail(conn, int(target))
+            winning = repo.get_venue_detail(conn, _whole("venue", target))
             if losing is None or winning is None:
                 raise Refused("one of those venues no longer exists")
             moved = repo.merge_venues(conn, losing_id=venue_id, winning_id=winning.id)
@@ -766,7 +769,7 @@ def create_app(
                                 "id": child_id,
                                 "name": name,
                                 "initial": initial,
-                                "birth_order": int(order),
+                                "birth_order": _whole("list order", str(order)),
                                 "color": _field("color").strip() or None,
                                 "nicknames": nicknames,
                             }
@@ -845,6 +848,24 @@ def create_app(
 
 
 # --- helpers ----------------------------------------------------------------
+
+
+def _whole(name: str, value: str, *, default: int | None = None) -> int:
+    """A form field as an integer, or a message the operator can act on.
+
+    Every one of these arrives from a select or a number input, so a
+    non-numeric value means a hand-built POST or a browser doing something
+    odd — either way it is bad input, not a bug, and rendering it as
+    "This is a bug in calsync" over a traceback tells the operator the wrong
+    thing about their own console.
+    """
+    value = (value or "").strip()
+    if not value and default is not None:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        raise Refused(f"{name} has to be a whole number, not {value!r}") from None
 
 
 def _field(name: str, default: str = "") -> str:

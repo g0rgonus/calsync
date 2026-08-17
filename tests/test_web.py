@@ -1094,3 +1094,98 @@ def test_every_input_type_the_console_uses_is_styled():
 
     unstyled = used - styled - {"hidden", "checkbox", "radio"}
     assert not unstyled, f"input types with no styling: {sorted(unstyled)}"
+
+
+# --- error handling ---------------------------------------------------------
+
+
+def test_a_non_numeric_field_is_the_operators_problem_not_a_crash(client, tmp_path):
+    """These arrive from selects and number inputs, so a bad one is bad input.
+
+    Rendering it as "This is a bug in calsync" over a traceback tells the
+    operator the wrong thing about their own console.
+    """
+    result = client.post("/children", {"id": "patrick", "name": "Patrick",
+                                       "initial": "P", "birth_order": "second"})
+    assert "whole number" in result["body"]
+    assert "This is a bug in calsync" not in result["body"]
+    assert "Traceback" not in result["body"]
+
+
+def test_a_missing_row_reads_differently_from_a_bug(client):
+    """`repo.NotFound` is user error; a stray KeyError is a defect.
+
+    Catching bare KeyError reported real bugs as ordinary user error, which is
+    the worst place for a defect to hide.
+    """
+    from calsync import repo as _repo
+
+    assert issubclass(_repo.NotFound, KeyError)
+
+    page = client.get("/sources/nope")["body"]
+    assert "Stopped" in page and "This is a bug" not in page
+
+
+def test_an_unexpected_error_is_reported_as_a_bug(client, monkeypatch):
+    """The other half of that split: a real defect must not read as user error."""
+    def boom(*_a, **_k):
+        raise KeyError("some_internal_dict_key")
+
+    monkeypatch.setattr(web_app.repo, "list_children", boom)
+    page = client.get("/")["body"]
+    assert "This is a bug in calsync" in page
+
+
+# --- the routes nothing exercised ------------------------------------------
+
+
+def test_a_live_source_can_be_sent_back_to_staging(client, tmp_path):
+    onboard(client)
+    conn = db.connect(tmp_path / "calsync.db")
+    source_id = repo.list_sources(conn, enabled_only=False)[0].id
+    repo.set_staging(conn, source_id, None)
+
+    assert client.post(f"/sources/{source_id}/stage")["status"] == 303
+    conn = db.connect(tmp_path / "calsync.db")
+    assert repo.get_source(conn, source_id).staging_collection == "onboarding"
+
+
+def test_polling_can_be_paused_and_resumed(client, tmp_path):
+    onboard(client)
+    conn = db.connect(tmp_path / "calsync.db")
+    source_id = repo.list_sources(conn, enabled_only=False)[0].id
+
+    client.post(f"/sources/{source_id}/enabled", {"enabled": "0"})
+    conn = db.connect(tmp_path / "calsync.db")
+    assert not repo.get_source(conn, source_id).enabled
+    assert "paused" in client.get("/")["body"]
+
+    client.post(f"/sources/{source_id}/enabled", {"enabled": "1"})
+    conn = db.connect(tmp_path / "calsync.db")
+    assert repo.get_source(conn, source_id).enabled
+
+
+def test_the_stylesheet_is_served(client):
+    """If package-data ever drops it, every page renders unstyled and silently.
+
+    Nothing else would fail — the pages still return 200.
+    """
+    result = client.get("/static/app.css")
+    assert result["status"] == 200
+    assert ".gate" in result["body"], "served something, but not the stylesheet"
+
+
+def test_every_route_is_exercised_by_some_test():
+    """Guards the coverage check itself, which a shell version got wrong."""
+    import re
+    from pathlib import Path as _Path
+
+    app_src = _Path(web_app.__file__).read_text()
+    tests_src = _Path(__file__).read_text()
+    missing = []
+    for _verb, path in re.findall(r'@app\.(get|post)\("([^"]+)"\)', app_src):
+        pattern = re.sub(r'<[^>]*>', '[^"\']*', re.escape(path).replace("\\<", "<"))
+        pattern = re.sub(r'<[^>]*>', '[^"\']*', pattern)
+        if not re.search(pattern, tests_src):
+            missing.append(path)
+    assert not missing, f"routes no test calls: {missing}"

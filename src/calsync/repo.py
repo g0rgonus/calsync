@@ -14,6 +14,17 @@ from dataclasses import dataclass
 from .models import Activity, Child, Venue
 
 
+class NotFound(KeyError):
+    """A row that was asked for by id does not exist.
+
+    A subclass of KeyError so existing callers that catch KeyError still work,
+    but distinct so the web layer can tell "you asked for something that isn't
+    there" from a stray dict lookup in our own code. Catching bare KeyError up
+    there reported real bugs as ordinary user error, which is the worst place
+    for a defect to hide.
+    """
+
+
 @dataclass(frozen=True)
 class Source:
     id: str
@@ -33,7 +44,7 @@ class Source:
 def get_child(conn: sqlite3.Connection, child_id: str) -> Child:
     row = conn.execute("SELECT * FROM children WHERE id = ?", (child_id,)).fetchone()
     if row is None:
-        raise KeyError(f"no child {child_id!r}")
+        raise NotFound(f"no child {child_id!r}")
     return _child(row)
 
 
@@ -81,7 +92,7 @@ def get_activity(conn: sqlite3.Connection, activity_id: str) -> Activity:
         (activity_id,),
     ).fetchone()
     if row is None:
-        raise KeyError(f"no activity {activity_id!r}")
+        raise NotFound(f"no activity {activity_id!r}")
 
     aliases = tuple(
         r["alias"]
@@ -520,7 +531,7 @@ def merge_venues(conn: sqlite3.Connection, *, losing_id: int, winning_id: int) -
         "SELECT canonical_name FROM venues WHERE id = ?", (losing_id,)
     ).fetchone()
     if losing is None:
-        raise KeyError(f"no venue {losing_id}")
+        raise NotFound(f"no venue {losing_id}")
 
     aliases = [
         r["alias"]
