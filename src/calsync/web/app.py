@@ -19,7 +19,7 @@ import bottle
 from bottle import Bottle, redirect, request, static_file, template
 
 from .. import config as config_mod
-from .. import db, matrix, repo, retire, sources
+from .. import db, matrix, repo, retire, sources, targeting
 from ..fetch import FetchError, http_fetch, render_url
 from ..inspection import InspectionError, inspect_feed
 from ..normalize import venue as venue_norm
@@ -33,8 +33,7 @@ from ..onboarding import (
 from ..routing import slugify
 from ..secrets import SecretError, SecretStore
 from ..settings import Settings, set_setting
-from ..targets import TargetError, build
-from ..targets.http import HttpTransport
+from ..targets import TargetError
 from ..sync import sync_source
 from . import gate
 
@@ -431,18 +430,10 @@ def create_app(
         """
         with connect() as conn:
             source = _require_source(conn, source_id)
-            settings = Settings.load(conn)
             try:
-                target = build(
-                    "caldav",
-                    base_url=settings.radicale_url,
-                    transport=HttpTransport(
-                        username=settings.radicale_user,
-                        password=secrets.get(settings.radicale_secret_ref),
-                    ),
-                    username=settings.radicale_user,
-                    password=secrets.get(settings.radicale_secret_ref),
-                ) if retire_target is None else retire_target
+                target = retire_target or targeting.build_target(
+                    conn, secrets=secrets
+                )
                 report = retire.retire_source(conn, source, target)
             except (SecretError, TargetError) as exc:
                 raise Refused(f"could not reach the calendar: {exc}") from exc
@@ -508,6 +499,7 @@ def create_app(
             matrix=matrix.load(conn),
             matrix_has_token=secrets.has(matrix.load(conn).secret_ref),
             radicale_has_password=secrets.has(settings.radicale_secret_ref),
+            kinds=targeting.KINDS,
             check=check,
             flash=_flash(),
         )
@@ -520,7 +512,8 @@ def create_app(
     @app.post("/settings/calendar")
     def save_calendar_settings():
         with connect() as conn:
-            for key in ("radicale_url", "radicale_user", "radicale_secret_ref",
+            for key in ("target_kind", "radicale_url", "radicale_user",
+                        "radicale_secret_ref",
                         "collection_template", "collection_game_label",
                         "collection_practice_label", "default_tz"):
                 value = _field(key).strip()

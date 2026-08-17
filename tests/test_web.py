@@ -1347,3 +1347,13 @@ def test_an_event_is_a_game_or_a_practice_and_nothing_else(client, tmp_path):
     result = client.post(f"/sources/{source_id}/event-type",
                          {"label": "Friendly", "kind": "banquet"})
     assert "game or a practice" in result["body"]
+
+
+def test_the_target_can_be_chosen_in_the_console(client, tmp_path):
+    page = client.get("/settings")["body"]
+    assert "Write events to" in page
+    assert "OAuth" in page, "google is offered without saying it cannot work yet"
+
+    client.post("/settings/calendar", {"target_kind": "ics_file"})
+    conn = db.connect(tmp_path / "calsync.db")
+    assert Settings.load(conn).target_kind == "ics_file"

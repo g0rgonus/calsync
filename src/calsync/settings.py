@@ -13,6 +13,7 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class Settings:
+    target_kind: str
     radicale_url: str
     radicale_user: str
     radicale_secret_ref: str
@@ -38,6 +39,7 @@ class Settings:
         if missing:
             raise KeyError(f"settings table missing keys: {sorted(missing)}; run migrate()")
         return cls(
+            target_kind=raw["target_kind"],
             radicale_url=raw["radicale_url"],
             radicale_user=raw["radicale_user"],
             radicale_secret_ref=raw["radicale_secret_ref"],

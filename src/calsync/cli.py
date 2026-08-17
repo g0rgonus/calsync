@@ -24,7 +24,7 @@ from . import config as config_mod
 from . import db, repo
 from .secrets import SecretStore
 from .settings import Settings
-from . import retire
+from . import retire, targeting
 from .sync import sync_source
 from .targets import build
 from .targets.http import HttpTransport
@@ -47,18 +47,16 @@ def _secrets(args) -> SecretStore:
 
 
 def _target(conn, args, secrets: SecretStore):
-    """ics_file when --out is given, else the configured CalDAV server."""
-    if getattr(args, "out", None):
-        return build("ics_file", directory=args.out)
+    """Whatever this deployment is configured to write to.
 
-    settings = Settings.load(conn)
-    password = secrets.get(settings.radicale_secret_ref)
-    return build(
-        "caldav",
-        base_url=settings.radicale_url,
-        transport=HttpTransport(username=settings.radicale_user, password=password),
-        username=settings.radicale_user,
-        password=password,
+    One selection point, shared with the console, so a `--target` here and the
+    console's idea of where events go cannot drift apart.
+    """
+    return targeting.build_target(
+        conn,
+        kind=getattr(args, "target", None),
+        out_dir=getattr(args, "out", None),
+        secrets=secrets,
     )
 
 
@@ -318,6 +316,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     def target_args(p):
         p.add_argument("--out", help="write .ics files here instead of to CalDAV")
+        p.add_argument("--target", choices=targeting.KINDS,
+                       help="override the configured target_kind for this run")
         p.add_argument("--secrets", help="path to a secrets JSON file")
 
     p_sync = sub.add_parser("sync", help="poll sources once and write events")

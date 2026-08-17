@@ -59,7 +59,11 @@ BUILTIN_SPORTS: tuple[tuple[str, str, str], ...] = (
 #: them encodes a particular household's choices.
 DEFAULT_SETTINGS: dict[str, str] = {
     # Where normalized events are written. calsync stops here; syncing onward
-    # to iCloud or anywhere else is a separate tool's job.
+    # to iCloud or anywhere else is a separate tool's job. The target registry
+    # has had three kinds for a while; `target_kind` is what makes them
+    # selectable rather than hardcoded in the CLI.
+    "target_kind": "caldav",
+    "google_calendar_map": "{}",
     "radicale_url": "http://localhost:5232",
     "radicale_user": "calsync",
     "radicale_secret_ref": "radicale_password",

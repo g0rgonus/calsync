@@ -12,6 +12,21 @@
 <h2>Where events go</h2>
 <div class="card">
   <form method="post" action="/settings/calendar">
+    <label class="field" style="margin-bottom:0.8rem">
+      <span class="label">Write events to</span>
+      <select name="target_kind">
+% for kind in kinds:
+        <option value="{{ kind }}" {{ 'selected' if settings.target_kind == kind else '' }}>{{ kind }}</option>
+% end
+      </select>
+      <span class="choice-note" style="margin-top:0.35rem">
+        <span class="raw">google</span> is registered and its payload builder is
+        tested, but nothing implements Google's OAuth exchange yet, so choosing
+        it will refuse with that reason rather than half-write a season.
+        <span class="raw">ics_file</span> needs <span class="raw">--out</span>.
+      </span>
+    </label>
+
     <div class="row">
       <label class="field" style="margin-bottom:0.8rem">
         <span class="label">CalDAV server</span>
