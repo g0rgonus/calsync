@@ -1,16 +1,15 @@
-"""Matrix connection settings, and proving they work.
+"""Talking to a Matrix room: connection settings, verification, and messages.
 
-**Nothing in calsync sends a Matrix message yet.** `docs/MATRIX.md` describes a
-room where calsync, Hermes and the operator interact; that component does not
-exist. This module is deliberately not a client — it stores the four values such
-a client would need and then *checks them against the homeserver*, which is the
-one useful thing that can be done before the client exists.
+Deliberately not a bot. `docs/MATRIX.md` describes a room where calsync, Hermes
+and the operator negotiate proposals and approvals; none of that exists, and
+this does not begin it. What it has is the one direction that needs no product
+decisions — calsync telling the room something — plus the configuration to do
+it and a way to check that configuration is real before anything depends on it.
 
-Storing them unverified would be the failure this project keeps warning about:
-configuration that looks honoured and isn't. A wrong homeserver or an expired
-token would sit in the database looking like a working setup until the day
-something finally tried to use it. Checking turns it into config that is known
-good, so the bot starts from something proven rather than something typed.
+Storing the settings unverified would be the failure this project keeps warning
+about: configuration that looks honoured and isn't. A wrong homeserver or an
+expired token would sit in the database looking like a working setup until the
+day something finally tried to use it.
 
 The token is a bearer credential and never touches the database. Settings hold
 ``matrix_secret_ref`` — the *name* of a secret — exactly as ``radicale_secret_ref``
@@ -24,7 +23,14 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 
+from urllib.parse import quote
+
 from .secrets import SecretError, SecretStore
+
+
+class MatrixError(RuntimeError):
+    """A message could not be sent. Never carries the access token."""
+
 
 TIMEOUT_S = 10
 USER_AGENT = "calsync/0.1 (+https://github.com/g0rgonus/calsync)"
@@ -86,6 +92,27 @@ def load(conn) -> MatrixConfig:
     )
 
 
+def _put(url: str, token: str, payload: dict, opener) -> tuple[int, dict]:
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode(),
+        method="PUT",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "User-Agent": USER_AGENT,
+        },
+    )
+    try:
+        with opener(request, timeout=TIMEOUT_S) as response:
+            return response.status, json.loads(response.read() or b"{}")
+    except urllib.error.HTTPError as exc:
+        try:
+            return exc.code, json.loads(exc.read() or b"{}")
+        except ValueError:
+            return exc.code, {}
+
+
 def _get(url: str, token: str, opener) -> tuple[int, dict]:
     request = urllib.request.Request(
         url,
@@ -103,6 +130,71 @@ def _get(url: str, token: str, opener) -> tuple[int, dict]:
             return exc.code, json.loads(exc.read() or b"{}")
         except ValueError:
             return exc.code, {}
+
+
+def send(
+    config: MatrixConfig,
+    secrets: SecretStore,
+    body: str,
+    *,
+    transaction_id: str,
+    opener=urllib.request.urlopen,
+) -> str:
+    """Post a message to the configured room. Returns the event id.
+
+    ``transaction_id`` is required rather than generated, and callers derive it
+    from what the message is *about* — the date, for a daily digest. Matrix
+    deduplicates on it, so a retry after a timeout, or a cron that fires twice
+    because a machine woke up oddly, updates nothing instead of posting the same
+    schedule to the family room a second time. A random id would make retrying
+    the dangerous option.
+    """
+    if not config.configured or not config.room_id:
+        raise MatrixError("Matrix is not configured with a homeserver, user and room")
+
+    token = secrets.get(config.secret_ref)
+    url = (
+        f"{config.base}/_matrix/client/v3/rooms/"
+        f"{quote(config.room_id, safe='')}/send/m.room.message/"
+        f"{quote(transaction_id, safe='')}"
+    )
+    try:
+        status, response = _put(
+            url, token,
+            {"msgtype": "m.text", "body": body, "format": "org.matrix.custom.html",
+             "formatted_body": _as_html(body)},
+            opener,
+        )
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        raise MatrixError(f"{config.base} did not answer: {exc}") from exc
+
+    if status != 200:
+        raise MatrixError(
+            f"the homeserver refused the message (HTTP {status})"
+            + (f": {response.get('error')}" if response.get("error") else "")
+        )
+    return response.get("event_id", "")
+
+
+def _as_html(body: str) -> str:
+    """The plain body, minimally marked up. Not a Markdown implementation.
+
+    Only the two things the digest actually emits — bold days and list items —
+    so there is no parser here to get subtly wrong on a coach-typed venue name
+    containing an asterisk.
+    """
+    from html import escape
+
+    lines = []
+    for line in body.splitlines():
+        safe = escape(line)
+        if safe.startswith("**") and safe.endswith("**") and len(safe) > 4:
+            lines.append(f"<b>{safe[2:-2]}</b>")
+        elif safe.startswith("- "):
+            lines.append(f"{safe[2:]}<br>")
+        else:
+            lines.append(f"{safe}<br>")
+    return "".join(lines)
 
 
 def verify(

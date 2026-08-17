@@ -22,9 +22,9 @@ from pathlib import Path
 
 from . import config as config_mod
 from . import db, repo
-from .secrets import SecretStore
+from .secrets import SecretError, SecretStore
 from .settings import Settings
-from . import polling, retire, targeting
+from . import digest, matrix, polling, retire, targeting
 from .sync import sync_source
 from .targets import build
 from .targets.http import HttpTransport
@@ -262,6 +262,41 @@ def cmd_retire(args) -> int:
     return 0
 
 
+def cmd_digest(args) -> int:
+    """What is on in the next day. Prints it; `--send` puts it in the room.
+
+    Reads nothing back from the calendar and writes nothing anywhere — see
+    `digest.py` for why both of those are deliberate.
+    """
+    conn = db.open_db(args.db)
+    secrets = _secrets(args)
+    now = _now(args.now)
+
+    result = digest.collect(conn, now=now, hours=args.hours, secrets=secrets)
+    print(result.text())
+
+    if not args.send:
+        return 0
+    if result.empty and not args.unavailable_is_news and not result.unavailable:
+        # A daily "nothing on" is how a room learns to ignore this.
+        print("(nothing on — not sending)")
+        return 0
+
+    config = matrix.load(conn)
+    try:
+        # Derived from the day, so a retry or a double cron fire updates rather
+        # than posting the family's schedule twice.
+        event_id = matrix.send(
+            config, secrets, result.text(),
+            transaction_id=f"calsync-digest-{now.date().isoformat()}",
+        )
+    except (matrix.MatrixError, SecretError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(f"sent to {config.room_id} ({event_id})")
+    return 0
+
+
 def cmd_web(args) -> int:
     """Serve the onboarding console.
 
@@ -366,6 +401,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_retire.add_argument("--forget", action="store_true",
                           help="also drop the source row, once nothing is left live")
     p_retire.set_defaults(fn=cmd_retire)
+
+    p_digest = sub.add_parser("digest", help="what is on in the next day")
+    p_digest.add_argument("--send", action="store_true",
+                          help="post it to the configured Matrix room")
+    p_digest.add_argument("--hours", type=int, default=24)
+    p_digest.add_argument("--now", help="ISO timestamp to treat as now")
+    p_digest.add_argument("--secrets", help="path to a secrets JSON file")
+    p_digest.add_argument("--unavailable-is-news", action="store_true",
+                          help="send even when there is nothing on")
+    p_digest.set_defaults(fn=cmd_digest)
 
     p_web = sub.add_parser("web", help="serve the onboarding console")
     p_web.add_argument("--host", default="127.0.0.1",
