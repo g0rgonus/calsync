@@ -1350,16 +1350,21 @@ def test_the_target_can_be_chosen_in_the_console(client, tmp_path):
 
 
 def _make_dormant(tmp_path, source_id):
-    """Six failed polls and a last success six weeks ago."""
+    """A season that finished a hundred days ago, on a feed that still works.
+
+    Deliberately no failed polls: that is the actual shape of an ended rec
+    season, and the first version of this detector could not see it.
+    """
     from datetime import timedelta
 
     conn = db.connect(tmp_path / "calsync.db")
-    for _ in range(6):
-        conn.execute("INSERT INTO poll_runs (source_id, status) VALUES (?, 'error')",
-                     (source_id,))
-    conn.execute("UPDATE sources SET last_success_at = ? WHERE id = ?",
-                 ((NOW - timedelta(days=42)).isoformat(), source_id))
     conn.execute("DELETE FROM event_state WHERE source_id = ?", (source_id,))
+    conn.execute(
+        "INSERT INTO event_state (uid, source_id, collection, content_hash, starts_at)"
+        " VALUES ('final', ?, 'games', 'h', ?)",
+        (source_id, (NOW - timedelta(days=100)).isoformat()),
+    )
+    conn.execute("INSERT INTO poll_runs (source_id, status) VALUES (?, 'ok')", (source_id,))
     conn.commit()
     conn.close()
 
@@ -1372,6 +1377,7 @@ def test_a_finished_season_is_pointed_out_next_to_the_retire_button(client, tmp_
 
     page = client.get(f"/sources/{source_id}")["body"]
     assert "This season looks finished" in page
+    assert "100 days ago" in page
     assert "nothing has been changed" in page, "must not imply it acted"
     assert "Retire" in page, "the diagnosis should sit beside the answer"
 

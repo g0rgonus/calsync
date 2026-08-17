@@ -5,18 +5,18 @@ a sleep in it — untestable by construction — while the decision it makes eve
 tick is a pure function of the last outcome. The bug this fixes lived in the one
 line that was never exercised.
 
-Until now every source was rescheduled at its full rate whatever happened. That
-is fine for a working feed and wrong for the common case: a rec season ends, the
-team is replaced, and its feed 404s *forever*. calsync would ask again every
-twenty minutes for the rest of time, writing a `poll_runs` row and an error each
-go, hammering somebody else's host for a team that no longer exists, and burying
-every real error in the status output under thousands of identical ones.
+Until now every source was rescheduled at its full rate whatever happened, so a
+feed that had genuinely gone — a rotated URL, a revoked token, a host that went
+away — was asked again every twenty minutes for the rest of time, writing a
+`poll_runs` row and an error each go and burying every real error in the status
+output under thousands of identical ones.
 
-Backing off does not decide anything about dormancy — a source that stops
-answering might be a dead season or might be a host having a bad afternoon, and
-telling those apart is a separate question this deliberately does not answer. It
-just stops asking quite so often, and keeps asking forever, so recovery is
-automatic whichever it turns out to be.
+Note what this is *not* for. The end of a rec season does not look like this at
+all: the team app goes on serving last spring's fixtures with a clean 200
+indefinitely, so a finished season never backs off and never should. Spotting
+that is `dormancy.py`'s job and it works from the dates, not from failures.
+Backing off is only about feeds that stopped answering, which is a rarer and
+more boring problem.
 """
 
 from __future__ import annotations

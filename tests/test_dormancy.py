@@ -1,8 +1,12 @@
-"""Spotting a season that has ended — and, mostly, refusing to.
+"""Spotting a season that has ended.
 
-Every test here that asserts `suspected is False` is doing the real work. A
-finished season and a broken feed are indistinguishable from inside calsync, so
-the interesting behaviour is how hard this declines to guess.
+The first version of this looked for consecutive fetch failures, which was
+simply wrong about the world: a rec team's app goes on serving last spring's
+fixtures with a clean 200 forever, so a finished season never fails at all and
+the detector could never have fired for the case it was written for.
+
+The tell is the dates — nothing new published for months, nothing upcoming.
+Several tests below exist only to keep that mistake from coming back.
 """
 
 from __future__ import annotations
@@ -15,15 +19,14 @@ from calsync import db, dormancy
 from calsync.dormancy import assess
 
 NOW = datetime(2026, 8, 17, 12, 0, tzinfo=timezone.utc)
-LONG_AGO = NOW - timedelta(days=40)
-RECENTLY = NOW - timedelta(days=2)
+LAST_SPRING = NOW - timedelta(days=100)
+LAST_MONTH = NOW - timedelta(days=30)
 
 
 def verdict(**overrides):
     kwargs = dict(
         source_id="tr-comets",
-        consecutive_errors=9,
-        last_success_at=LONG_AGO,
+        last_event_at=LAST_SPRING,
         upcoming_events=0,
         now=NOW,
     )
@@ -31,48 +34,60 @@ def verdict(**overrides):
     return assess(**kwargs)
 
 
-def test_a_dead_season_is_recognised():
-    """Failing for weeks, nothing upcoming — what a replaced team looks like."""
+def test_a_season_that_ended_in_spring_is_recognised_in_august():
     result = verdict()
     assert result.suspected
-    assert "end of a season" in result.reason
+    assert result.days_since_last_event == 100
+    assert "100 days ago" in result.reason
     assert "nothing has been changed" in result.reason
 
 
-# --- the three innocent explanations ----------------------------------------
+def test_a_healthy_feed_is_the_normal_case_and_does_not_hide_it():
+    """The feed answering is not evidence of life, and the copy says so.
+
+    This is the whole correction: a team app serves a finished season happily
+    and indefinitely.
+    """
+    result = verdict(consecutive_errors=0)
+    assert result.suspected
+    assert "still answers fine" in result.reason
 
 
-def test_a_host_outage_is_not_a_dead_season():
-    """Failing hard, but it worked on Friday."""
-    assert not verdict(last_success_at=RECENTLY).suspected
+def test_failures_are_reported_but_gate_nothing():
+    """Requiring them was the original bug. They are context, not a condition."""
+    with_errors = verdict(consecutive_errors=7)
+    assert with_errors.suspected
+    assert "failed to fetch 7 times" in with_errors.reason
+    assert verdict(consecutive_errors=0).suspected, "errors became required again"
 
 
-def test_a_gap_between_seasons_is_not_a_dead_season():
-    """A healthy feed with nothing scheduled yet. March, before the fixtures."""
-    assert not verdict(consecutive_errors=0).suspected
+# --- the innocent explanations ----------------------------------------------
 
 
-def test_a_quiet_winter_with_events_still_upcoming_is_not_a_dead_season():
-    assert not verdict(upcoming_events=4).suspected
+def test_anything_upcoming_means_the_season_is_running():
+    assert not verdict(upcoming_events=1).suspected
 
 
-def test_one_bad_afternoon_is_not_enough():
-    """Five fast failures inside a day is a wobble, not a season ending."""
-    assert not verdict(consecutive_errors=3).suspected
+def test_a_recent_last_event_is_a_lull_not_an_ending():
+    """March: practices have run, the coach has not posted fixtures yet."""
+    assert not verdict(last_event_at=LAST_MONTH, upcoming_events=0).suspected
+
+
+def test_a_summer_break_between_two_seasons_is_not_an_ending():
+    """Spring finishes in May, autumn starts in September. 90 days clears it."""
+    assert not verdict(last_event_at=NOW - timedelta(days=80)).suspected
+
+
+def test_a_brand_new_source_is_not_a_finished_one():
+    """Nothing written yet looks identical to nothing written for a year."""
+    assert not verdict(last_event_at=None).suspected
 
 
 # --- it only ever labels ----------------------------------------------------
 
 
 def test_the_verdict_carries_no_action():
-    """Nothing here can retire, disable, cancel or delete.
-
-    Asserted on the type: a finished season and a broken feed look identical
-    from in here, so acting on the guess is the one thing that must stay
-    impossible.
-    """
     result = verdict()
-    assert isinstance(result, dormancy.Verdict)
     assert not any(
         hasattr(result, name) for name in ("apply", "retire", "disable", "execute")
     )
@@ -97,56 +112,51 @@ def conn(tmp_path):
     return connection
 
 
-def _poll(conn, status, n=1):
-    for _ in range(n):
-        conn.execute("INSERT INTO poll_runs (source_id, status) VALUES (?, ?)", ("s", status))
+def _event(conn, uid, starts_at, cancelled=0):
+    conn.execute(
+        "INSERT INTO event_state (uid, source_id, collection, content_hash, starts_at, cancelled)"
+        " VALUES (?, 's', 'games', 'h', ?, ?)",
+        (uid, starts_at.isoformat(), cancelled),
+    )
     conn.commit()
 
 
-def test_consecutive_errors_stop_at_the_last_success(conn):
-    _poll(conn, "error", 4)
-    _poll(conn, "ok")
-    _poll(conn, "error", 3)
+def test_the_last_event_comes_from_stored_state_not_a_fetch(conn):
+    """Answering this must not cost a round trip per source per page load."""
+    _event(conn, "old", NOW - timedelta(days=200))
+    _event(conn, "newest", LAST_SPRING)
 
-    assert dormancy.consecutive_errors(conn, "s") == 3
+    assert dormancy.last_event_at(conn, "s") == LAST_SPRING
 
 
-def test_a_held_poll_breaks_the_run(conn):
-    """Held means the feed answered. That is not a source going dark."""
-    _poll(conn, "error", 2)
-    _poll(conn, "held")
-    _poll(conn, "error", 1)
+def test_a_cancelled_final_fixture_still_counts(conn):
+    """A season whose last act was calling off its final game is just as over."""
+    _event(conn, "called-off", LAST_SPRING, cancelled=1)
 
-    assert dormancy.consecutive_errors(conn, "s") == 1
+    assert dormancy.last_event_at(conn, "s") == LAST_SPRING
+    assert dormancy.for_source(conn, "s", now=NOW).suspected
 
 
 def test_upcoming_events_ignore_the_past_and_the_cancelled(conn):
-    conn.executescript(
-        """
-        INSERT INTO event_state (uid, source_id, collection, content_hash, starts_at)
-             VALUES ('past', 's', 'games', 'h', '2026-01-01T00:00:00+00:00'),
-                    ('soon', 's', 'games', 'h', '2026-12-01T00:00:00+00:00');
-        INSERT INTO event_state (uid, source_id, collection, content_hash, starts_at, cancelled)
-             VALUES ('gone', 's', 'games', 'h', '2026-12-02T00:00:00+00:00', 1);
-        """
-    )
-    conn.commit()
+    _event(conn, "past", NOW - timedelta(days=10))
+    _event(conn, "soon", NOW + timedelta(days=10))
+    _event(conn, "gone", NOW + timedelta(days=11), cancelled=1)
 
     assert dormancy.upcoming_events(conn, "s", now=NOW) == 1
 
 
-def test_a_source_that_has_never_polled_is_not_suspected(conn):
-    """A brand new source has no successes and nothing upcoming by definition."""
+def test_a_source_that_has_never_synced_is_not_suspected(conn):
     assert not dormancy.for_source(conn, "s", now=NOW).suspected
 
 
-def test_the_whole_thing_end_to_end(conn):
-    _poll(conn, "error", 6)
-    conn.execute("UPDATE sources SET last_success_at = ? WHERE id = 's'",
-                 (LONG_AGO.isoformat(),))
+def test_the_whole_thing_end_to_end_on_a_feed_that_never_failed(conn):
+    """The real shape: a clean, working feed for a team that no longer exists."""
+    for n in range(6):
+        conn.execute("INSERT INTO poll_runs (source_id, status) VALUES ('s', 'ok')")
+    _event(conn, "final", LAST_SPRING)
     conn.commit()
 
     result = dormancy.for_source(conn, "s", now=NOW)
     assert result.suspected
-    assert result.consecutive_errors == 6
-    assert result.days_since_success == 40
+    assert result.consecutive_errors == 0
+    assert result.days_since_last_event == 100

@@ -153,6 +153,12 @@ Decisions that span several files and are easy to undo by accident:
   the original*. A URL that will not round-trip is refused rather than saved —
   silently mangling one surfaces weeks later as a source that stopped working,
   with nothing to point at.
+- **A finished season does not fail — it keeps serving.** A rec team's app goes
+  on returning last spring's fixtures with a clean 200 indefinitely, so looking
+  for fetch errors finds a *broken* feed and never finds an ended one. The tell
+  is the dates: nothing upcoming, and the newest event months in the past
+  (`dormancy.py`). `polling.py`'s backoff is for feeds that stopped answering,
+  which is a different and rarer problem — do not conflate them.
 - **Matrix is outbound only.** `matrix.py` + `digest.py` let calsync talk to a
   room; nothing reads from it, and `docs/MATRIX.md` §7 records exactly which
   arrow is built and what the inbound half is blocked on (no API, no identity
