@@ -1,5 +1,6 @@
 % rebase('layout.tpl', title='Settings', flash=flash, narrow=True)
 % setdefault('check', None)
+% setdefault('pushed', None)
 
 <p class="eyebrow">Instance configuration</p>
 <h1>Settings</h1>
@@ -26,6 +27,20 @@
         <span class="raw">ics_file</span> needs <span class="raw">--out</span>.
       </span>
     </label>
+
+% if settings.target_kind == 'google':
+    <label class="field" style="margin-bottom:0.8rem">
+      <span class="label">Google calendar ids</span>
+      <input type="text" name="google_calendar_map" class="mono"
+             value="{{ raw.get('google_calendar_map', '{}') }}" autocomplete="off">
+      <span class="choice-note" style="margin-top:0.35rem">
+        JSON, mapping each collection name to a calendar id —
+        <span class="raw">{"games": "abc@group.calendar.google.com"}</span>.
+        Google calendars are not created by calsync, so each one has to exist
+        already.
+      </span>
+    </label>
+% end
 
     <div class="row">
       <label class="field" style="margin-bottom:0.8rem">
@@ -196,15 +211,94 @@
   </form>
 </div>
 
+<h2>End of season</h2>
+<div class="card">
+  <p class="note" style="margin-top:0">
+    A rec team's feed does not stop working when the season ends — the app goes
+    on serving last spring's fixtures indefinitely. So a finished season is
+    spotted by its dates: nothing upcoming, and nothing new published for a
+    while. After the first threshold calsync tells you; after the second it stops
+    polling, and never touches what is already on the calendar.
+  </p>
+  <form method="post" action="/settings/seasons">
+    <div class="row">
+      <label class="field" style="margin-bottom:0.8rem">
+        <span class="label">Tell me after this many quiet days</span>
+        <input type="number" name="season_nudge_days" min="1"
+               value="{{ settings.season_nudge_days }}">
+      </label>
+      <label class="field" style="margin-bottom:0.8rem">
+        <span class="label">Stop polling after</span>
+        <input type="number" name="season_shutoff_days" min="1"
+               value="{{ settings.season_shutoff_days }}">
+      </label>
+    </div>
+    <button class="btn" type="submit">Save season settings</button>
+    <span class="note" style="margin-left:0.6rem">
+      A team that comes back every year — a club side rather than a rec team —
+      can be exempted on its own page.
+    </span>
+  </form>
+</div>
+
+<h2>Notifications</h2>
+<div class="card">
+  <p class="note" style="margin-top:0">
+    Pushover, for the handful of things a year that need you rather than merely
+    inform you. Today that is one thing: a season that looks finished. The daily
+    digest goes to Matrix instead — this is not for anything you would read at
+    your leisure.
+  </p>
+
+  <form method="post" action="/settings/notifications">
+    <div class="row">
+      <label class="field" style="margin-bottom:0.8rem">
+        <span class="label">Application token</span>
+        <input type="password" name="pushover_token" autocomplete="new-password"
+               placeholder="{{ 'set — leave blank to keep it' if pushover_ready else 'not set' }}">
+      </label>
+      <label class="field" style="margin-bottom:0.8rem">
+        <span class="label">Your user key</span>
+        <input type="password" name="pushover_user" autocomplete="new-password"
+               placeholder="{{ 'set — leave blank to keep it' if pushover_ready else 'not set' }}">
+      </label>
+    </div>
+    <div class="row">
+      <label class="field" style="margin-bottom:0.8rem">
+        <span class="label">Token secret name</span>
+        <input type="text" name="pushover_token_ref" class="mono"
+               value="{{ pushover.token_ref }}" autocomplete="off">
+      </label>
+      <label class="field" style="margin-bottom:0.8rem">
+        <span class="label">User-key secret name</span>
+        <input type="text" name="pushover_user_ref" class="mono"
+               value="{{ pushover.user_ref }}" autocomplete="off">
+      </label>
+    </div>
+    <button class="btn" type="submit">Save notification settings</button>
+  </form>
+
+  <form method="post" action="/settings/notifications/test" style="margin-top:1rem">
+    <button class="btn btn-answer" type="submit">Send a test notification</button>
+    <span class="note" style="margin-left:0.6rem">
+      These are used a few times a year, when a season ends — so a typo would
+      otherwise sit undiscovered until the moment it had to work.
+    </span>
+  </form>
+% if pushed:
+  <div class="raw-block" style="margin-top:1rem">{{ pushed }}</div>
+% end
+</div>
+
 <h2>Matrix</h2>
 <div class="card">
   <div class="banner banner-info" style="margin-bottom:1.2rem">
-    <strong>Nothing sends a Matrix message yet.</strong>
-    The room described in <span class="raw">docs/MATRIX.md</span> is a design
-    contract, not code that exists. These four values are stored and — more
-    usefully — <em>checked against your homeserver</em>, so that whenever the bot
-    is built it starts from a configuration that has already been accepted rather
-    than one that was typed once and never tried.
+    <strong>calsync talks; nothing listens.</strong>
+    <span class="raw">calsync digest --send</span> posts what is on tomorrow to
+    this room. Reading from it — the proposals and approvals in
+    <span class="raw">docs/MATRIX.md</span> §7 — does not exist and is blocked on
+    decisions rather than code. Check the settings below before relying on them:
+    a wrong token sits looking correct until the first message fails.
   </div>
 
   <form method="post" action="/settings/matrix">

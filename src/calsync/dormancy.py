@@ -40,12 +40,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-#: A month past the newest event: tell somebody. Long enough to clear any
-#: mid-season gap, short enough that the answer is still fresh in mind.
+#: Defaults only. The real values are `season_nudge_days` and
+#: `season_shutoff_days` in the settings table — a league with a longer
+#: off-season is a different household's configuration, not a different build.
+#:
+#: A month past the newest event is long enough to clear any mid-season gap and
+#: short enough that the answer is still fresh; two months is over on any
+#: reading, and a source nobody retired in a month is one nobody is going to.
 NUDGE_DAYS = 30
-
-#: Two months: stop polling it. By now the season is over on any reading, and a
-#: source nobody has retired is one nobody is going to.
 SHUTOFF_DAYS = 60
 
 #: Kept as the name the rest of the code asks for "is this finished".
@@ -80,7 +82,8 @@ def assess(
     upcoming_events: int,
     now: datetime,
     consecutive_errors: int = 0,
-    min_days: int = MIN_DAYS_SINCE_LAST_EVENT,
+    min_days: int = NUDGE_DAYS,
+    shutoff_days: int = SHUTOFF_DAYS,
 ) -> Verdict:
     """Does this look like a season that ended? Pure, so it can be argued with."""
     days = None if last_event_at is None else max((now - last_event_at).days, 0)
@@ -92,7 +95,7 @@ def assess(
 
     stage = RUNNING
     if stale and empty:
-        stage = SHUTOFF if days >= SHUTOFF_DAYS else NUDGE
+        stage = SHUTOFF if days >= shutoff_days else NUDGE
 
     verdict = Verdict(
         source_id=source_id,
@@ -116,7 +119,7 @@ def assess(
     # at this point, so claiming otherwise here would be describing an action
     # that may not have happened.
     tail = (
-        " Past two months a source like this is normally switched off."
+        " A source this quiet is normally switched off."
         if stage == SHUTOFF
         else ""
     )
@@ -188,13 +191,18 @@ def upcoming_events(conn, source_id: str, *, now: datetime) -> int:
 
 
 def for_source(conn, source_id: str, *, now: datetime | None = None) -> Verdict:
+    from .settings import Settings
+
     now = now or datetime.now(timezone.utc)
+    settings = Settings.load(conn)
     return assess(
         source_id=source_id,
         last_event_at=last_event_at(conn, source_id),
         upcoming_events=upcoming_events(conn, source_id, now=now),
         consecutive_errors=consecutive_errors(conn, source_id),
         now=now,
+        min_days=settings.season_nudge_days,
+        shutoff_days=settings.season_shutoff_days,
     )
 
 

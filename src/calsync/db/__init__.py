@@ -103,6 +103,11 @@ DEFAULT_SETTINGS: dict[str, str] = {
     # you. Both credentials live in the secret store; these name them.
     "pushover_token_ref": "pushover_token",
     "pushover_user_ref": "pushover_user",
+    # When a quiet feed is presumed to be a season that ended. Rows rather than
+    # constants because a league with a longer off-season is a different
+    # household's problem, not a different build.
+    "season_nudge_days": "30",
+    "season_shutoff_days": "60",
 }
 
 

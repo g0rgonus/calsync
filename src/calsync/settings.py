@@ -30,6 +30,8 @@ class Settings:
     max_disappearance_count: int
     sync_window_back_days: int
     sync_window_forward_days: int
+    season_nudge_days: int
+    season_shutoff_days: int
     default_tz: str
 
     @classmethod
@@ -56,6 +58,8 @@ class Settings:
             max_disappearance_count=int(raw["max_disappearance_count"]),
             sync_window_back_days=int(raw["sync_window_back_days"]),
             sync_window_forward_days=int(raw["sync_window_forward_days"]),
+            season_nudge_days=int(raw["season_nudge_days"]),
+            season_shutoff_days=int(raw["season_shutoff_days"]),
             default_tz=raw["default_tz"],
         )
 

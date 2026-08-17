@@ -971,11 +971,6 @@ def matrix_client(tmp_path, secrets_path, feed):
     return Client(app), server
 
 
-def test_the_matrix_section_says_nothing_uses_it_yet(client):
-    """Config that looks honoured and isn't is the failure this avoids."""
-    assert "Nothing sends a Matrix message yet" in client.get("/settings")["body"]
-
-
 def test_the_matrix_token_goes_to_the_secret_store_not_the_database(
     matrix_client, tmp_path, secrets_path
 ):
@@ -1418,3 +1413,124 @@ def test_a_source_can_be_marked_as_one_that_comes_back(client, tmp_path):
     conn = db.connect(tmp_path / "calsync.db")
     assert repo.get_source(conn, source_id).config["persists_across_seasons"] is True
     assert "Treat as a single season" in client.get(f"/sources/{source_id}")["body"]
+
+
+# --- the rest of the settings ------------------------------------------------
+
+
+def test_every_setting_has_a_control_on_the_page():
+    """Guards the drift this test was written after finding.
+
+    Three settings had shipped with no way to reach them from the console, which
+    is how "configuration lives in the settings table" quietly becomes
+    "configuration lives in the settings table and you edit it with sqlite3".
+    """
+    import re
+    from pathlib import Path as _Path
+
+    from calsync.db import DEFAULT_SETTINGS
+
+    page = (_Path(web_app.__file__).parent / "templates" / "settings.tpl").read_text()
+    named = set(re.findall(r'name="(\w+)"', page))
+    assert not [k for k in DEFAULT_SETTINGS if k not in named]
+
+
+def test_the_season_thresholds_are_editable(client, tmp_path):
+    client.post("/settings/seasons",
+                {"season_nudge_days": "21", "season_shutoff_days": "45"})
+
+    conn = db.connect(tmp_path / "calsync.db")
+    settings = Settings.load(conn)
+    assert settings.season_nudge_days == 21
+    assert settings.season_shutoff_days == 45
+
+
+def test_a_shutoff_before_the_nudge_is_refused(client, tmp_path):
+    """Otherwise a season is switched off before anybody is told about it."""
+    result = client.post("/settings/seasons",
+                         {"season_nudge_days": "60", "season_shutoff_days": "30"})
+    assert "before anybody was told" in result["body"]
+
+
+def test_the_season_thresholds_actually_drive_the_verdict(client, tmp_path):
+    """A setting that reads back but changes nothing is the failure this
+    codebase keeps finding; assert the behaviour, not the row."""
+    from datetime import timedelta
+
+    from calsync import dormancy
+
+    onboard(client)
+    conn = db.connect(tmp_path / "calsync.db")
+    source_id = repo.list_sources(conn, enabled_only=False)[0].id
+    conn.execute("DELETE FROM event_state WHERE source_id = ?", (source_id,))
+    conn.execute(
+        "INSERT INTO event_state (uid, source_id, collection, content_hash, starts_at)"
+        " VALUES ('e', ?, 'games', 'h', ?)",
+        (source_id, (NOW - timedelta(days=40)).isoformat()),
+    )
+    conn.commit()
+
+    assert dormancy.for_source(conn, source_id, now=NOW).stage == dormancy.NUDGE
+
+    client.post("/settings/seasons",
+                {"season_nudge_days": "10", "season_shutoff_days": "20"})
+    conn = db.connect(tmp_path / "calsync.db")
+    assert dormancy.for_source(conn, source_id, now=NOW).stage == dormancy.SHUTOFF
+
+
+def test_pushover_credentials_go_to_the_secret_store(client, tmp_path, secrets_path):
+    client.post("/settings/notifications",
+                {"pushover_token": "app-token", "pushover_user": "user-key"})
+
+    stored = json.loads(secrets_path.read_text())
+    assert stored["pushover_token"] == "app-token"
+    assert stored["pushover_user"] == "user-key"
+    assert b"app-token" not in (tmp_path / "calsync.db").read_bytes()
+    assert "app-token" not in client.get("/settings")["body"]
+
+
+def test_a_test_notification_reports_what_happened(tmp_path, secrets_path, feed):
+    """These are used a few times a year, so a typo has to surface now."""
+    sent = []
+
+    class Server:
+        def __call__(self, request, timeout=None):
+            sent.append(request.data.decode())
+            return _PushReply()
+
+    app = web_app.create_app(
+        tmp_path / "calsync.db",
+        secrets=SecretStore(path=secrets_path, environ={}),
+        fetcher=feed, clock=lambda: NOW, push_opener=Server(),
+    )
+    client = Client(app)
+    client.post("/settings/notifications",
+                {"pushover_token": "app-token", "pushover_user": "user-key"})
+
+    page = client.post("/settings/notifications/test")["body"]
+    assert "Check your phone" in page
+    assert "app-token" in sent[0]
+    assert "app-token" not in page, "the token reached a page"
+
+
+class _PushReply:
+    def read(self):
+        return b'{"status": 1}'
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return False
+
+
+def test_the_matrix_section_describes_what_is_actually_built(client):
+    """It claimed nothing sent messages, which stopped being true.
+
+    A page describing the product as less capable than it is misleads exactly
+    as much as one describing it as more.
+    """
+    page = client.get("/settings")["body"]
+    assert "Nothing sends a Matrix message yet" not in page
+    assert "calsync digest --send" in page
+    assert "nothing listens" in page

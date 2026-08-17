@@ -19,7 +19,7 @@ import bottle
 from bottle import Bottle, redirect, request, static_file, template
 
 from .. import config as config_mod
-from .. import db, dormancy, matrix, repo, retire, sources, targeting
+from .. import db, dormancy, matrix, notify, repo, retire, sources, targeting
 from ..fetch import FetchError, http_fetch, render_url
 from ..inspection import InspectionError, inspect_feed
 from ..normalize import venue as venue_norm
@@ -77,6 +77,7 @@ def create_app(
     clock=None,
     trusted_origins=(),
     matrix_opener=None,
+    push_opener=None,
     retire_target=None,
 ) -> Bottle:
     """Build the console.
@@ -100,6 +101,7 @@ def create_app(
     # different protocol: feeds are GETs of iCalendar text, this is an
     # authenticated JSON API.
     matrix_opener = matrix_opener or urllib.request.urlopen
+    push_opener = push_opener or urllib.request.urlopen
     db_path = str(db_path)
 
     # Once, at startup — not per request. Migration takes the write lock.
@@ -510,7 +512,7 @@ def create_app(
             )
         return str(value if key == "max_disappearance_pct" else int(value))
 
-    def _settings_page(conn, check=None):
+    def _settings_page(conn, check=None, pushed=None):
         settings = Settings.load(conn)
         return render(
             "settings.tpl",
@@ -519,6 +521,9 @@ def create_app(
             sample=_sample_title(settings),
             matrix=matrix.load(conn),
             matrix_has_token=secrets.has(matrix.load(conn).secret_ref),
+            pushover=notify.load(conn),
+            pushover_ready=notify.load(conn).available(secrets),
+            pushed=pushed,
             radicale_has_password=secrets.has(settings.radicale_secret_ref),
             kinds=targeting.KINDS,
             check=check,
@@ -533,8 +538,8 @@ def create_app(
     @app.post("/settings/calendar")
     def save_calendar_settings():
         with connect() as conn:
-            for key in ("target_kind", "radicale_url", "radicale_user",
-                        "radicale_secret_ref",
+            for key in ("target_kind", "google_calendar_map",
+                        "radicale_url", "radicale_user", "radicale_secret_ref",
                         "collection_template", "collection_game_label",
                         "collection_practice_label", "default_tz"):
                 value = _field(key).strip()
@@ -556,6 +561,55 @@ def create_app(
                     set_setting(conn, key, value)
         redirect("/settings?ok=" + _q("Title settings saved. Every event re-renders "
                                       "on the next sync — no re-fetch needed."))
+
+    @app.post("/settings/seasons")
+    def save_season_settings():
+        with connect() as conn:
+            for key in ("season_nudge_days", "season_shutoff_days"):
+                value = _field(key).strip()
+                if value:
+                    set_setting(conn, key, str(_whole(key, value)))
+            nudge = Settings.load(conn)
+            if nudge.season_shutoff_days < nudge.season_nudge_days:
+                raise Refused(
+                    "the shut-off has to come after the nudge, or a season would "
+                    "be switched off before anybody was told about it"
+                )
+        redirect("/settings?ok=" + _q("Season settings saved."))
+
+    @app.post("/settings/notifications")
+    def save_notification_settings():
+        with connect() as conn:
+            token_ref = _field("pushover_token_ref").strip() or "pushover_token"
+            user_ref = _field("pushover_user_ref").strip() or "pushover_user"
+            set_setting(conn, "pushover_token_ref", token_ref)
+            set_setting(conn, "pushover_user_ref", user_ref)
+            for ref, value in ((token_ref, _field("pushover_token")),
+                               (user_ref, _field("pushover_user"))):
+                if value:
+                    secrets.put(ref, value)
+        redirect("/settings?ok=" + _q("Notification settings saved."))
+
+    @app.post("/settings/notifications/test")
+    def test_notification():
+        """Send a real push.
+
+        Worth a button of its own: these credentials are used a handful of times
+        a year, when a season ends, so a typo would otherwise sit undiscovered
+        until the exact moment it needed to work.
+        """
+        with connect() as conn:
+            config = notify.load(conn)
+            try:
+                notify.send(
+                    config, secrets,
+                    "If you can read this, calsync can reach you when a season ends.",
+                    title="calsync test", opener=push_opener,
+                )
+                result = "Sent. Check your phone."
+            except notify.NotifyError as exc:
+                result = str(exc)
+            return _settings_page(conn, pushed=result)
 
     @app.post("/settings/safety")
     def save_safety_settings():
