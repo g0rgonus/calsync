@@ -37,6 +37,8 @@
       <span class="who">{{ card['child'].name }} · {{ activity.sport }}</span>
 %     if not source.enabled:
       <span class="tag tag-off">paused</span>
+%     elif card['dormant'].suspected:
+      <span class="tag tag-off">season may be over</span>
 %     elif card['state'] == 'down':
       <span class="tag tag-down">feed unreachable</span>
 %     elif card['state'] == 'asking':

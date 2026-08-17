@@ -19,7 +19,7 @@ import bottle
 from bottle import Bottle, redirect, request, static_file, template
 
 from .. import config as config_mod
-from .. import db, matrix, repo, retire, sources, targeting
+from .. import db, dormancy, matrix, repo, retire, sources, targeting
 from ..fetch import FetchError, http_fetch, render_url
 from ..inspection import InspectionError, inspect_feed
 from ..normalize import venue as venue_norm
@@ -320,6 +320,7 @@ def create_app(
                 state_label=label,
                 venues=repo.list_venues(conn),
                 health=repo.source_row(conn, source_id),
+                dormant=dormancy.for_source(conn, source_id, now=clock()),
                 tracked=repo.tracked_events(conn, source_id),
                 polls=repo.recent_polls(conn, source_id),
                 flash=_flash(),
@@ -1014,6 +1015,7 @@ def _card(conn, source) -> dict:
         "state_label": "not checked",
         "report": None,
         "feed_events": 0,
+        "dormant": dormancy.for_source(conn, source.id),
     }
 
 

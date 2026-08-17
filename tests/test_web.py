@@ -1357,3 +1357,54 @@ def test_the_target_can_be_chosen_in_the_console(client, tmp_path):
     client.post("/settings/calendar", {"target_kind": "ics_file"})
     conn = db.connect(tmp_path / "calsync.db")
     assert Settings.load(conn).target_kind == "ics_file"
+
+
+# --- a season that looks finished -------------------------------------------
+
+
+def _make_dormant(tmp_path, source_id):
+    """Six failed polls and a last success six weeks ago."""
+    from datetime import timedelta
+
+    conn = db.connect(tmp_path / "calsync.db")
+    for _ in range(6):
+        conn.execute("INSERT INTO poll_runs (source_id, status) VALUES (?, 'error')",
+                     (source_id,))
+    conn.execute("UPDATE sources SET last_success_at = ? WHERE id = ?",
+                 ((NOW - timedelta(days=42)).isoformat(), source_id))
+    conn.execute("DELETE FROM event_state WHERE source_id = ?", (source_id,))
+    conn.commit()
+    conn.close()
+
+
+def test_a_finished_season_is_pointed_out_next_to_the_retire_button(client, tmp_path):
+    onboard(client)
+    conn = db.connect(tmp_path / "calsync.db")
+    source_id = repo.list_sources(conn, enabled_only=False)[0].id
+    _make_dormant(tmp_path, source_id)
+
+    page = client.get(f"/sources/{source_id}")["body"]
+    assert "This season looks finished" in page
+    assert "nothing has been changed" in page, "must not imply it acted"
+    assert "Retire" in page, "the diagnosis should sit beside the answer"
+
+
+def test_a_finished_season_reads_as_quiet_not_broken(client, tmp_path):
+    """It is the expected end of every rec season, not a fault."""
+    onboard(client)
+    conn = db.connect(tmp_path / "calsync.db")
+    source_id = repo.list_sources(conn, enabled_only=False)[0].id
+    _make_dormant(tmp_path, source_id)
+
+    page = client.get("/?check=0")["body"]
+    assert "season may be over" in page
+    assert "tag-down" not in page
+
+
+def test_a_healthy_source_is_never_labelled_dormant(client, tmp_path):
+    onboard(client)
+    conn = db.connect(tmp_path / "calsync.db")
+    source_id = repo.list_sources(conn, enabled_only=False)[0].id
+
+    assert "season may be over" not in client.get("/?check=0")["body"]
+    assert "This season looks finished" not in client.get(f"/sources/{source_id}")["body"]

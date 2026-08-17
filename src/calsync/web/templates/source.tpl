@@ -238,6 +238,11 @@
 
 <h2>End of season</h2>
 <div class="card">
+% if dormant.suspected:
+  <div class="banner banner-info" style="margin-bottom:1rem">
+    <strong>{{ dormant.headline }}</strong> {{ dormant.reason }}
+  </div>
+% end
   <p class="note">
     Rec teams are not renamed between seasons, they are replaced — so when this
     one finishes, its last few events are still sitting in the family's
