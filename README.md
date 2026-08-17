@@ -31,8 +31,11 @@ The API is the only writer. Agents submit *proposals*; the API decides what
 reaches the calendar. calsync manages sourced events only — hand-created
 appointments are never touched.
 
-Matrix room for the daily loop (capture, approve, amend). Web UI for setup
-(add a feed, bind it to a kid and sport).
+Matrix room for the daily loop (capture, approve, amend). The web console does
+onboarding: paste a feed URL, bind it to a kid and a sport, and answer the
+questions the parse could not. It edits SQLite directly rather than going
+through the API — see "Configuration is not in this API" in
+[docs/API.md](docs/API.md).
 
 ## Running it
 
@@ -41,6 +44,7 @@ calsync --db drive.db init-db
 calsync --db drive.db import config.yaml
 calsync --db drive.db sync --out ./out --dry-run   # then drop --dry-run
 calsync --db drive.db status
+calsync --db drive.db web                          # console on localhost:8730
 ```
 
 `--out` writes a directory of `.ics` files — safe to point at a live feed, and
@@ -55,20 +59,31 @@ htpasswd -B -c config/radicale/users calsync
 mkdir -p secrets && printf '{"radicale_password":"..."}' > secrets/secrets.json
 chmod 600 secrets/secrets.json
 
-docker compose up -d                                    # Radicale + the poller
+docker compose up -d                       # Radicale, the poller, the console
 docker compose run --rm calsync import /config/calsync.yaml
 docker compose run --rm calsync stage tr-hawks          # onboarding calendar
 docker compose run --rm calsync promote tr-hawks        # when the parse is clean
 ```
 
-Radicale is bound to loopback — reach it over Tailscale, not by opening the
-port ([docs/deployment/radicale.md](docs/deployment/radicale.md) §5). Onboarding
-flow: [docs/ONBOARDING.md](docs/ONBOARDING.md).
+Radicale and the console are both bound to loopback — reach them through
+whatever VPN or authenticating proxy fronts the host, not by opening the ports
+([docs/deployment/radicale.md](docs/deployment/radicale.md) §5). Neither has a
+login of its own. If your proxy rewrites `Host` *and* strips `Sec-Fetch-*`,
+`calsync web --trusted-origin <host>` accepts writes from that name.
+Onboarding flow: [docs/ONBOARDING.md](docs/ONBOARDING.md).
+
+To look at the console without a real team's feed URL:
+
+```bash
+docker compose --profile demo up -d web feeds   # console :8730, feeds :8000
+```
+
+`feeds` replays the recorded fixtures with their dates shifted onto this week,
+so the sync window does not discard them (`demo/feeds.py`). It is not part of
+the product.
 
 ## Next step
 
-The web config UI, built around [docs/ONBOARDING.md](docs/ONBOARDING.md): rec
-teams are recreated every season, so onboarding a feed is recurring work rather
-than one-time setup. Player360 and TeamReach are verified against live feeds;
-the flag-football app is the last unsurveyed source, and the only one whose UIDs
-are not stable.
+The flag-football app is the last unsurveyed source, and the only one whose UIDs
+are not stable — which duplicates rather than deletes, so it needs the identity
+guard in `diff.py` exercised against a real feed before it is trusted.

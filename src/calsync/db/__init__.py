@@ -83,6 +83,15 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "sync_window_back_days": "7",
     "sync_window_forward_days": "365",
     "default_tz": "UTC",
+    # Matrix. Nothing sends a message yet (docs/MATRIX.md describes a component
+    # that does not exist); these are stored and verifiable so that when it
+    # lands it starts from a configuration a homeserver has already accepted.
+    # The token itself is not here — `matrix_secret_ref` names a secret, the
+    # same arrangement as `radicale_secret_ref`.
+    "matrix_homeserver": "",
+    "matrix_user_id": "",
+    "matrix_room_id": "",
+    "matrix_secret_ref": "matrix_access_token",
 }
 
 

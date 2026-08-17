@@ -1,0 +1,601 @@
+/* calsync console.
+ *
+ * Direction: chalk and turf. The artifacts of a rec league are a mown field, a
+ * chalked line and an orange cone, so the palette is a deep field green for
+ * structure, a chalky off-white ground, and safety orange reserved for exactly
+ * one thing — a question only the operator can answer. Nothing else is orange.
+ *
+ * Two rules earn their keep:
+ *
+ *   1. Every string a coach typed is set in mono. "Riverview#2" and
+ *      "Riverview #2" are the same field typed twice, and the operator has to
+ *      be able to see that at a glance; proportional type hides it.
+ *   2. The gate is four blocks, not a progress bar. The promotion conditions
+ *      are discrete and unordered — three of them can pass while the fourth
+ *      waits weeks for a coach to post the schedule — and a bar would imply a
+ *      sequence and a percentage, neither of which exists.
+ *
+ * No webfonts. This is served on a private tailnet to one person; asking
+ * Google for a font would tell Google when that person opens their kids'
+ * schedules, to save a condensed grotesque we can approximate with a stack.
+ */
+
+:root {
+  --paper: #f2f5f0;
+  --card: #ffffff;
+  --line: #d3dbd0;
+  --line-soft: #e6ebe4;
+  --ink: #17211c;
+  --ink-2: #56675d;
+  --turf: #123529;
+  --go: #2c7a51;
+  --cone: #cf4409;
+  --wait: #446a8d;
+  --stop: #a32b1c;
+
+  --shadow: 0 1px 0 rgba(18, 53, 41, 0.05), 0 1px 3px rgba(18, 53, 41, 0.06);
+  --radius: 3px;
+
+  --display: "Avenir Next Condensed", "HelveticaNeue-CondensedBold",
+    "Liberation Sans Narrow", "DejaVu Sans Condensed", "Roboto Condensed",
+    system-ui, sans-serif;
+  --body: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #0e1712;
+    --card: #16221c;
+    --line: #2b3a31;
+    --line-soft: #223029;
+    --ink: #e3ebe5;
+    --ink-2: #96a99d;
+    --turf: #d7e6dc;
+    --go: #4cae78;
+    --cone: #ff8a4c;
+    --wait: #7fa9ce;
+    --stop: #f0705d;
+    --shadow: none;
+  }
+}
+
+* { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font: 16px/1.55 var(--body);
+}
+
+a { color: var(--go); text-underline-offset: 2px; }
+a:hover { color: var(--cone); }
+
+:focus-visible {
+  outline: 2px solid var(--cone);
+  outline-offset: 2px;
+}
+
+/* --- the rail ----------------------------------------------------------- */
+
+.rail {
+  background: var(--turf);
+  border-bottom: 3px solid var(--go);
+}
+@media (prefers-color-scheme: dark) {
+  .rail { background: #0a120e; border-bottom-color: var(--go); }
+}
+
+.rail-in {
+  max-width: 68rem;
+  margin: 0 auto;
+  padding: 0.85rem 1.5rem;
+  display: flex;
+  align-items: baseline;
+  gap: 1.5rem;
+  flex-wrap: wrap;
+}
+
+.wordmark {
+  font-family: var(--display);
+  font-stretch: condensed;
+  font-size: 1.5rem;
+  font-weight: 700;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: #f2f5f0;
+  text-decoration: none;
+}
+@media (prefers-color-scheme: dark) { .wordmark { color: var(--ink); } }
+
+.wordmark-sub {
+  font-family: var(--display);
+  font-stretch: condensed;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  font-size: 0.7rem;
+  color: #8fb3a1;
+  margin-left: -1rem;
+}
+
+.rail-nav { margin-left: auto; display: flex; gap: 1.25rem; }
+.rail-nav a {
+  font-family: var(--display);
+  font-stretch: condensed;
+  text-transform: uppercase;
+  letter-spacing: 0.11em;
+  font-size: 0.8rem;
+  color: #a8c8b6;
+  text-decoration: none;
+}
+.rail-nav a:hover { color: #fff; }
+@media (prefers-color-scheme: dark) { .rail-nav a:hover { color: var(--ink); } }
+
+/* --- page --------------------------------------------------------------- */
+
+.page {
+  max-width: 68rem;
+  margin: 0 auto;
+  padding: 2.25rem 1.5rem 5rem;
+}
+.page-narrow { max-width: 46rem; }
+
+.eyebrow {
+  font-family: var(--display);
+  font-stretch: condensed;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--ink-2);
+  margin: 0 0 0.4rem;
+}
+
+h1 {
+  font-family: var(--display);
+  font-stretch: condensed;
+  font-size: clamp(2rem, 5vw, 2.9rem);
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  line-height: 1.05;
+  margin: 0 0 0.5rem;
+  color: var(--turf);
+}
+@media (prefers-color-scheme: dark) { h1 { color: var(--ink); } }
+
+h2 {
+  font-family: var(--display);
+  font-stretch: condensed;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: 0.92rem;
+  font-weight: 700;
+  margin: 2.5rem 0 0.9rem;
+  color: var(--ink-2);
+}
+
+.lede { font-size: 1.05rem; color: var(--ink-2); margin: 0 0 2rem; max-width: 44rem; }
+.note { color: var(--ink-2); font-size: 0.88rem; }
+
+/* --- cards -------------------------------------------------------------- */
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 1.35rem 1.5rem;
+}
+
+.stack { display: grid; gap: 0.9rem; }
+
+/* --- source cards ------------------------------------------------------- */
+
+.source {
+  display: block;
+  text-decoration: none;
+  color: inherit;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-left: 5px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 1.1rem 1.35rem;
+  transition: border-color 0.12s ease, transform 0.12s ease;
+}
+.source:hover { transform: translateX(2px); border-left-color: var(--cone); }
+.source-asking { border-left-color: var(--cone); }
+.source-waiting { border-left-color: var(--wait); }
+.source-live { border-left-color: var(--go); }
+.source-down { border-left-color: var(--stop); }
+
+.source-head { display: flex; align-items: baseline; gap: 0.75rem; flex-wrap: wrap; }
+
+.team {
+  font-family: var(--display);
+  font-stretch: condensed;
+  font-size: 1.55rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--turf);
+  margin: 0;
+}
+@media (prefers-color-scheme: dark) { .team { color: var(--ink); } }
+
+.who { color: var(--ink-2); font-size: 0.9rem; }
+
+.tag {
+  font-family: var(--display);
+  font-stretch: condensed;
+  text-transform: uppercase;
+  letter-spacing: 0.13em;
+  font-size: 0.68rem;
+  font-weight: 700;
+  padding: 0.18rem 0.5rem;
+  border-radius: 2px;
+  border: 1px solid currentColor;
+}
+.tag-staged { color: var(--wait); }
+.tag-live { color: var(--go); }
+.tag-asking { color: var(--cone); }
+.tag-down { color: var(--stop); }
+.tag-off { color: var(--ink-2); }
+
+.source-foot {
+  display: flex;
+  align-items: flex-end;
+  gap: 1.75rem;
+  margin-top: 1rem;
+  flex-wrap: wrap;
+}
+
+/* --- the gate ----------------------------------------------------------- */
+/* Four discrete conditions. Filled = met, hollow = waiting, solid orange =
+ * needs an answer. Never a bar: these do not happen in order. */
+
+.gate { display: flex; gap: 11px; flex-wrap: wrap; }
+.gate-big { gap: 6px; }
+
+/* Each block sizes to its own label, so four labels never run together into
+ * one unreadable string of small caps. */
+.pip { text-align: left; min-width: max-content; }
+
+.pip-bar {
+  height: 11px;
+  width: 100%;
+  border-radius: 1px;
+  border: 1.5px solid var(--line);
+  background: transparent;
+}
+.gate-big .pip-bar { height: 26px; }
+.gate-big .pip { flex: 1; }
+
+.pip-met .pip-bar { background: var(--go); border-color: var(--go); }
+.pip-asking .pip-bar { background: var(--cone); border-color: var(--cone); }
+.pip-waiting .pip-bar {
+  border-color: var(--wait);
+  border-style: dashed;
+  background: transparent;
+}
+.pip-moot .pip-bar { border-color: var(--line); background: var(--line-soft); }
+
+.pip-label {
+  display: block;
+  font-family: var(--display);
+  font-stretch: condensed;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: 0.62rem;
+  font-weight: 700;
+  color: var(--ink-2);
+  margin-top: 0.35rem;
+  white-space: nowrap;
+}
+.gate-big .pip-label { font-size: 0.7rem; letter-spacing: 0.14em; }
+.pip-asking .pip-label { color: var(--cone); }
+
+.counts {
+  margin-left: auto;
+  text-align: right;
+  font-size: 0.86rem;
+  color: var(--ink-2);
+}
+.counts b {
+  font-family: var(--display);
+  font-stretch: condensed;
+  font-size: 1.15rem;
+  color: var(--ink);
+  font-weight: 700;
+}
+
+/* --- questions ---------------------------------------------------------- */
+
+.question {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-top: 3px solid var(--cone);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 1.4rem 1.5rem;
+}
+.question-waiting { border-top-color: var(--wait); }
+.question-met { border-top-color: var(--go); }
+
+.question h3 {
+  font-size: 1.18rem;
+  font-weight: 620;
+  line-height: 1.35;
+  margin: 0 0 0.4rem;
+  letter-spacing: -0.01em;
+}
+.question p { margin: 0 0 1rem; color: var(--ink-2); font-size: 0.93rem; }
+
+/* Coach-typed strings. Always mono — see the note at the top of this file. */
+.raw {
+  font-family: var(--mono);
+  font-size: 0.83rem;
+  background: var(--line-soft);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  padding: 0.1rem 0.36rem;
+  word-break: break-word;
+}
+
+.raw-list { display: flex; flex-wrap: wrap; gap: 0.35rem; margin: 0 0 1.15rem; padding: 0; list-style: none; }
+
+.raw-block {
+  font-family: var(--mono);
+  font-size: 0.83rem;
+  background: var(--line-soft);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  padding: 0.7rem 0.85rem;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin: 0;
+}
+
+/* --- evidence table ----------------------------------------------------- */
+
+.derived { width: 100%; border-collapse: collapse; }
+.derived th,
+.derived td { text-align: left; padding: 0.55rem 0.5rem; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+.derived th {
+  font-family: var(--display);
+  font-stretch: condensed;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: 0.66rem;
+  color: var(--ink-2);
+  width: 11rem;
+  white-space: nowrap;
+}
+.derived td:last-child { color: var(--ink-2); font-size: 0.85rem; }
+.derived .val { color: var(--ink); font-size: 1rem; }
+
+.reveal { animation: rise 0.32s cubic-bezier(0.2, 0.7, 0.3, 1) backwards; }
+@keyframes rise {
+  from { opacity: 0; transform: translateY(5px); }
+  to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .reveal { animation: none; }
+  .source { transition: none; }
+  .source:hover { transform: none; }
+}
+
+/* --- forms -------------------------------------------------------------- */
+
+label.field { display: block; margin-bottom: 1.15rem; }
+
+.label {
+  display: block;
+  font-family: var(--display);
+  font-stretch: condensed;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: var(--ink-2);
+  margin-bottom: 0.35rem;
+}
+
+/* Every text-like input, listed rather than bare `input` so checkboxes and
+ * radios keep their native sizing. Missing one here is invisible until that
+ * field appears on a page — `password` was absent and rendered unstyled. */
+input[type="text"],
+input[type="url"],
+input[type="number"],
+input[type="password"],
+input[type="email"],
+input[type="search"],
+select,
+textarea {
+  width: 100%;
+  font: inherit;
+  color: var(--ink);
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 0.6rem 0.7rem;
+}
+input[type="url"],
+input[type="password"],
+input.mono { font-family: var(--mono); font-size: 0.9rem; }
+input:focus, select:focus, textarea:focus { border-color: var(--go); }
+
+.url-field input {
+  font-size: 1.02rem;
+  padding: 1rem 0.9rem;
+  border-width: 2px;
+  border-color: var(--turf);
+}
+@media (prefers-color-scheme: dark) { .url-field input { border-color: var(--line); } }
+
+.row { display: flex; gap: 1rem; flex-wrap: wrap; }
+.row > * { flex: 1 1 12rem; }
+
+.btn {
+  font-family: var(--display);
+  font-stretch: condensed;
+  text-transform: uppercase;
+  letter-spacing: 0.13em;
+  font-size: 0.82rem;
+  font-weight: 700;
+  padding: 0.62rem 1.3rem;
+  border-radius: var(--radius);
+  border: 1.5px solid var(--turf);
+  background: var(--turf);
+  color: #f2f5f0;
+  cursor: pointer;
+  text-decoration: none;
+  display: inline-block;
+}
+.btn:hover { background: var(--go); border-color: var(--go); color: #fff; }
+@media (prefers-color-scheme: dark) {
+  .btn { background: var(--go); border-color: var(--go); color: #08120d; }
+  .btn:hover { background: #63c48d; border-color: #63c48d; color: #08120d; }
+}
+
+.btn-quiet {
+  background: transparent;
+  color: var(--ink-2);
+  border-color: var(--line);
+}
+.btn-quiet:hover { background: transparent; color: var(--cone); border-color: var(--cone); }
+
+.btn-answer {
+  background: transparent;
+  color: var(--cone);
+  border-color: var(--cone);
+  letter-spacing: 0.08em;
+  padding: 0.45rem 0.85rem;
+  font-size: 0.78rem;
+}
+.btn-answer:hover { background: var(--cone); color: #fff; border-color: var(--cone); }
+@media (prefers-color-scheme: dark) { .btn-answer:hover { color: #1a0a03; } }
+
+.btn-row { display: flex; gap: 0.7rem; align-items: center; flex-wrap: wrap; margin-top: 0.4rem; }
+
+.choice {
+  display: flex;
+  gap: 0.65rem;
+  align-items: flex-start;
+  padding: 0.7rem 0.85rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  margin-bottom: 0.5rem;
+  cursor: pointer;
+}
+.choice:hover { border-color: var(--go); }
+.choice input { margin-top: 0.28rem; flex: none; }
+.choice-body { flex: 1; }
+.choice-title { font-weight: 560; }
+.choice-note { color: var(--ink-2); font-size: 0.85rem; display: block; }
+
+/* --- banners ------------------------------------------------------------ */
+
+.banner {
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--ink-2);
+  border-radius: var(--radius);
+  padding: 0.85rem 1.1rem;
+  margin-bottom: 1.5rem;
+  background: var(--card);
+  font-size: 0.93rem;
+}
+.banner-bad { border-left-color: var(--stop); }
+.banner-good { border-left-color: var(--go); }
+.banner-info { border-left-color: var(--wait); }
+.banner strong { font-weight: 640; }
+
+.empty {
+  border: 1.5px dashed var(--line);
+  border-radius: var(--radius);
+  padding: 3rem 2rem;
+  text-align: center;
+  color: var(--ink-2);
+}
+.empty .btn { margin-top: 1.1rem; }
+
+.polls { width: 100%; border-collapse: collapse; font-size: 0.86rem; }
+.polls td { padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--line-soft); }
+.polls td:first-child { font-family: var(--mono); font-size: 0.78rem; color: var(--ink-2); white-space: nowrap; }
+.polls td:last-child { font-family: var(--mono); font-size: 0.78rem; color: var(--ink-2); }
+.st-ok { color: var(--go); font-weight: 600; }
+.st-held { color: var(--cone); font-weight: 600; }
+.st-error { color: var(--stop); font-weight: 600; }
+
+hr.rule { border: 0; border-top: 1px solid var(--line); margin: 2.5rem 0; }
+
+@media (max-width: 40rem) {
+  .rail-in { padding: 0.75rem 1rem; gap: 0.9rem; }
+  .wordmark-sub { display: none; }
+  .page { padding: 1.5rem 1rem 4rem; }
+  .source-foot { gap: 1rem; }
+  .counts { margin-left: 0; text-align: left; }
+  .derived th { width: auto; display: block; padding-bottom: 0; border: 0; }
+  .derived td { display: block; }
+}
+
+/* --- sports ------------------------------------------------------------- */
+/* Its own layout rather than `.row`, whose `> *` basis is meant for form
+ * fields at full width and forces these three controls onto separate lines. */
+
+.sport {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.4rem 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+.sport:last-child { border-bottom: 0; }
+
+.sport-form { display: flex; align-items: center; gap: 0.5rem; flex: 1 1 auto; min-width: 0; }
+.sport-form input { padding: 0.4rem 0.55rem; }
+.sport-emoji { flex: 0 0 3.4rem; text-align: center; font-size: 1.05rem; }
+.sport-name { flex: 1 1 7rem; min-width: 0; }
+.sport-use { flex: 0 1 auto; color: var(--ink-2); font-size: 0.85rem; text-align: right; }
+
+.sport .btn { padding: 0.42rem 0.8rem; font-size: 0.74rem; }
+
+details.more { margin-top: 1.1rem; }
+details.more > summary {
+  cursor: pointer;
+  font-family: var(--display);
+  font-stretch: condensed;
+  text-transform: uppercase;
+  letter-spacing: 0.13em;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--ink-2);
+  padding: 0.5rem 0;
+}
+details.more > summary:hover { color: var(--cone); }
+
+/* Destructive actions. Quiet at rest so they never compete with the save, and
+ * red rather than orange on hover — orange means "a question for you" every
+ * other place it appears, and reusing it here would blur both meanings. */
+.btn-danger {
+  background: transparent;
+  color: var(--ink-2);
+  border-color: var(--line);
+}
+.btn-danger:hover {
+  background: transparent;
+  color: var(--stop);
+  border-color: var(--stop);
+}
+@media (prefers-color-scheme: dark) {
+  .btn-danger { background: transparent; color: var(--ink-2); border-color: var(--line); }
+  .btn-danger:hover { background: transparent; color: var(--stop); border-color: var(--stop); }
+}
+
+/* A card the flash message is about, jumped to by fragment after a save. */
+.card:target, .sport:target { outline: 2px solid var(--go); outline-offset: 3px; }

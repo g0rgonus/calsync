@@ -327,3 +327,388 @@ def get_source(conn: sqlite3.Connection, source_id: str) -> Source | None:
 def set_enabled(conn: sqlite3.Connection, source_id: str, enabled: bool) -> None:
     conn.execute("UPDATE sources SET enabled = ? WHERE id = ?", (int(enabled), source_id))
     conn.commit()
+
+
+# --- reads the web UI needs -------------------------------------------------
+#
+# Onboarding is CRUD over these tables in the same process rather than over an
+# HTTP API (docs/API.md, "Configuration is not in this API"), so the queries it
+# needs belong here with every other query. Each one is a single statement and
+# holds no transaction open, because the poller is a second writer on the same
+# file.
+
+
+def child_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Children as raw rows, for the editing form.
+
+    ``Child`` deliberately omits ``color``: it is web-UI only and nothing in the
+    sync path should be able to read it. The form still has to edit it.
+    """
+    return list(conn.execute("SELECT * FROM children ORDER BY birth_order, name"))
+
+
+def list_sports(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return list(
+        conn.execute(
+            "SELECT id, name, emoji, builtin FROM sports ORDER BY builtin, name"
+        )
+    )
+
+
+def list_venues(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return list(
+        conn.execute(
+            "SELECT id, canonical_name, address, lat, lon, pin_confirmed "
+            "FROM venues ORDER BY canonical_name"
+        )
+    )
+
+
+@dataclass(frozen=True)
+class VenueDetail:
+    """A venue plus everything that points at it.
+
+    ``aliases`` is the load-bearing part. It is what resolves a place with no
+    call, no latency and no variance, and it is the reason venue work amortises
+    to nothing: teams churn every season, the parks do not.
+    """
+
+    id: int
+    name: str
+    short_name: str | None
+    address: str | None
+    lat: float | None
+    lon: float | None
+    pin_confirmed: bool
+    geocoder: str | None
+    aliases: tuple[str, ...] = ()
+    #: Activities naming this as their home ground.
+    home_to: tuple[str, ...] = ()
+
+    @property
+    def pinned(self) -> bool:
+        """Has a usable pin. Not having one is fine — see :mod:`calsync.web`."""
+        return self.lat is not None and self.lon is not None
+
+    @property
+    def proposed(self) -> bool:
+        """Coordinates nothing human has vouched for yet.
+
+        A model may only ever be the last tier of venue resolution, and whatever
+        it proposes stays unconfirmed until somebody looks at it.
+        """
+        return self.pinned and not self.pin_confirmed
+
+
+def _venue_detail(conn: sqlite3.Connection, row: sqlite3.Row) -> VenueDetail:
+    return VenueDetail(
+        id=int(row["id"]),
+        name=row["canonical_name"],
+        short_name=row["short_name"],
+        address=row["address"],
+        lat=row["lat"],
+        lon=row["lon"],
+        pin_confirmed=bool(row["pin_confirmed"]),
+        geocoder=row["geocoder"],
+        aliases=tuple(
+            r["alias"]
+            for r in conn.execute(
+                "SELECT alias FROM venue_aliases WHERE venue_id = ? ORDER BY alias",
+                (row["id"],),
+            )
+        ),
+        home_to=tuple(
+            r["name"]
+            for r in conn.execute(
+                "SELECT name FROM activities WHERE home_venue_id = ? ORDER BY name",
+                (row["id"],),
+            )
+        ),
+    )
+
+
+def venues_detailed(conn: sqlite3.Connection) -> list[VenueDetail]:
+    return [
+        _venue_detail(conn, row)
+        for row in conn.execute("SELECT * FROM venues ORDER BY canonical_name")
+    ]
+
+
+def get_venue_detail(conn: sqlite3.Connection, venue_id: int) -> VenueDetail | None:
+    row = conn.execute("SELECT * FROM venues WHERE id = ?", (venue_id,)).fetchone()
+    return _venue_detail(conn, row) if row else None
+
+
+def upsert_venue(
+    conn: sqlite3.Connection,
+    *,
+    venue_id: int | None = None,
+    name: str,
+    short_name: str | None = None,
+    address: str | None = None,
+    lat: float | None = None,
+    lon: float | None = None,
+    pin_confirmed: bool = False,
+    geocoder: str | None = None,
+) -> int:
+    """Create or rename a venue, keeping its canonical name as an alias.
+
+    Renaming has to go through here rather than ``config.apply``, which keys on
+    ``canonical_name`` and would mint a second venue instead. The old name stays
+    an alias: it is a string that has genuinely appeared in a feed, and dropping
+    it would make every past event unresolvable again.
+    """
+    name = name.strip()
+    if not name:
+        raise ValueError("a venue needs a name")
+
+    if venue_id is None:
+        cursor = conn.execute(
+            "INSERT INTO venues (canonical_name, short_name, address, lat, lon,"
+            " pin_confirmed, geocoder) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (name, short_name, address, lat, lon, int(pin_confirmed), geocoder),
+        )
+        venue_id = int(cursor.lastrowid)
+    else:
+        conn.execute(
+            "UPDATE venues SET canonical_name = ?, short_name = ?, address = ?,"
+            " lat = ?, lon = ?, pin_confirmed = ?, geocoder = ? WHERE id = ?",
+            (name, short_name, address, lat, lon, int(pin_confirmed), geocoder, venue_id),
+        )
+
+    conn.execute(
+        "INSERT OR IGNORE INTO venue_aliases (venue_id, alias, source) VALUES (?, ?, 'ui')",
+        (venue_id, name),
+    )
+    conn.commit()
+    return venue_id
+
+
+def add_venue_alias(conn: sqlite3.Connection, venue_id: int, alias: str) -> None:
+    alias = alias.strip()
+    if not alias:
+        return
+    conn.execute(
+        "INSERT OR IGNORE INTO venue_aliases (venue_id, alias, source) VALUES (?, ?, 'ui')",
+        (venue_id, alias),
+    )
+    conn.commit()
+
+
+def remove_venue_alias(conn: sqlite3.Connection, venue_id: int, alias: str) -> None:
+    conn.execute(
+        "DELETE FROM venue_aliases WHERE venue_id = ? AND alias = ?", (venue_id, alias)
+    )
+    conn.commit()
+
+
+def merge_venues(conn: sqlite3.Connection, *, losing_id: int, winning_id: int) -> int:
+    """Fold one venue into another. Returns how many aliases moved across.
+
+    Near-duplicates are the normal way this table goes wrong: three coaches type
+    "Riverview", "Riverview Farm Park" and "Riverview Farm Park Soccer Fields"
+    for one park, and each becomes its own row with its own pin. Merging keeps
+    every alias — they are all real strings seen in real feeds — and adds the
+    losing name as one more, so events that used it still resolve.
+
+    One transaction: a half-merged venue is worse than either whole.
+    """
+    if losing_id == winning_id:
+        raise ValueError("a venue cannot be merged into itself")
+
+    losing = conn.execute(
+        "SELECT canonical_name FROM venues WHERE id = ?", (losing_id,)
+    ).fetchone()
+    if losing is None:
+        raise KeyError(f"no venue {losing_id}")
+
+    aliases = [
+        r["alias"]
+        for r in conn.execute(
+            "SELECT alias FROM venue_aliases WHERE venue_id = ?", (losing_id,)
+        )
+    ]
+    conn.executemany(
+        "INSERT OR IGNORE INTO venue_aliases (venue_id, alias, source) VALUES (?, ?, 'merge')",
+        [(winning_id, alias) for alias in {*aliases, losing["canonical_name"]}],
+    )
+    conn.execute(
+        "UPDATE activities SET home_venue_id = ? WHERE home_venue_id = ?",
+        (winning_id, losing_id),
+    )
+    # Cascades the losing row's aliases; they have already been copied across.
+    conn.execute("DELETE FROM venues WHERE id = ?", (losing_id,))
+    conn.commit()
+    return len(aliases)
+
+
+def delete_venue(conn: sqlite3.Connection, venue_id: int) -> None:
+    """Safe in a way that deleting a child is not.
+
+    Nothing in ``event_state`` references a venue — events carry theirs by value,
+    resolved at sync time — so this cannot strand anything on the calendar. The
+    events simply re-render without a pin and the place shows up as unresolved
+    again on the source page, which is visible and reversible.
+    """
+    conn.execute("DELETE FROM venues WHERE id = ?", (venue_id,))
+    conn.commit()
+
+
+def list_activities(conn: sqlite3.Connection) -> list[Activity]:
+    return [
+        get_activity(conn, r["id"])
+        for r in conn.execute("SELECT id FROM activities ORDER BY id")
+    ]
+
+
+def source_row(conn: sqlite3.Connection, source_id: str) -> sqlite3.Row | None:
+    """The columns ``Source`` deliberately leaves out — health, not behaviour."""
+    return conn.execute(
+        "SELECT last_success_at, last_error, last_error_at FROM sources WHERE id = ?",
+        (source_id,),
+    ).fetchone()
+
+
+def tracked_events(conn: sqlite3.Connection, source_id: str) -> int:
+    return int(
+        conn.execute(
+            "SELECT COUNT(*) AS n FROM event_state WHERE source_id = ? AND cancelled = 0",
+            (source_id,),
+        ).fetchone()["n"]
+    )
+
+
+def recent_polls(
+    conn: sqlite3.Connection, source_id: str, *, limit: int = 5
+) -> list[sqlite3.Row]:
+    return list(
+        conn.execute(
+            "SELECT started_at, status, detail FROM poll_runs WHERE source_id = ? "
+            "ORDER BY id DESC LIMIT ?",
+            (source_id, limit),
+        )
+    )
+
+
+def previous_season(
+    conn: sqlite3.Connection, child_id: str, sport_id: str
+) -> Activity | None:
+    """The last activity this child had in this sport, for clone-forward.
+
+    Rec teams are recreated every season under a new name with a new feed, but
+    the timezone, alarm policy and league are the same every time — so a new
+    team is two fields rather than a dozen (docs/ONBOARDING.md §8).
+    """
+    row = conn.execute(
+        "SELECT id FROM activities WHERE child_id = ? AND sport_id = ? "
+        "ORDER BY season_start DESC, id DESC LIMIT 1",
+        (child_id, sport_id),
+    ).fetchone()
+    return get_activity(conn, row["id"]) if row else None
+
+
+def add_activity_alias(
+    conn: sqlite3.Connection, activity_id: str, alias: str, *, source: str = "ui"
+) -> None:
+    """Teach the parser another string that means *us*.
+
+    This is the fix for ``unidentified``: the adapter found an "X vs Y" fixture
+    and neither side matched a known token, so it named no opponent rather than
+    guessing. One alias and every such fixture resolves — including the ones
+    already written, because the title is a render and re-renders from stored
+    fields on the next poll.
+    """
+    alias = alias.strip()
+    if not alias:
+        return
+    conn.execute(
+        "INSERT OR IGNORE INTO activity_aliases (activity_id, alias, source) "
+        "VALUES (?, ?, ?)",
+        (activity_id, alias, source),
+    )
+    conn.commit()
+
+
+def remove_activity_alias(conn: sqlite3.Connection, activity_id: str, alias: str) -> None:
+    conn.execute(
+        "DELETE FROM activity_aliases WHERE activity_id = ? AND alias = ?",
+        (activity_id, alias),
+    )
+    conn.commit()
+
+
+#: What a child or a sport is holding up, so a delete can refuse with a reason
+#: rather than a foreign-key error.
+@dataclass(frozen=True)
+class Usage:
+    activities: tuple[str, ...] = ()
+    tracked_events: int = 0
+
+    @property
+    def in_use(self) -> bool:
+        return bool(self.activities)
+
+
+def _usage(conn: sqlite3.Connection, column: str, value: str) -> Usage:
+    names = tuple(
+        r["name"]
+        for r in conn.execute(
+            f"SELECT name FROM activities WHERE {column} = ? ORDER BY name", (value,)
+        )
+    )
+    events = conn.execute(
+        f"""
+        SELECT COUNT(*) AS n FROM event_state
+         WHERE cancelled = 0 AND source_id IN (
+               SELECT s.id FROM sources s
+                 JOIN activities a ON a.id = s.activity_id
+                WHERE a.{column} = ?)
+        """,
+        (value,),
+    ).fetchone()["n"]
+    return Usage(activities=names, tracked_events=int(events))
+
+
+def child_usage(conn: sqlite3.Connection, child_id: str) -> Usage:
+    return _usage(conn, "child_id", child_id)
+
+
+def sport_usage(conn: sqlite3.Connection, sport_id: str) -> Usage:
+    return _usage(conn, "sport_id", sport_id)
+
+
+def delete_child(conn: sqlite3.Connection, child_id: str) -> None:
+    """Only ever called once :func:`child_usage` says nothing depends on it.
+
+    The check is not paranoia about foreign keys — they would happily succeed.
+    ``children`` cascades to ``activities``, which cascades to ``sources``, which
+    cascades to ``event_state``: deleting a child with a live team silently
+    discards the record of every event calsync has already written, and those
+    events stay in the family's calendar with nothing tracking them. There is no
+    way back from that except deleting them by hand in a calendar client.
+    """
+    conn.execute("DELETE FROM children WHERE id = ?", (child_id,))
+    conn.commit()
+
+
+def delete_sport(conn: sqlite3.Connection, sport_id: str) -> None:
+    conn.execute("DELETE FROM sports WHERE id = ? AND builtin = 0", (sport_id,))
+    conn.commit()
+
+
+def get_sport(conn: sqlite3.Connection, sport_id: str) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM sports WHERE id = ?", (sport_id,)).fetchone()
+
+
+def id_taken(conn: sqlite3.Connection, table: str, candidate: str) -> bool:
+    """Is this primary key already in use?
+
+    ``table`` is never operator input — the callers pass a literal — so the
+    interpolation is safe, and there is no way to bind an identifier anyway.
+    """
+    if table not in ("activities", "sources", "children"):
+        raise ValueError(f"refusing to probe {table!r}")
+    return (
+        conn.execute(f"SELECT 1 FROM {table} WHERE id = ?", (candidate,)).fetchone()
+        is not None
+    )

@@ -222,6 +222,26 @@ def cmd_promote(args) -> int:
     return 0
 
 
+def cmd_web(args) -> int:
+    """Serve the onboarding console.
+
+    Loopback by default and it should stay that way — this serves children's
+    names, schedules and the places they will be. Reach it from a phone through
+    whatever VPN or authenticating proxy already fronts the homelab; the console
+    has no login of its own.
+    """
+    from .web import create_app, serve
+
+    serve(
+        create_app(
+            args.db, secrets=_secrets(args), trusted_origins=args.trusted_origin or ()
+        ),
+        host=args.host,
+        port=args.port,
+    )
+    return 0
+
+
 def cmd_status(args) -> int:
     conn = db.open_db(args.db)
     sources = repo.list_sources(conn, enabled_only=False)
@@ -296,6 +316,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_promote.add_argument("--force", action="store_true",
                            help="promote despite an incomplete parse")
     p_promote.set_defaults(fn=cmd_promote)
+
+    p_web = sub.add_parser("web", help="serve the onboarding console")
+    p_web.add_argument("--host", default="127.0.0.1",
+                       help="bind address (default: loopback; use tailscale serve)")
+    p_web.add_argument("--port", type=int, default=8730)
+    p_web.add_argument("--secrets", help="path to a secrets JSON file")
+    p_web.add_argument(
+        "--trusted-origin", action="append", metavar="HOST[:PORT]",
+        help="accept writes from this origin as well as the served host; only "
+             "needed behind a proxy that rewrites Host and for browsers too old "
+             "to send Sec-Fetch-Site",
+    )
+    p_web.set_defaults(fn=cmd_web)
 
     sub.add_parser("status", help="show per-source health").set_defaults(fn=cmd_status)
     return parser

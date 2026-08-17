@@ -126,6 +126,29 @@ def apply(conn, data: dict) -> list[str]:
             )
         log.append(f"venue {name} ({len(venue.get('aliases') or []) + 1} aliases)")
 
+    # Sports before children, because an activity references one by id.
+    #
+    # `db.migrate` seeds a catalog with INSERT OR IGNORE, which is what keeps an
+    # edited emoji from being clobbered on the next upgrade — but it also means
+    # the catalog is only ever *additive* from code. A deployment that needs
+    # fencing has to be able to say so here, and to export it again.
+    for sport in data.get("sports") or []:
+        sid = _require(sport.get("id"), "sport id")
+        conn.execute(
+            """
+            INSERT INTO sports (id, name, emoji, builtin)
+            VALUES (?, ?, ?, 0)
+            ON CONFLICT(id) DO UPDATE SET
+                name=excluded.name, emoji=excluded.emoji
+            """,
+            (
+                sid,
+                _require(sport.get("name"), f"sport {sid} name"),
+                _require(sport.get("emoji"), f"sport {sid} emoji"),
+            ),
+        )
+        log.append(f"sport {sid}")
+
     for child in data.get("children") or []:
         cid = _require(child.get("id"), "child id")
         conn.execute(

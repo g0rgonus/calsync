@@ -152,18 +152,49 @@ It also means the poller and the UI are two writers on one SQLite file, so
 
 ## 8. State of play
 
-Built and tested: per-source staging (`sources.staging_collection`), the
+All of it is built. Per-source staging (`sources.staging_collection`), the
 diagnostics that feed the gate, `calsync stage` / `promote`, and the placement
-check that makes promotion actually relocate events.
+check that makes promotion actually relocate events; then:
 
-Still missing for the UI:
+- **Feed inspection** — `inspection.inspect_feed`, a pure function from bytes to
+  the derivations in §2. It creates nothing, which is the point: the paste-a-URL
+  step has to show you what a feed contains *before* you decide whether to take
+  it. Tested against all four recorded feeds, including the two that must
+  correctly propose no team token at all.
+- **The web console** — `calsync web`, in `web/`. Thin over `config.apply`,
+  `repo.set_staging` and `sync_source(dry_run=True)`, exactly as §7 describes.
+- **Clone-forward** — `repo.previous_season` / `onboarding.clone_forward`. A
+  second season in the same sport carries the timezone, league, age group and
+  alarm policy, and nothing else: the name, the feed and the aliases are what
+  churn.
 
-- **Feed inspection.** A function that fetches a URL and returns the derivations
-  in §2 — team name, season bounds, candidate team token, venues, event counts —
-  **without creating an activity or a source**. Everything downstream of step 2
-  exists; this is what makes the paste-a-URL step possible, and today the only
-  way to see any of it is to create a source and sync it.
-- **The web layer itself.** Thin, over `config.apply`, `repo.set_staging` and
-  `sync_source(dry_run=True)`.
-- **Clone-forward.** Copy last season's activity for a kid+sport, so a new team
-  is two fields rather than a dozen (§1).
+### What the console does with §5
+
+The four gate conditions are the primary surface, rendered as four discrete
+blocks rather than a progress bar — they do not happen in order, and three can
+pass for weeks while the fourth waits on a coach.
+
+Each unmet condition is a question with its own answer form: an unmatched
+fixture offers the names it saw, ranked by frequency, as one-click activity
+aliases; an unresolved venue offers a new venue row or an alias onto an existing
+one. `unknown_types` is the exception and says so — the vocabulary lives in the
+adapter, so there is nothing to fix from a browser.
+
+"No games yet" is styled as *waiting*, never as an error, because it is the
+expected state of a healthy feed in March.
+
+### What is deliberately not there
+
+Kids and sports are editable on one `/household` page, because a sport's emoji
+reaches every title and a misspelled name is otherwise unfixable. `/venues` gets
+a screen of its own for the reason in §3 — venues outlast teams, so the alias
+table is the one piece of configuration whose value compounds. It carries the
+merge, because three coaches typing three names for one park is how that table
+actually goes wrong.
+
+Settings and activity fields are still edited in SQLite, and there is no
+team-deletion button — `children`
+cascades through `activities` and `sources` to `event_state`, so deleting a kid
+with a live team discards the record of every event already written and strands
+those events in the family's calendar. Both delete paths check first and refuse
+with the reason.

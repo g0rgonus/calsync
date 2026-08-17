@@ -3,7 +3,10 @@ name = "calsync"
 version = "0.1.0"
 description = "Normalize kids' schedules from feeds, PDFs and messages into one calendar"
 requires-python = ">=3.11"
-dependencies = ["icalendar>=6.0", "pyyaml>=6.0"]
+# Bottle is a single pure-Python module with no dependencies of its own, which
+# is why it wins over Flask (five packages for the same job) and over the
+# stdlib (which would leave routing and HTML escaping to be hand-rolled here).
+dependencies = ["icalendar>=6.0", "pyyaml>=6.0", "bottle>=0.13"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
@@ -20,9 +23,10 @@ where = ["src"]
 
 # schema.sql is loaded at runtime by db.migrate(). Without this it is absent
 # from an installed wheel and every command fails on a fresh install — which
-# tests never catch, because pytest reads from src/ via pythonpath.
+# tests never catch, because pytest reads from src/ via pythonpath. The
+# templates and stylesheet are read from disk the same way and fail the same way.
 [tool.setuptools.package-data]
-calsync = ["db/*.sql"]
+calsync = ["db/*.sql", "web/templates/*.tpl", "web/static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

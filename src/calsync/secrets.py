@@ -81,3 +81,62 @@ class SecretStore:
         raise SecretError(
             f"no secret for {ref!r}; set {env_name(ref)} or add it to {self.path}"
         )
+
+    def has(self, ref: str) -> bool:
+        """Is this ref resolvable? Never returns the value.
+
+        The web UI uses this to say "stored" without ever putting a credential
+        on a page.
+        """
+        try:
+            self.get(ref)
+        except SecretError:
+            return False
+        return True
+
+    def put(self, ref: str, value: str) -> None:
+        """Store a credential, so onboarding never has to write one to the DB.
+
+        A feed URL handed over by an app is a bearer capability: whoever holds
+        it can read a child's schedule and locations. The onboarding flow has to
+        put it *somewhere*, and the only acceptable somewhere is here — a source
+        row must stay safe to read, export and paste into a bug report.
+
+        Written whole-file with the mode set before any content lands, because
+        the window between creating a world-readable file and chmod-ing it is
+        exactly long enough to lose a token. The temp file sits in the same
+        directory so the replace is atomic.
+        """
+        if not ref or not value:
+            raise SecretError("a secret needs both a name and a value")
+
+        current = dict(self._from_file())
+        current[ref] = value
+
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_name(f".{self.path.name}.tmp")
+        try:
+            # O_EXCL so a stale temp file is an error rather than a silent
+            # overwrite of somebody else's in-flight write.
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            try:
+                with os.fdopen(fd, "w") as handle:
+                    json.dump(current, handle, indent=2, sort_keys=True)
+                    handle.write("\n")
+            except BaseException:
+                tmp.unlink(missing_ok=True)
+                raise
+            os.replace(tmp, self.path)
+        except OSError as exc:
+            # The container mounts this read-only for the poller on purpose, so
+            # this is a configuration answer rather than a bug — say which.
+            raise SecretError(
+                f"could not write to {self.path}: {exc}. Add {ref!r} by hand, or "
+                f"set {env_name(ref)}"
+            ) from exc
+
+        self._cache = current
+
+    def refs(self) -> list[str]:
+        """Names only. Used to offer an existing credential for reuse."""
+        return sorted(self._from_file())

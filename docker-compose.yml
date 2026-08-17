@@ -58,6 +58,52 @@ services:
     #   docker compose run --rm calsync status
     #   docker compose run --rm calsync promote tr-hawks
 
+  # The onboarding console. Same image, same database file, same process model
+  # as any other calsync subcommand — configuration is edited directly in SQLite
+  # rather than through an API (docs/API.md), so this and the poller are two
+  # writers on one file and `db.connect` sets the busy timeout that makes that
+  # safe.
+  web:
+    build: .
+    command: ["web", "--host", "0.0.0.0", "--port", "8730"]
+    restart: unless-stopped
+    # 0.0.0.0 *inside* the container is what lets the published port reach it;
+    # the publish itself is pinned to loopback, so nothing is exposed off this
+    # box. Put a VPN or an authenticating proxy in front to reach it from a
+    # phone — the console has no login, so never widen this publish.
+    ports:
+      - "127.0.0.1:8730:8730"
+    volumes:
+      - calsync-data:/data
+      # Read-write, unlike the poller's mount: onboarding takes the token out of
+      # a pasted feed URL and puts it here, so that it never reaches the
+      # database. Keep the directory 700 and the file 600 on the host.
+      - ./secrets:/run/secrets/calsync
+    environment:
+      CALSYNC_DB: /data/calsync.db
+      CALSYNC_SECRETS: /run/secrets/calsync/secrets.json
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request;urllib.request.urlopen('http://localhost:8730/')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  # Not part of the stack. `docker compose --profile demo up` adds a server that
+  # replays the recorded fixtures with their dates shifted onto this week, so
+  # the console can be exercised without a real team's feed URL.
+  feeds:
+    profiles: ["demo"]
+    image: python:3.12-slim
+    restart: unless-stopped
+    command: ["python", "/demo/feeds.py", "--port", "8000"]
+    volumes:
+      - ./demo:/demo:ro
+      - ./tests/fixtures:/tests/fixtures:ro
+    ports:
+      - "127.0.0.1:8000:8000"
+
 volumes:
   radicale-data:
   calsync-data:

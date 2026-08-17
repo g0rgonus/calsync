@@ -10,15 +10,21 @@ Compose stack running it against Radicale. Verified against live feeds and a liv
 Radicale, including the R1–R8 acceptance checks in
 `docs/deployment/radicale.md`.
 
-**There is no HTTP API and no web UI.** `docs/API.md`, `docs/MATRIX.md` and
-`docs/MATCHING.md` specify components that do not exist — read them as the design
-contract, not as a description of the code. `docs/ONBOARDING.md` is the spec for
-the web UI, and it is the next thing to build.
+The onboarding console is built (`calsync web`, `src/calsync/web/`). Paste a
+feed URL, confirm three things, and the source is staged; the gate in
+`docs/ONBOARDING.md` §5 is the app's primary screen. `/venues` manages the alias
+table, pins and merges; `/household` edits kids and the sport catalog;
+`/settings` covers the `settings` table. Activity fields are still hand-edited
+in SQLite by design.
 
-**Configuration does not go through the API.** The web UI edits children,
+**There is still no HTTP API.** `docs/API.md`, `docs/MATRIX.md` and
+`docs/MATCHING.md` specify components that do not exist — read them as the design
+contract, not as a description of the code.
+
+**Configuration does not go through the API.** The console edits children,
 activities, sources, venues and settings directly in SQLite via `repo.py` and
-`config.py`, in the same process — so the UI can be built now, without the API
-existing. Reasoning in `docs/API.md`, "Configuration is not in this API".
+`config.py`, in the same process. Reasoning in `docs/API.md`, "Configuration is
+not in this API".
 
 The boundary that decision respects is **agent versus human, not network
 position**: Hermes and the pollers still submit proposals, still cannot approve
@@ -30,12 +36,12 @@ The Google target is implemented and tested but not wired to the CLI.
 
 ## Setup and tests
 
-No virtualenv is committed and the system Python lacks `icalendar`/`pyyaml`, so a
-fresh clone needs:
+No virtualenv is committed and the system Python lacks the three runtime deps,
+so a fresh clone needs:
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/pytest                                    # 149 tests, ~0.4s
+.venv/bin/pytest                                    # 210 tests, ~0.7s
 .venv/bin/pytest tests/test_player360.py -k content_hash    # single test
 ```
 
@@ -53,7 +59,17 @@ calsync --db drive.db import config.yaml       # docs/config.example.yaml is the
 calsync --db drive.db sync --out ./out --dry-run
 calsync --db drive.db sync --out ./out
 calsync --db drive.db status                   # per-source health + recent polls
+calsync --db drive.db web                      # the console, on localhost:8730
 ```
+
+The console is the same code paths as the CLI with a browser in front. It runs a
+live dry-run to render the gate, exactly as `calsync promote` does, rather than
+trusting a stored verdict.
+
+To exercise it without a real team's feed, `docker compose --profile demo up -d
+web feeds` adds a server replaying the recorded fixtures with their dates
+shifted onto this week — without the shift every event falls outside the sync
+window and every gate condition passes vacuously.
 
 Staging a new feed to an onboarding calendar, then promoting it once the parse
 is clean (`docs/ONBOARDING.md`):
@@ -85,7 +101,15 @@ sources/<feed>.py  →  Event      →  diff.py   →  render.py       →  targ
                                                                           ↓
                                     sync.py orchestrates ─────────→  repo.record_*
                                                                     (event_state)
+
+inspection.py  →  onboarding.py  →  config.apply       web/ is a browser over
+(bytes to        (draft to rows,     (rows)            those three, plus
+ derivations)     credential out)                      sync_source(dry_run=True)
 ```
+
+The onboarding half runs *before* a source exists, which is why it is separate:
+`inspection.py` takes bytes and returns derivations with no database at all, and
+`onboarding.py` is the only thing that turns a confirmed inspection into rows.
 
 `sync.py` is the only module that closes the loop, and its **ordering is the
 safety**: a failed fetch aborts before the diff (zero events and "all cancelled"
@@ -113,6 +137,31 @@ Decisions that span several files and are easy to undo by accident:
   distinct URLs, so reclassification is delete-then-create (`targets.move_required`).
   Treating it as an update leaves a ghost copy — the duplicate-in-a-shared-calendar
   failure this project exists to prevent.
+- **Deleting a child cascades to `event_state`.** `children` → `activities` →
+  `sources` → `event_state`, all `ON DELETE CASCADE`. Removing a kid who still has
+  a team discards the record of every event calsync has written, and those events
+  stay in the family's calendar with nothing tracking them — the duplicate-in-a-
+  shared-calendar failure, arrived at from the other direction. `repo.child_usage`
+  exists so a delete refuses with a reason instead of succeeding quietly.
+- **Bottle decodes form values as latin-1.** That is the HTTP default when a
+  browser omits the charset, which browsers always do. `web/app.py` reads every
+  field through `_field()`, which calls `getunicode`; a plain `.get` mangles every
+  emoji and every accented name.
+- **A feed URL is a credential, so onboarding splits it before storing it.**
+  `onboarding.templatise` moves the token to the secret store and leaves
+  `{{secret:ref}}` behind, then *reassembles the template and compares it against
+  the original*. A URL that will not round-trip is refused rather than saved —
+  silently mangling one surfaces weeks later as a source that stopped working,
+  with nothing to point at.
+- **Matrix config is stored and verified, but nothing reads it.** `matrix.py` is
+  not a client — `docs/MATRIX.md` describes a component that does not exist. It
+  holds the four connection values and checks them against the homeserver, which
+  is the only honest thing to offer for config nothing consumes yet. Do not let
+  the settings page imply otherwise.
+- **The guard thresholds are bounded in the UI.** `web/app.py:LIMITS` refuses to
+  widen `max_disappearance_pct` past 0.5 or the count past 25. Narrowing is free.
+  A guard that a web form can switch off in two clicks is not a guard, and the
+  invariant above says never raise these to make something pass.
 - **Configuration lives in the `settings` table, not in code.** Calendar splitting,
   title format, multi-kid style and safety thresholds are all rows. `tests/test_configurable.py`
   asserts this by configuring a *different* family and expecting their conventions.
@@ -157,7 +206,16 @@ family calendar, so treat them as contracts, not defaults:
 - **Venue identity excludes the field designator.** "Riverview #2" is venue
   `Riverview` plus field `#2` (`normalize/venue.split_field`). Folding the
   designator into the name mints a separate venue, and a separate geocode, per
-  field.
+  field. The console refuses a typed name that carries one, which is the only
+  place a human could reintroduce it.
+- **Renaming a venue keeps the old name as an alias** (`repo.upsert_venue`).
+  The old string is one a feed genuinely used, and dropping it makes every past
+  event at that place unresolvable again. Merging (`repo.merge_venues`) keeps
+  both sides' aliases for the same reason.
+- **Deleting a venue is safe; deleting a child is not.** No `event_state` row
+  references a venue — events carry theirs by value, resolved at sync time — so
+  a deleted venue costs a pin and reappears in diagnostics. Do not generalise
+  that to the other delete paths.
 - **Never guess home/away.** Some feeds phrase every fixture as "vs", so away is
   marked only when positively known from the venue.
 - **calsync manages sourced events only.** Hand-created family appointments are
@@ -178,7 +236,14 @@ the CalDAV server requirements and acceptance checks.
 
 - Stdlib-first and dependency-light on purpose: `sqlite3` directly rather than an
   ORM, hand-rolled deterministic parsing rather than a model call. Justify any new
-  dependency against that.
+  dependency against that. Three runtime deps total; `bottle` is there because it
+  is a single pure-Python module with no dependencies of its own, where Flask is
+  five packages and the stdlib would leave HTML escaping to be hand-rolled.
+- The console has no login. It is loopback-only with one operator, reached
+  through whatever VPN or proxy already fronts the homelab — a password form in
+  front of a page unreachable without one is a thing to maintain, not a control.
+  Writes *are* checked, via `Sec-Fetch-Site`; never reintroduce an `Origin`-vs-
+  `Host` comparison, which any Host-rewriting proxy turns into a total outage.
 - Normalization is deterministic — no model in the parse path, so the same feed
   always renders the same title and any change traces to a config change.
 - Commit messages are imperative and explain the *why*, with no conventional-commit
