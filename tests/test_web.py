@@ -1378,7 +1378,7 @@ def test_a_finished_season_is_pointed_out_next_to_the_retire_button(client, tmp_
     page = client.get(f"/sources/{source_id}")["body"]
     assert "This season looks finished" in page
     assert "100 days ago" in page
-    assert "nothing has been changed" in page, "must not imply it acted"
+    assert "Nothing on the calendar has been changed" in page, "must not imply it acted"
     assert "Retire" in page, "the diagnosis should sit beside the answer"
 
 
@@ -1401,3 +1401,20 @@ def test_a_healthy_source_is_never_labelled_dormant(client, tmp_path):
 
     assert "season may be over" not in client.get("/?check=0")["body"]
     assert "This season looks finished" not in client.get(f"/sources/{source_id}")["body"]
+
+
+def test_a_source_can_be_marked_as_one_that_comes_back(client, tmp_path):
+    """Most teams are replaced yearly; a club team kept across seasons is not.
+
+    Without this it would be switched off every summer and missed every autumn.
+    """
+    onboard(client)
+    conn = db.connect(tmp_path / "calsync.db")
+    source_id = repo.list_sources(conn, enabled_only=False)[0].id
+    assert "Keep this one across seasons" in client.get(f"/sources/{source_id}")["body"]
+
+    client.post(f"/sources/{source_id}/persists", {"persists": "1"})
+
+    conn = db.connect(tmp_path / "calsync.db")
+    assert repo.get_source(conn, source_id).config["persists_across_seasons"] is True
+    assert "Treat as a single season" in client.get(f"/sources/{source_id}")["body"]

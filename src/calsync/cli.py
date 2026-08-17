@@ -24,7 +24,7 @@ from . import config as config_mod
 from . import db, repo
 from .secrets import SecretError, SecretStore
 from .settings import Settings
-from . import digest, matrix, polling, retire, targeting
+from . import digest, matrix, polling, retire, seasonend, targeting
 from .sync import sync_source
 from .targets import build
 from .targets.http import HttpTransport
@@ -170,6 +170,22 @@ def cmd_poll(args) -> int:
                 source.id, status=report.status,
                 interval_s=source.poll_interval_s, now=time.monotonic(),
             )
+            # After the sync, never inside it: this can disable a source, and
+            # the sync loop's ordering is not somewhere to add a side effect.
+            try:
+                outcome = seasonend.review(
+                    conn, source, now=_now(None), secrets=secrets,
+                    base_url=args.console_url or "",
+                )
+                if outcome.disabled:
+                    print("    season looks finished; polling stopped", flush=True)
+                elif outcome.notified:
+                    print("    season looks finished; notified", flush=True)
+                for problem in outcome.errors:
+                    print(f"    could not notify: {problem}", flush=True)
+            except Exception as exc:  # noqa: BLE001 — never take the poller down
+                print(f"    season check failed: {exc}", flush=True)
+
             failures = schedule.struggling().get(source.id, 0)
             if failures > 1:
                 print(f"    backing off: {failures} failures in a row, "
@@ -379,6 +395,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_poll = sub.add_parser("poll", help="run continuously, honouring each source's interval")
     target_args(p_poll)
     p_poll.add_argument("--once", action="store_true", help="one pass, then exit")
+    p_poll.add_argument("--console-url", default="",
+                        help="base URL of the console, for links in notifications")
     p_poll.set_defaults(fn=cmd_poll)
 
     p_stage = sub.add_parser("stage", help="route a source to an onboarding collection")

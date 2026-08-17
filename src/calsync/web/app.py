@@ -449,6 +449,26 @@ def create_app(
             f"Retired. {report.cancelled} events removed from the calendar and "
             "polling stopped."))
 
+    @app.post("/sources/<source_id>/persists")
+    def set_persists(source_id):
+        """Mark a source as one that survives the off-season.
+
+        Most teams are replaced each year, so a quiet feed means finished. A club
+        team kept across seasons goes quiet every summer, and switching it off on
+        a timer means finding out in September.
+        """
+        wanted = _field("persists") == "1"
+        with connect() as conn:
+            source = _require_source(conn, source_id)
+            config = dict(source.config or {})
+            config["persists_across_seasons"] = wanted
+            conn.execute("UPDATE sources SET config = ? WHERE id = ?",
+                         (json.dumps(config), source_id))
+            conn.commit()
+        redirect(f"/sources/{source_id}?ok=" + _q(
+            "Kept across seasons; it will not be switched off automatically."
+            if wanted else "Treated as a single season."))
+
     @app.post("/sources/<source_id>/enabled")
     def set_enabled(source_id):
         wanted = _field("enabled") == "1"

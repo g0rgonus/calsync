@@ -200,3 +200,60 @@ def test_a_refused_message_says_what_the_homeserver_said(secrets):
     with pytest.raises(matrix.MatrixError, match="403"):
         matrix.send(CONFIG, secrets, "body", transaction_id="t",
                     opener=Homeserver(status=403))
+
+
+# --- pushover ---------------------------------------------------------------
+
+
+def test_a_push_carries_both_credentials_and_a_link():
+    from calsync import notify
+
+    sent = {}
+
+    class Server:
+        def __call__(self, request, timeout=None):
+            from urllib.parse import parse_qs
+            sent.update({k: v[0] for k, v in parse_qs(request.data.decode()).items()})
+            return _Reply(200, {"status": 1})
+
+    class Store:
+        def get(self, ref):
+            return {"pushover_token": "app-token", "pushover_user": "user-key"}[ref]
+
+    notify.send(notify.PushoverConfig(), Store(), "Season looks finished",
+                title="Comets", url="http://box:8730/sources/s", opener=Server())
+
+    assert sent["token"] == "app-token" and sent["user"] == "user-key"
+    assert sent["title"] == "Comets"
+    assert sent["url"] == "http://box:8730/sources/s"
+
+
+def test_pushover_refusing_is_an_error_not_a_silent_success():
+    import urllib.error
+
+    from calsync import notify
+
+    class Store:
+        def get(self, _ref):
+            return "x"
+
+    def refused(_request, timeout=None):
+        raise urllib.error.HTTPError(
+            notify.API, 429, "Too Many Requests", {},
+            __import__("io").BytesIO(b'{"errors":["rate limited"]}'))
+
+    with pytest.raises(notify.NotifyError, match="rate limited"):
+        notify.send(notify.PushoverConfig(), Store(), "x", opener=refused)
+
+
+def test_a_credential_never_appears_in_a_push_error():
+    from calsync import notify
+
+    class Store:
+        def get(self, _ref):
+            raise __import__("calsync.secrets", fromlist=["SecretError"]).SecretError(
+                "no secret for 'pushover_token'")
+
+    with pytest.raises(notify.NotifyError) as raised:
+        notify.send(notify.PushoverConfig(), Store(), "x")
+    assert "pushover_token" in str(raised.value)

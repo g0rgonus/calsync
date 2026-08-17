@@ -159,6 +159,13 @@ Decisions that span several files and are easy to undo by accident:
   is the dates: nothing upcoming, and the newest event months in the past
   (`dormancy.py`). `polling.py`'s backoff is for feeds that stopped answering,
   which is a different and rarer problem — do not conflate them.
+- **A finished season is switched off, never erased.** `seasonend.py` nudges at
+  a month past the last event and stops polling at two. It does not cancel
+  anything: by then *every* event of that season is in the past, so removing
+  them would delete the record of a season the kids played. Retiring is a
+  separate, manual decision. A source with `persists_across_seasons` in its
+  config is never switched off — a club team kept across years goes quiet each
+  summer, and disabling it in July means noticing in September.
 - **Matrix is outbound only.** `matrix.py` + `digest.py` let calsync talk to a
   room; nothing reads from it, and `docs/MATRIX.md` §7 records exactly which
   arrow is built and what the inbound half is blocked on (no API, no identity

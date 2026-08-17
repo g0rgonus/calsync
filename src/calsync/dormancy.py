@@ -40,12 +40,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-#: How far past the newest event in a feed before the season is presumed over.
-#: A rec season runs a couple of months and the gap to the next one is longer
-#: than the gap between fixtures within one, so three months clears every normal
-#: mid-season lull — including a summer break between a spring and autumn
-#: season — while still catching a team that finished in May by August.
-MIN_DAYS_SINCE_LAST_EVENT = 90
+#: A month past the newest event: tell somebody. Long enough to clear any
+#: mid-season gap, short enough that the answer is still fresh in mind.
+NUDGE_DAYS = 30
+
+#: Two months: stop polling it. By now the season is over on any reading, and a
+#: source nobody has retired is one nobody is going to.
+SHUTOFF_DAYS = 60
+
+#: Kept as the name the rest of the code asks for "is this finished".
+MIN_DAYS_SINCE_LAST_EVENT = NUDGE_DAYS
+
+RUNNING, NUDGE, SHUTOFF = "running", "nudge", "shutoff"
 
 
 @dataclass(frozen=True)
@@ -54,6 +60,8 @@ class Verdict:
     suspected: bool
     days_since_last_event: int | None = None
     upcoming_events: int = 0
+    #: ``running`` | ``nudge`` | ``shutoff``. What, if anything, is now due.
+    stage: str = RUNNING
     #: Context, not a condition. A stale source that is also failing is worth
     #: mentioning; a stale source that is answering happily is the normal case.
     consecutive_errors: int = 0
@@ -82,12 +90,17 @@ def assess(
     stale = days is not None and days >= min_days
     empty = upcoming_events == 0
 
+    stage = RUNNING
+    if stale and empty:
+        stage = SHUTOFF if days >= SHUTOFF_DAYS else NUDGE
+
     verdict = Verdict(
         source_id=source_id,
         suspected=stale and empty,
         days_since_last_event=days,
         upcoming_events=upcoming_events,
         consecutive_errors=consecutive_errors,
+        stage=stage,
     )
     if not verdict.suspected:
         return verdict
@@ -98,14 +111,22 @@ def assess(
         else " The feed still answers fine — team apps go on serving a finished"
              " season indefinitely, so that is not a sign of life."
     )
+    # Strictly an observation. This module changes nothing and does not know
+    # what `seasonend` decided — a source kept across seasons is still polling
+    # at this point, so claiming otherwise here would be describing an action
+    # that may not have happened.
+    tail = (
+        " Past two months a source like this is normally switched off."
+        if stage == SHUTOFF
+        else ""
+    )
     return Verdict(
         **{
             **verdict.__dict__,
             "reason": (
                 f"The most recent event in this feed was {days} days ago and "
                 f"nothing is upcoming.{also} That is what a finished season "
-                "looks like — but nothing has been changed, because only you "
-                "know whether the team still exists."
+                f"looks like.{tail} Nothing on the calendar has been changed."
             ),
         }
     )
@@ -178,4 +199,5 @@ def for_source(conn, source_id: str, *, now: datetime | None = None) -> Verdict:
 
 
 __all__ = ["Verdict", "assess", "for_source", "last_event_at",
+           "NUDGE_DAYS", "SHUTOFF_DAYS", "RUNNING", "NUDGE", "SHUTOFF",
            "MIN_DAYS_SINCE_LAST_EVENT"]

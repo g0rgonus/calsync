@@ -241,6 +241,11 @@
 % if dormant.suspected:
   <div class="banner banner-info" style="margin-bottom:1rem">
     <strong>{{ dormant.headline }}</strong> {{ dormant.reason }}
+% if not source.enabled:
+    Polling is off.
+% elif source.config.get('persists_across_seasons'):
+    Polling continues, because this one is kept across seasons.
+% end
   </div>
 % end
   <p class="note">
@@ -259,5 +264,23 @@
   </p>
   <form method="post" action="/sources/{{ source.id }}/retire">
     <button class="btn btn-danger" type="submit">Retire {{ activity.name }}</button>
+  </form>
+
+% persists = source.config.get('persists_across_seasons')
+  <hr class="rule" style="margin:1.4rem 0">
+  <form method="post" action="/sources/{{ source.id }}/persists">
+    <input type="hidden" name="persists" value="{{ '0' if persists else '1' }}">
+    <button class="btn btn-quiet" type="submit">
+      {{ 'Treat as a single season' if persists else 'Keep this one across seasons' }}
+    </button>
+    <span class="note" style="margin-left:0.6rem">
+% if persists:
+      Kept across seasons, so a quiet summer will never switch it off.
+% else:
+      Most teams are replaced each year, so after two months with nothing new
+      calsync stops polling this feed. A club team that comes back each autumn
+      should be kept instead.
+% end
+    </span>
   </form>
 </div>

@@ -20,7 +20,7 @@ from calsync.dormancy import assess
 
 NOW = datetime(2026, 8, 17, 12, 0, tzinfo=timezone.utc)
 LAST_SPRING = NOW - timedelta(days=100)
-LAST_MONTH = NOW - timedelta(days=30)
+A_FORTNIGHT_AGO = NOW - timedelta(days=14)
 
 
 def verdict(**overrides):
@@ -39,7 +39,7 @@ def test_a_season_that_ended_in_spring_is_recognised_in_august():
     assert result.suspected
     assert result.days_since_last_event == 100
     assert "100 days ago" in result.reason
-    assert "nothing has been changed" in result.reason
+    assert "Nothing on the calendar has been changed" in result.reason
 
 
 def test_a_healthy_feed_is_the_normal_case_and_does_not_hide_it():
@@ -70,12 +70,17 @@ def test_anything_upcoming_means_the_season_is_running():
 
 def test_a_recent_last_event_is_a_lull_not_an_ending():
     """March: practices have run, the coach has not posted fixtures yet."""
-    assert not verdict(last_event_at=LAST_MONTH, upcoming_events=0).suspected
+    assert not verdict(last_event_at=A_FORTNIGHT_AGO, upcoming_events=0).suspected
 
 
-def test_a_summer_break_between_two_seasons_is_not_an_ending():
-    """Spring finishes in May, autumn starts in September. 90 days clears it."""
-    assert not verdict(last_event_at=NOW - timedelta(days=80)).suspected
+def test_a_long_quiet_source_is_flagged_whether_or_not_it_will_return():
+    """A club team kept across seasons goes quiet every summer and comes back.
+
+    It is still flagged — a quiet feed is worth knowing about either way — and
+    `seasonend` is what declines to switch that one off. Splitting it this way
+    keeps the observation honest and the action cautious.
+    """
+    assert verdict(last_event_at=NOW - timedelta(days=80)).suspected
 
 
 def test_a_brand_new_source_is_not_a_finished_one():

@@ -9,7 +9,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 
 #: Additive column migrations, applied when absent. `schema.sql` uses
@@ -20,6 +20,9 @@ ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("event_state", "remote_id", "TEXT"),
     # v3: stage one source to an onboarding calendar without moving others.
     ("sources", "staging_collection", "TEXT"),
+    # v4: which dormancy notification has already gone out, so a finished
+    # season is mentioned once rather than at every poll for the rest of time.
+    ("sources", "dormancy_notified", "TEXT"),
 )
 
 #: Seeded so a fresh install can create an activity without inventing an emoji.
@@ -96,6 +99,10 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "matrix_user_id": "",
     "matrix_room_id": "",
     "matrix_secret_ref": "matrix_access_token",
+    # Pushover, for the few things that need you rather than merely informing
+    # you. Both credentials live in the secret store; these name them.
+    "pushover_token_ref": "pushover_token",
+    "pushover_user_ref": "pushover_user",
 }
 
 
