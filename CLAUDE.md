@@ -4,15 +4,26 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-The sync loop runs end to end for one source (Player360) writing to one target
-(`ics_file`). There is no HTTP API, no scheduler, and no web UI — `docs/API.md`,
-`docs/MATRIX.md` and `docs/MATCHING.md` specify components that do not exist yet.
-Read those as the design contract, not as a description of the code.
+The sync loop runs end to end for two adapters (Player360, TeamReach) into
+`ics_file` or CalDAV, with `calsync poll` as a long-running loop and a Docker
+Compose stack running it against Radicale. Verified against live feeds and a live
+Radicale, including the R1–R8 acceptance checks in
+`docs/deployment/radicale.md`.
 
-CalDAV and Google targets are implemented and tested but not reachable from the
-CLI: CalDAV needs a real HTTP transport (its `Transport` seam is injected and has
-no default). `--out` is currently the only wired target, on purpose — it can be
-pointed at a live feed without risking a calendar the family reads.
+**There is no HTTP API and no web UI.** `docs/API.md`, `docs/MATRIX.md` and
+`docs/MATCHING.md` specify components that do not exist — read them as the design
+contract, not as a description of the code. `docs/ONBOARDING.md` is the spec for
+the web UI, and it is the next thing to build.
+
+**Open sequencing question, undecided:** `docs/API.md` says the web UI is an API
+client (`ui` scope), but its scope table covers the *calendar data* path —
+documents, proposals, events, amendments. Configuration CRUD (children,
+activities, sources, venues) is not in it. So it is genuinely unsettled whether
+config management goes through the API or straight to SQLite in the same process.
+Decide that before writing UI code; it determines whether the API has to exist
+first.
+
+The Google target is implemented and tested but not wired to the CLI.
 
 ## Setup and tests
 
@@ -21,7 +32,7 @@ fresh clone needs:
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/pytest                                    # 89 tests, ~0.3s
+.venv/bin/pytest                                    # 149 tests, ~0.4s
 .venv/bin/pytest tests/test_player360.py -k content_hash    # single test
 ```
 
@@ -40,6 +51,17 @@ calsync --db drive.db sync --out ./out --dry-run
 calsync --db drive.db sync --out ./out
 calsync --db drive.db status                   # per-source health + recent polls
 ```
+
+Staging a new feed to an onboarding calendar, then promoting it once the parse
+is clean (`docs/ONBOARDING.md`):
+
+```bash
+calsync --db drive.db stage tr-hawks          # routes to the `onboarding` collection
+calsync --db drive.db promote tr-hawks        # gated on a clean parse + a seen fixture
+```
+
+Docker: `docker compose up -d` runs Radicale plus the poller; one-off commands go
+through `docker compose run --rm calsync <cmd>`.
 
 `--from-file` replays a saved payload without a credential (needs `--source`),
 and `--now <iso>` pins the clock for reproducible runs. Exit codes are
