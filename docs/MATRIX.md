@@ -247,3 +247,51 @@ work instead — this room carries kids' schedules and locations.
 **The room is also the alerting channel** (PLAN.md §D1): source went stale,
 scraper broke, credentials need re-auth, N items pending review. It's already
 the place you'll be looking.
+
+---
+
+## 7. What exists, and what the rest would need
+
+Everything above is a design contract. As of the digest work, exactly one arrow
+in it is built.
+
+**Built.** calsync → room, one direction, no reply expected:
+
+- `matrix.py` holds the connection settings (`matrix_homeserver`,
+  `matrix_user_id`, `matrix_room_id`, `matrix_secret_ref`) and verifies them
+  against the homeserver — separating the four things that go wrong: unreachable
+  server, invalid token, token belonging to a different account, account not in
+  the room. The token lives in the secret store, never the database.
+- `matrix.send` posts a message. Its transaction id is derived from what the
+  message is *about* rather than randomly, so a retry cannot double-post.
+- `digest.py` renders what is on in the next day, re-deriving from the feeds
+  because the calendar holds renders and `event_state` holds no content (§1 of
+  [API.md](API.md) refuses this to Hermes for the same reason).
+
+**Not built, and why.** The rest of this document is the *inbound* direction —
+Hermes proposing, you approving, amendments landing — and it is blocked on
+things code cannot decide:
+
+1. **There is no API.** §2 and §3 both assume proposals go through one, with
+   capability-scoped task tokens. Configuration was moved out of that API
+   deliberately ([API.md](API.md)), but proposals were not: the review gate is
+   the whole point, and it is structural rather than conventional.
+2. **Approval needs an identity model.** "Nothing but a human approves" needs a
+   way to tell a human's message from an agent's in a room they share. Matrix
+   user ids are the obvious answer and they are also spoofable by anyone who
+   gets the token, which is why §1 exists and why it is not a code task.
+3. **Amendment blast radius (§149) is a policy, not a function.** How many
+   events one pasted message may touch before it needs a second confirmation is
+   a household's risk appetite.
+
+**What would come next, in order, if it does get built:**
+
+| Step | Needs |
+|---|---|
+| Read messages from the room | A sync loop against `/sync`, and a decision about which messages are for calsync at all |
+| Turn a message into a proposal | The proposals table and API from [API.md](API.md) |
+| Show a proposal for approval | The identity model in §1 |
+| Apply an approved proposal | The amendment path in §3, and the blast-radius policy |
+
+Until step 1, the room is somewhere calsync talks and nobody replies — which is
+a useful thing on its own, and honest about being only that.

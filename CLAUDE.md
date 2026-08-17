@@ -153,11 +153,15 @@ Decisions that span several files and are easy to undo by accident:
   the original*. A URL that will not round-trip is refused rather than saved —
   silently mangling one surfaces weeks later as a source that stopped working,
   with nothing to point at.
-- **Matrix config is stored and verified, but nothing reads it.** `matrix.py` is
-  not a client — `docs/MATRIX.md` describes a component that does not exist. It
-  holds the four connection values and checks them against the homeserver, which
-  is the only honest thing to offer for config nothing consumes yet. Do not let
-  the settings page imply otherwise.
+- **Matrix is outbound only.** `matrix.py` + `digest.py` let calsync talk to a
+  room; nothing reads from it, and `docs/MATRIX.md` §7 records exactly which
+  arrow is built and what the inbound half is blocked on (no API, no identity
+  model, no blast-radius policy). Do not let the settings page or the docs imply
+  proposals or approvals exist.
+- **A digest re-derives, it does not read back.** The calendar holds renders and
+  `event_state` holds no content, so anything that needs event *data* parses the
+  feeds again — the same refusal `docs/API.md` gives Hermes. `digest.collect`
+  writes nothing at all, and a test diffs the database file to keep it that way.
 - **The guard thresholds are bounded in the UI.** `web/app.py:LIMITS` refuses to
   widen `max_disappearance_pct` past 0.5 or the count past 25. Narrowing is free.
   A guard that a web form can switch off in two clicks is not a guard, and the
