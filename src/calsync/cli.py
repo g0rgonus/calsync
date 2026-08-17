@@ -24,7 +24,7 @@ from . import config as config_mod
 from . import db, repo
 from .secrets import SecretStore
 from .settings import Settings
-from . import retire, targeting
+from . import polling, retire, targeting
 from .sync import sync_source
 from .targets import build
 from .targets.http import HttpTransport
@@ -147,21 +147,34 @@ def cmd_poll(args) -> int:
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
 
-    due: dict[str, float] = {}
+    schedule = polling.Schedule()
     while not stopping["now"]:
         clock = time.monotonic()
-        for source in repo.list_sources(conn, enabled_only=True):
+        live = repo.list_sources(conn, enabled_only=True)
+        for gone in set(schedule.due) - {s.id for s in live}:
+            # Retired or paused since the last pass. Dropping its state stops a
+            # stale backoff from applying to a source that reuses the id.
+            schedule.forget(gone)
+
+        for source in live:
             if stopping["now"]:
                 break
-            if clock < due.get(source.id, 0.0):
+            if not schedule.is_due(source.id, clock):
                 continue
             target = _target(conn, args, secrets)
             report = sync_source(
                 conn, source, target, now=_now(None), secrets=secrets
             )
             _emit(report)
+            delay = schedule.record(
+                source.id, status=report.status,
+                interval_s=source.poll_interval_s, now=time.monotonic(),
+            )
+            failures = schedule.struggling().get(source.id, 0)
+            if failures > 1:
+                print(f"    backing off: {failures} failures in a row, "
+                      f"next attempt in {delay // 60}m", flush=True)
             sys.stdout.flush()
-            due[source.id] = time.monotonic() + max(source.poll_interval_s, 60)
 
         if args.once:
             return 0
