@@ -71,10 +71,11 @@ def _probe() -> str:
         ends_at=datetime(2026, 3, 12, 0, 0, tzinfo=timezone.utc),
         tz="America/New_York",
         body="",
-        location_text="1 Riverview Rd, Newport News VA",
+        # Exactly what `render()` composes: name, then address, in one line.
+        # Building it by hand as the address alone made this probe test my
+        # typing rather than what actually reaches a calendar.
+        location_text="Riverview Farm Park, 1 Riverview Rd, Newport News VA",
         venue_name="Riverview Farm Park",
-        lat=37.0871,
-        lon=-76.5127,
         is_game=True,
         provenance={"SOURCE": "acceptance", "HASH": "0123456789abcdef"},
     )
