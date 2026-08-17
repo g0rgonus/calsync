@@ -321,12 +321,45 @@ def create_app(
                 state=state,
                 state_label=label,
                 venues=repo.list_venues(conn),
+                sports=repo.list_sports(conn),
                 health=repo.source_row(conn, source_id),
                 dormant=dormancy.for_source(conn, source_id, now=clock()),
                 tracked=repo.tracked_events(conn, source_id),
                 polls=repo.recent_polls(conn, source_id),
                 flash=_flash(),
             )
+
+    @app.post("/activities/<activity_id>")
+    def save_activity(activity_id):
+        """Edit a team.
+
+        Most of this is not cosmetic. `Activity.known_tokens` is built from the
+        official name, short name, league and age group, and that is what turns
+        "U10DA TASL Match vs Beach FC" into an opponent instead of nothing — so
+        these fields change how the feed parses on the next poll, not just how
+        it reads.
+        """
+        back = _field("back") or "/"
+        with connect() as conn:
+            venue = _field("home_venue_id").strip()
+            try:
+                repo.update_activity(
+                    conn, activity_id,
+                    name=_field("name"),
+                    emoji=_field("emoji").strip() or None,
+                    official_name=_field("official_name").strip() or None,
+                    short_name=_field("short_name").strip() or None,
+                    league=_field("league").strip() or None,
+                    age_group=_field("age_group").strip() or None,
+                    home_venue_id=_whole("home venue", venue) if venue else None,
+                    alarm_game_min=_whole("game alarm", _field("alarm_game_min"),
+                                          default=90),
+                    alarm_practice_min=_whole("practice alarm",
+                                              _field("alarm_practice_min"), default=30),
+                )
+            except ValueError as exc:
+                raise Refused(str(exc)) from exc
+        redirect(f"{back}?ok=" + _q("Team saved. The next poll re-parses the feed."))
 
     @app.post("/sources/<source_id>/alias")
     def add_alias(source_id):

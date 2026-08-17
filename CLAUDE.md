@@ -14,8 +14,8 @@ The onboarding console is built (`calsync web`, `src/calsync/web/`). Paste a
 feed URL, confirm three things, and the source is staged; the gate in
 `docs/ONBOARDING.md` §5 is the app's primary screen. `/venues` manages the alias
 table, pins and merges; `/household` edits kids and the sport catalog;
-`/settings` covers the `settings` table. Activity fields are still hand-edited
-in SQLite by design.
+`/settings` covers the `settings` table, and a team's own fields are on its
+source page. Nothing in the day-to-day path needs sqlite3 any more.
 
 **There is still no HTTP API.** `docs/API.md`, `docs/MATRIX.md` and
 `docs/MATCHING.md` specify components that do not exist — read them as the design

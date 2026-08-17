@@ -197,6 +197,86 @@
 % end
 </div>
 
+<h2>The team</h2>
+<div class="card">
+  <p class="note" style="margin-top:0">
+    The middle four are not cosmetic. Together with the names below they are what
+    the parser matches a fixture against, so "U10DA TASL Match vs Beach FC"
+    yields an opponent rather than nothing. Changing them re-parses the feed on
+    the next poll — no re-fetch, no re-onboarding.
+  </p>
+  <form method="post" action="/activities/{{ activity.id }}">
+    <input type="hidden" name="back" value="/sources/{{ source.id }}">
+    <div class="row">
+      <label class="field" style="margin-bottom:0.8rem">
+        <span class="label">Name — appears in every title</span>
+        <input type="text" name="name" value="{{ activity.name }}" required autocomplete="off">
+      </label>
+      <label class="field" style="margin-bottom:0.8rem;flex:0 1 6rem">
+        <span class="label">Emoji</span>
+        <input type="text" name="emoji" value="{{ activity.emoji or '' }}"
+               style="text-align:center" autocomplete="off">
+      </label>
+    </div>
+
+    <div class="row">
+      <label class="field" style="margin-bottom:0.8rem">
+        <span class="label">Official name</span>
+        <input type="text" name="official_name" class="mono"
+               value="{{ activity.official_name or '' }}" placeholder="U10DA" autocomplete="off">
+      </label>
+      <label class="field" style="margin-bottom:0.8rem">
+        <span class="label">Short name</span>
+        <input type="text" name="short_name" class="mono"
+               value="{{ activity.short_name or '' }}" autocomplete="off">
+      </label>
+      <label class="field" style="margin-bottom:0.8rem">
+        <span class="label">League</span>
+        <input type="text" name="league" class="mono"
+               value="{{ activity.league or '' }}" placeholder="TASL" autocomplete="off">
+      </label>
+      <label class="field" style="margin-bottom:0.8rem">
+        <span class="label">Age group</span>
+        <input type="text" name="age_group" class="mono"
+               value="{{ activity.age_group or '' }}" placeholder="U10" autocomplete="off">
+      </label>
+    </div>
+
+    <label class="field" style="margin-bottom:0.8rem">
+      <span class="label">Home ground</span>
+      <select name="home_venue_id">
+        <option value="">— not set —</option>
+% for venue in venues:
+        <option value="{{ venue['id'] }}" {{ 'selected' if activity.home_venue == venue['canonical_name'] else '' }}>{{ venue['canonical_name'] }}</option>
+% end
+      </select>
+      <span class="choice-note" style="margin-top:0.35rem">
+        The only thing that can mark a game as away. Some feeds phrase every
+        fixture as "vs" whoever is hosting, so without this nothing is ever
+        marked <span class="raw">@</span> — and a guess would be worse.
+      </span>
+    </label>
+
+    <div class="row">
+      <label class="field" style="margin-bottom:0.8rem">
+        <span class="label">Remind before a game</span>
+        <input type="number" name="alarm_game_min" min="0" value="{{ activity.alarm_game_min }}">
+      </label>
+      <label class="field" style="margin-bottom:0.8rem">
+        <span class="label">…and before a practice</span>
+        <input type="number" name="alarm_practice_min" min="0"
+               value="{{ activity.alarm_practice_min }}">
+      </label>
+      <div class="field" style="margin-bottom:0.8rem">
+        <span class="label">&nbsp;</span>
+        <span class="note">Minutes. Away games need travel time; practices are usually local.</span>
+      </div>
+    </div>
+
+    <button class="btn" type="submit">Save {{ activity.name }}</button>
+  </form>
+</div>
+
 <h2>The source</h2>
 <div class="card">
   <table class="derived">

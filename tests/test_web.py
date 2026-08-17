@@ -1553,3 +1553,74 @@ def test_a_digest_time_round_trips(client, tmp_path):
     settings = Settings.load(conn)
     assert settings.digest_send_at == "07:30"
     assert settings.digest_window_hours == 36
+
+
+# --- editing a team ---------------------------------------------------------
+
+
+def test_a_team_can_be_edited_after_onboarding(client, tmp_path):
+    """These had no UI at all — they were sqlite3-only after creation."""
+    onboard(client)
+    conn = db.connect(tmp_path / "calsync.db")
+    source_id = repo.list_sources(conn, enabled_only=False)[0].id
+    activity_id = repo.list_activities(conn)[0].id
+
+    client.post(f"/activities/{activity_id}", {
+        "name": "Hawks", "emoji": "🦅", "official_name": "U10DA",
+        "short_name": "Hawks", "league": "TASL", "age_group": "U10",
+        "alarm_game_min": "120", "alarm_practice_min": "20",
+        "back": f"/sources/{source_id}",
+    })
+
+    conn = db.connect(tmp_path / "calsync.db")
+    activity = repo.get_activity(conn, activity_id)
+    assert activity.name == "Hawks" and activity.emoji == "🦅"
+    assert activity.league == "TASL" and activity.age_group == "U10"
+    assert activity.alarm_game_min == 120 and activity.alarm_practice_min == 20
+
+
+def test_editing_those_fields_changes_how_a_fixture_parses(client, tmp_path):
+    """The point of the screen: they feed `known_tokens`, not just the title.
+
+    Asserting the row would miss it — a field that saves and changes no
+    behaviour is the failure this codebase keeps turning up.
+    """
+    onboard(client)
+    conn = db.connect(tmp_path / "calsync.db")
+    activity_id = repo.list_activities(conn)[0].id
+    before = repo.get_activity(conn, activity_id).known_tokens()
+
+    client.post(f"/activities/{activity_id}", {
+        "name": "Hawks Spring 2026", "official_name": "U10DA", "league": "TASL",
+        "alarm_game_min": "90", "alarm_practice_min": "30",
+    })
+
+    conn = db.connect(tmp_path / "calsync.db")
+    after = repo.get_activity(conn, activity_id).known_tokens()
+    assert "U10DA" in after and "TASL" in after
+    assert set(after) > set(before), "the parser learned nothing new"
+
+
+def test_a_home_ground_can_be_set_and_is_what_marks_a_game_away(client, tmp_path):
+    onboard(client)
+    conn = db.connect(tmp_path / "calsync.db")
+    activity_id = repo.list_activities(conn)[0].id
+    client.post("/venues", {"name": "Riverview Farm Park"})
+    venue = next(v for v in repo.venues_detailed(db.connect(tmp_path / "calsync.db"))
+                 if v.name == "Riverview Farm Park")
+
+    client.post(f"/activities/{activity_id}", {
+        "name": "Hawks", "home_venue_id": str(venue.id),
+        "alarm_game_min": "90", "alarm_practice_min": "30",
+    })
+
+    conn = db.connect(tmp_path / "calsync.db")
+    assert repo.get_activity(conn, activity_id).home_venue == "Riverview Farm Park"
+
+
+def test_a_team_cannot_be_left_nameless(client, tmp_path):
+    onboard(client)
+    conn = db.connect(tmp_path / "calsync.db")
+    activity_id = repo.list_activities(conn)[0].id
+
+    assert "needs a name" in client.post(f"/activities/{activity_id}", {"name": "  "})["body"]

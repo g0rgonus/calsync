@@ -618,6 +618,45 @@ def previous_season(
     return get_activity(conn, row["id"]) if row else None
 
 
+def update_activity(
+    conn: sqlite3.Connection,
+    activity_id: str,
+    *,
+    name: str,
+    emoji: str | None,
+    official_name: str | None,
+    short_name: str | None,
+    league: str | None,
+    age_group: str | None,
+    home_venue_id: int | None,
+    alarm_game_min: int,
+    alarm_practice_min: int,
+) -> None:
+    """Edit the fields of a team that change how its events read and parse.
+
+    Four of these are not cosmetic: ``official_name``, ``short_name``, ``league``
+    and ``age_group`` all feed :meth:`Activity.known_tokens`, which is what
+    decides whether "U10DA TASL Match vs Beach FC" yields an opponent or nothing
+    at all. Editing them re-parses the feed on the next poll.
+
+    ``home_venue_id`` is the only thing that can mark a game as away, since some
+    feeds phrase every fixture as "vs" regardless.
+    """
+    if not name.strip():
+        raise ValueError("a team needs a name")
+    conn.execute(
+        """
+        UPDATE activities SET name = ?, emoji = ?, official_name = ?,
+               short_name = ?, league = ?, age_group = ?, home_venue_id = ?,
+               alarm_game_min = ?, alarm_practice_min = ?
+         WHERE id = ?
+        """,
+        (name.strip(), emoji, official_name, short_name, league, age_group,
+         home_venue_id, alarm_game_min, alarm_practice_min, activity_id),
+    )
+    conn.commit()
+
+
 def teach_event_type(
     conn: sqlite3.Connection, source_id: str, label: str, *, is_game: bool
 ) -> None:
