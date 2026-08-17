@@ -6,7 +6,7 @@ are each a specific question with a specific fix, and this module is what turns
 one into the other:
 
     unidentified        which of these names is your team?      -> activity alias
-    unknown types       what kind of event is this?             -> adapter change
+    unknown types       what kind of event is this?             -> source vocabulary
     unresolved venues   where is this?                          -> venue row
     fixtures seen       (nothing — wait for the schedule)
 
@@ -43,7 +43,7 @@ class Condition:
     detail: str = ""
     #: The raw strings behind it, exactly as the coach typed them.
     items: tuple[str, ...] = ()
-    #: Which answer form to offer: ``alias``, ``venue``, or nothing.
+    #: Which answer form to offer: ``alias``, ``type``, ``venue``, or nothing.
     answer: str | None = None
     #: Names worth proposing as a one-click answer, most frequent first.
     suggestions: tuple[str, ...] = ()
@@ -120,12 +120,13 @@ def _types(report: SyncReport) -> Condition:
         state=ASKING,
         headline=f"{count} event {_plural(count, 'label is', 'labels are')} unrecognised.",
         detail=(
-            "These are filed as practices, which is the safe default — a mis-filed "
-            "practice is a smaller error than a missed game. There is no setting for "
-            "this: the vocabulary lives in the adapter, so extending it is a code "
-            "change. Promote anyway if these are genuinely practices."
+            "These are filed as practices in the meantime, which is the safe "
+            "default — a mis-filed practice is a smaller error than a missed "
+            "game. Say which each one is and this source remembers it; the "
+            "adapter's own vocabulary still covers everything else."
         ),
         items=items,
+        answer="type",
     )
 
 

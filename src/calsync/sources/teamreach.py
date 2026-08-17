@@ -111,7 +111,22 @@ def clean_venue(raw: str) -> str:
     return _WS.sub(" ", value).strip(" .,-")
 
 
-def classify(event_type: str | None, *, has_opponent: bool = False) -> bool | None:
+def _says(event_type: str, words) -> bool:
+    """Whole-word match against operator-supplied vocabulary."""
+    return any(
+        re.search(rf"\b{re.escape(str(word).strip().casefold())}\b", event_type.casefold())
+        for word in words or ()
+        if str(word).strip()
+    )
+
+
+def classify(
+    event_type: str | None,
+    *,
+    has_opponent: bool = False,
+    game_words=(),
+    practice_words=(),
+) -> bool | None:
     """True for a game, False for a practice, None if undeterminable.
 
     An explicit type word wins. Failing that, a named opponent implies a
@@ -123,6 +138,15 @@ def classify(event_type: str | None, *, has_opponent: bool = False) -> bool | No
     so the vocabulary can be extended.
     """
     if event_type:
+        # Operator vocabulary first, so an explicit answer beats the heuristic.
+        # A team whose "Game Prep" is a practice can say so; if the built-in
+        # `\bgame\b` were checked first there would be no way to correct it.
+        # Extending rather than replacing: everything unlisted still falls
+        # through to the defaults below.
+        if _says(event_type, game_words):
+            return True
+        if _says(event_type, practice_words):
+            return False
         if _GAME_WORD.search(event_type):
             return True
         if _PRACTICE_WORD.search(event_type):
@@ -226,6 +250,7 @@ def parse_feed(
     source_id: str,
     require_events: bool = True,
     default_duration_min: int | None = None,
+    config: dict | None = None,
 ) -> PollResult:
     """Parse a TeamReach ICS body into normalized events.
 
@@ -249,6 +274,14 @@ def parse_feed(
         )
 
     tokens = activity.known_tokens()
+    # Words this deployment has taught the adapter, from `sources.config`.
+    # Coaches invent labels ("Playoff Game2", "Skills Session") faster than the
+    # adapter can enumerate them, so the vocabulary has to be extensible without
+    # a release.
+    vocabulary = config or {}
+    game_words = vocabulary.get("game_words") or ()
+    practice_words = vocabulary.get("practice_words") or ()
+
     events: list[Event] = []
     unknown_types: set[str] = set()
     unidentified: set[str] = set()
@@ -271,7 +304,12 @@ def parse_feed(
             # operator can add an activity alias; no opponent is claimed.
             unidentified.add(raw_summary.strip())
 
-        is_game = classify(parsed.event_type, has_opponent=bool(parsed.opponent))
+        is_game = classify(
+            parsed.event_type,
+            has_opponent=bool(parsed.opponent),
+            game_words=game_words,
+            practice_words=practice_words,
+        )
         if is_game is None:
             if parsed.event_type:
                 unknown_types.add(parsed.event_type)

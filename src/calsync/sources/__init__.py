@@ -33,15 +33,27 @@ def available() -> list[str]:
 
 
 def parse(
-    kind: str, data: str | bytes, activity: Activity, *, source_id: str
+    kind: str,
+    data: str | bytes,
+    activity: Activity,
+    *,
+    source_id: str,
+    config: dict | None = None,
 ) -> PollResult:
+    """Parse a payload with this source's adapter.
+
+    ``config`` is the source's own ``config`` column. Until now it was stored
+    and never delivered, which made every key in it exactly the kind of
+    configuration `config.py` refuses to drop silently — preserved, documented,
+    and quietly doing nothing.
+    """
     try:
         parser = _PARSERS[kind]
     except KeyError:
         raise SourceError(
             f"unknown source kind {kind!r}; available: {', '.join(available()) or 'none'}"
         ) from None
-    return parser(data, activity, source_id=source_id)
+    return parser(data, activity, source_id=source_id, config=config)
 
 
 from . import player360, teamreach  # noqa: E402,F401  (populate the registry)

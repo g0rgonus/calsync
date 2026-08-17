@@ -369,3 +369,54 @@ def test_split_field_keeps_plural_place_names_intact(raw, name, field):
     from calsync.normalize.venue import split_field
 
     assert split_field(raw) == (name, field)
+
+
+# --- an extensible vocabulary -----------------------------------------------
+
+
+def test_a_taught_word_classifies_an_otherwise_unknown_type():
+    """Coaches invent labels faster than an adapter can enumerate them."""
+    assert classify("Scrimmage") is None
+    assert classify("Scrimmage", game_words=["scrimmage"]) is True
+    assert classify("Skills Session", practice_words=["skills session"]) is False
+
+
+def test_operator_vocabulary_beats_the_built_in_heuristic():
+    """A team whose "Game Prep" is a practice has to be able to say so.
+
+    If the built-in `\\bgame\\b` were checked first there would be no way to
+    correct it, and the setting would look honoured while doing nothing.
+    """
+    assert classify("Game Prep") is True
+    assert classify("Game Prep", practice_words=["game prep"]) is False
+
+
+def test_taught_words_extend_rather_than_replace():
+    """Everything unlisted still falls through to the adapter's own words."""
+    assert classify("Practice", game_words=["scrimmage"]) is False
+    assert classify("Game", practice_words=["skills session"]) is True
+
+
+def test_the_vocabulary_reaches_the_adapter_through_source_config():
+    """`sources.config` was stored and never delivered to an adapter until now.
+
+    Asserted end to end through `sources.parse`, because the gap was in the
+    wiring rather than in `classify` — the vocabulary worked fine and nothing
+    ever handed it over.
+    """
+    from calsync import sources
+
+    raw = FIXTURE.read_bytes()
+    plain = sources.parse("teamreach", raw, ACTIVITY, source_id="s")
+    taught = sources.parse(
+        "teamreach", raw, ACTIVITY, source_id="s",
+        config={"practice_words": ["playoff game"]},
+    )
+
+    def games(result):
+        return {e.uid for e in result.events if e.is_game}
+
+    assert games(taught) < games(plain), (
+        "teaching the source that a playoff game is a practice changed nothing, "
+        "so sources.config still is not reaching the adapter"
+    )

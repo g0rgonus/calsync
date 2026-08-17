@@ -90,6 +90,19 @@
       </label>
       <button class="btn btn-answer" type="submit">Add this name</button>
     </form>
+%   elif condition.answer == 'type':
+%     for item in condition.items:
+    <div class="btn-row" style="margin-bottom:0.6rem">
+      <span class="raw" style="min-width:11rem">{{ item }}</span>
+%       for kind in ('game', 'practice'):
+      <form method="post" action="/sources/{{ source.id }}/event-type">
+        <input type="hidden" name="label" value="{{ item }}">
+        <input type="hidden" name="kind" value="{{ kind }}">
+        <button class="btn btn-answer" type="submit">is a {{ kind }}</button>
+      </form>
+%       end
+    </div>
+%     end
 %   elif condition.answer == 'venue':
 %     for item in condition.items:
     <form method="post" action="/sources/{{ source.id }}/venue" class="card" style="margin-bottom:0.8rem">

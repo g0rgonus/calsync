@@ -1271,3 +1271,79 @@ def test_retiring_from_the_console_clears_the_calendar_and_stops_polling(
     assert calendar.written == {}, "events left on the calendar"
     assert repo.tracked_events(conn, source_id) == 0
     assert not repo.get_source(conn, source_id).enabled
+
+
+# --- teaching a source what a label means -----------------------------------
+
+
+#: A label the adapter's own vocabulary does not cover. None of the recorded
+#: feeds has one — "Playoff Game2" is already caught by `\bgame\d+\b` — so an
+#: honest test of the unknown-type path has to invent the label a coach has not
+#: typed yet.
+UNKNOWN_TYPE = b"\r\n".join([
+    b"BEGIN:VCALENDAR", b"VERSION:2.0", b"PRODID:-//TeamReach//EN",
+    b"X-WR-CALNAME:Hurricanes",
+    b"BEGIN:VEVENT", b"UID:1@teamreach", b"DTSTART:20260305T000000Z",
+    b"DTEND:20260305T010000Z", b"SUMMARY:Skills Session - Passage",
+    b"END:VEVENT",
+    b"BEGIN:VEVENT", b"UID:2@teamreach", b"DTSTART:20260312T000000Z",
+    b"DTEND:20260312T010000Z", b"SUMMARY:Game - Passage",
+    b"END:VEVENT",
+    b"END:VCALENDAR", b"",
+])
+
+
+def test_an_unknown_event_type_is_answerable_in_the_console(client, feed, tmp_path):
+    """It used to say "this needs a code change" and offer nothing."""
+    feed.body = UNKNOWN_TYPE
+    onboard(client, team_name="Inter Hurricanes", token="")
+    conn = db.connect(tmp_path / "calsync.db")
+    source_id = repo.list_sources(conn, enabled_only=False)[0].id
+
+    page = client.get(f"/sources/{source_id}")["body"]
+    assert "unrecognised" in page
+    assert "is a game" in page and "is a practice" in page
+
+
+def test_answering_teaches_the_source_and_clears_the_question(client, feed, tmp_path):
+    feed.body = UNKNOWN_TYPE
+    onboard(client, team_name="Inter Hurricanes", token="")
+    conn = db.connect(tmp_path / "calsync.db")
+    source_id = repo.list_sources(conn, enabled_only=False)[0].id
+    assert repo.get_source(conn, source_id).config.get("practice_words") is None
+
+    client.post(f"/sources/{source_id}/event-type",
+                {"label": "Skills Session", "kind": "practice"})
+
+    conn = db.connect(tmp_path / "calsync.db")
+    assert repo.get_source(conn, source_id).config["practice_words"] == ["Skills Session"]
+
+    # And the question is gone from the page, which is the point of answering.
+    page = client.get(f"/sources/{source_id}")["body"]
+    assert "unrecognised" not in page
+    assert "Every event was classified" in page
+
+
+def test_a_label_cannot_be_both_a_game_and_a_practice(client, feed, tmp_path):
+    """Answering again is a correction, not a second opinion."""
+    onboard(client)
+    conn = db.connect(tmp_path / "calsync.db")
+    source_id = repo.list_sources(conn, enabled_only=False)[0].id
+
+    client.post(f"/sources/{source_id}/event-type", {"label": "Friendly", "kind": "game"})
+    client.post(f"/sources/{source_id}/event-type",
+                {"label": "Friendly", "kind": "practice"})
+
+    conn = db.connect(tmp_path / "calsync.db")
+    config = repo.get_source(conn, source_id).config
+    assert config["practice_words"] == ["Friendly"]
+    assert config["game_words"] == []
+
+
+def test_an_event_is_a_game_or_a_practice_and_nothing_else(client, tmp_path):
+    onboard(client)
+    conn = db.connect(tmp_path / "calsync.db")
+    source_id = repo.list_sources(conn, enabled_only=False)[0].id
+    result = client.post(f"/sources/{source_id}/event-type",
+                         {"label": "Friendly", "kind": "banquet"})
+    assert "game or a practice" in result["body"]

@@ -201,7 +201,9 @@ def sync_source(
                 source.url_template, secrets=secrets or SecretStore(), now=now
             )
             raw = fetcher(assembled)
-        result = sources.parse(source.kind, raw, activity, source_id=source.id)
+        result = sources.parse(
+            source.kind, raw, activity, source_id=source.id, config=source.config
+        )
     except Exception as exc:  # noqa: BLE001
         # Deliberately broad. FetchError/SecretError/SourceError are the
         # expected failures, but an adapter raising something unforeseen must

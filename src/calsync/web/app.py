@@ -336,6 +336,21 @@ def create_app(
             repo.add_activity_alias(conn, source.activity_id, alias)
         redirect(f"/sources/{source_id}?ok=" + _q(f"Added {alias} as a name for this team."))
 
+    @app.post("/sources/<source_id>/event-type")
+    def teach_event_type(source_id):
+        """Answer "what kind of event is this?" for one coach-typed label."""
+        label = _field("label").strip()
+        kind = _field("kind")
+        if not label:
+            raise Refused("that answer was blank")
+        if kind not in ("game", "practice"):
+            raise Refused("an event is either a game or a practice")
+        with connect() as conn:
+            _require_source(conn, source_id)
+            repo.teach_event_type(conn, source_id, label, is_game=kind == "game")
+        redirect(f"/sources/{source_id}?ok=" + _q(
+            f"{label} now counts as a {kind} for this team."))
+
     @app.post("/sources/<source_id>/venue")
     def add_venue(source_id):
         """Answer "where is this?" — either a new place or another name for one.

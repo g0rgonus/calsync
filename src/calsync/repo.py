@@ -618,6 +618,39 @@ def previous_season(
     return get_activity(conn, row["id"]) if row else None
 
 
+def teach_event_type(
+    conn: sqlite3.Connection, source_id: str, label: str, *, is_game: bool
+) -> None:
+    """Record that this source calls a game (or a practice) by this name.
+
+    Stored in ``sources.config`` rather than in code because coaches invent
+    labels faster than an adapter can enumerate them — "Playoff Game2" and
+    "Skills Session" are both real. The adapter's own vocabulary still applies
+    to everything unlisted; this only ever adds.
+    """
+    label = (label or "").strip()
+    if not label:
+        return
+    row = conn.execute("SELECT config FROM sources WHERE id = ?", (source_id,)).fetchone()
+    if row is None:
+        raise NotFound(f"no source {source_id!r}")
+
+    config = json.loads(row["config"] or "{}")
+    key = "game_words" if is_game else "practice_words"
+    other = "practice_words" if is_game else "game_words"
+    words = [w for w in config.get(key, []) if w.casefold() != label.casefold()]
+    words.append(label)
+    config[key] = words
+    # A label cannot be both. Answering again is a correction, not a conflict.
+    config[other] = [
+        w for w in config.get(other, []) if w.casefold() != label.casefold()
+    ]
+
+    conn.execute("UPDATE sources SET config = ? WHERE id = ?",
+                 (json.dumps(config), source_id))
+    conn.commit()
+
+
 def add_activity_alias(
     conn: sqlite3.Connection, activity_id: str, alias: str, *, source: str = "ui"
 ) -> None:

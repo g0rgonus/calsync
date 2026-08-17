@@ -91,6 +91,7 @@ def parse_feed(
     *,
     source_id: str,
     require_events: bool = True,
+    config: dict | None = None,
 ) -> PollResult:
     """Parse an ICS body into normalized events.
 
@@ -116,6 +117,14 @@ def parse_feed(
         )
 
     tokens = activity.known_tokens()
+    # Same two config keys as the TeamReach adapter, applied to CATEGORIES
+    # rather than to a summary word. One vocabulary to learn, not two.
+    vocabulary = config or {}
+    extra_games = {str(w).strip().casefold() for w in (vocabulary.get("game_words") or ())}
+    extra_practices = {
+        str(w).strip().casefold() for w in (vocabulary.get("practice_words") or ())
+    }
+
     events: list[Event] = []
     unknown_categories: set[str] = set()
 
@@ -129,9 +138,12 @@ def parse_feed(
             ends_at = starts_at
 
         cats = _categories(component)
-        is_game = any(c in GAME_CATEGORIES for c in cats)
+        is_game = any(c in GAME_CATEGORIES or c in extra_games for c in cats)
         if cats and not is_game:
-            unknown_categories.update(c for c in cats if c not in ("practice", "training"))
+            unknown_categories.update(
+                c for c in cats
+                if c not in ("practice", "training") and c not in extra_practices
+            )
 
         raw_summary = _text(component, "SUMMARY") or ""
         opponent, detail = summary_norm.parse(
