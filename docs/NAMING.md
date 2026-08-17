@@ -180,12 +180,11 @@ properties together:
 ```
 LOCATION:Riverside Park — Field 4\, 1200 Riverside Dr\, Springfield\, IL 62704
 GEO:39.781700;-89.650100
-X-APPLE-STRUCTURED-LOCATION;VALUE=URI;X-TITLE="Riverside Park — Field 4";
- X-ADDRESS="1200 Riverside Dr\nSpringfield IL 62704";X-APPLE-RADIUS=72
+LOCATION:Riverside Park, 41 Riverside Dr, Newport News VA
  :geo:39.781700,-89.650100
 ```
 
-`X-APPLE-STRUCTURED-LOCATION` is what Apple's own clients write. It pins exact
+`LOCATION` carries the venue name and its street address. That is enough for
 coordinates while showing a friendly title, which is the difference between
 "navigate to the park" and "navigate to the right parking lot."
 

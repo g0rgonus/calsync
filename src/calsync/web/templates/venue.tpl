@@ -1,21 +1,9 @@
 % rebase('layout.tpl', title=venue.name, flash=flash, narrow=True)
-% setdefault('pin_source', None)
 
 <p class="eyebrow"><a href="/venues" style="color:inherit">Venues</a></p>
 <h1>{{ venue.name }}</h1>
 % if venue.home_to:
 <p class="lede">Home ground for {{ ', '.join(venue.home_to) }}.</p>
-% end
-
-% if venue.proposed:
-<div class="banner banner-info">
-  <strong>These coordinates are unconfirmed.</strong>
-  They came from {{ pin_source or 'a source nothing recorded' }}, and nobody
-  has checked them. Look at the pin, then confirm or correct it.
-  <form method="post" action="/venues/{{ venue.id }}/confirm" style="margin-top:0.7rem">
-    <button class="btn btn-answer" type="submit">These are right</button>
-  </form>
-</div>
 % end
 
 <h2>The place</h2>
@@ -36,27 +24,11 @@
       <span class="label">Address</span>
       <input type="text" name="address" value="{{ venue.address or '' }}" autocomplete="off">
     </label>
-    <div class="row">
-      <label class="field" style="margin-bottom:0.8rem">
-        <span class="label">Latitude</span>
-        <input type="text" name="lat" class="mono" autocomplete="off"
-               value="{{ '' if venue.lat is None else venue.lat }}">
-      </label>
-      <label class="field" style="margin-bottom:0.8rem">
-        <span class="label">Longitude</span>
-        <input type="text" name="lon" class="mono" autocomplete="off"
-               value="{{ '' if venue.lon is None else venue.lon }}">
-      </label>
-    </div>
     <button class="btn" type="submit">Save this place</button>
     <span class="note" style="margin-left:0.6rem">
-% if venue.pinned:
-      Pin from {{ pin_source or 'a source nothing recorded' }}.
-      Editing the coordinates re-confirms them as yours.
-% else:
-      Coordinates are optional. Without them the location still reads correctly —
-      it just isn't tappable, which beats sending someone to the wrong park.
-% end
+      The name and the address are the whole of it — that is what a maps app
+      needs to give a tappable, correct destination. calsync does not store or
+      emit a coordinate pin.
     </span>
   </form>
 </div>

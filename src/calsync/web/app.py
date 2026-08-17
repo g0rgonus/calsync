@@ -582,14 +582,6 @@ def create_app(
                 "venues.tpl", venues=repo.venues_detailed(conn), flash=_flash()
             )
 
-    #: How a ``venues.geocoder`` value reads to a person. The column records
-    #: where a pin came from, which is the whole basis for trusting it.
-    SOURCE_OF_PIN = {
-        "ui": "you, typed in here",
-        "config": "the imported config file",
-        "merge": "a venue this one was merged with",
-    }
-
     @app.get("/venues/<venue_id:int>")
     def venue_page(venue_id):
         with connect() as conn:
@@ -599,7 +591,6 @@ def create_app(
             return render(
                 "venue.tpl",
                 venue=venue,
-                pin_source=SOURCE_OF_PIN.get(venue.geocoder, venue.geocoder),
                 others=[v for v in repo.venues_detailed(conn) if v.id != venue_id],
                 flash=_flash(),
             )
@@ -625,86 +616,42 @@ def create_app(
             )
         return name
 
-    def _coords():
-        """Latitude and longitude, or nothing. Never a partial pin."""
-        lat, lon = _field("lat").strip(), _field("lon").strip()
-        if not lat and not lon:
-            return None, None
-        try:
-            pair = (float(lat), float(lon))
-        except ValueError:
-            raise Refused("coordinates have to be two decimal numbers") from None
-        if not (-90 <= pair[0] <= 90 and -180 <= pair[1] <= 180):
-            raise Refused(f"{pair[0]}, {pair[1]} is not a point on Earth")
-        return pair
 
     @app.post("/venues")
     def create_venue():
         name = _checked_name(_field("name"))
-        lat, lon = _coords()
         with connect() as conn:
             venue_id = repo.upsert_venue(
                 conn,
                 name=name,
                 short_name=_field("short_name").strip() or None,
                 address=_field("address").strip() or None,
-                lat=lat,
-                lon=lon,
-                # A person typing coordinates in is the confirmation. The rule
-                # this respects is that nothing a *model* proposes counts as
-                # confirmed until a human has looked at it.
-                pin_confirmed=lat is not None,
-                geocoder="ui" if lat is not None else None,
             )
         redirect(f"/venues/{venue_id}?ok=" + _q(f"Added {name}."))
 
     @app.post("/venues/<venue_id:int>")
     def save_venue(venue_id):
         name = _checked_name(_field("name"))
-        lat, lon = _coords()
         with connect() as conn:
             existing = repo.get_venue_detail(conn, venue_id)
             if existing is None:
                 raise Refused("there is no venue with that id")
-            # Keep a pin somebody already confirmed confirmed, and do not let
-            # editing an address quietly promote an unconfirmed one.
-            confirmed = existing.pin_confirmed
-            geocoder = existing.geocoder
-            if (lat, lon) != (existing.lat, existing.lon):
-                confirmed = lat is not None
-                geocoder = "ui" if lat is not None else None
             repo.upsert_venue(
                 conn,
                 venue_id=venue_id,
                 name=name,
                 short_name=_field("short_name").strip() or None,
                 address=_field("address").strip() or None,
-                lat=lat,
-                lon=lon,
-                pin_confirmed=confirmed,
-                geocoder=geocoder,
+                # Carried, not edited. Nothing emits coordinates any more, so
+                # the console has no business curating them — but a value that
+                # arrived through config import is not the console's to discard.
+                lat=existing.lat,
+                lon=existing.lon,
+                pin_confirmed=existing.pin_confirmed,
+                geocoder=existing.geocoder,
             )
         redirect(f"/venues/{venue_id}?ok=" + _q(f"Saved {name}."))
 
-    @app.post("/venues/<venue_id:int>/confirm")
-    def confirm_pin(venue_id):
-        """Vouch for coordinates something else proposed."""
-        with connect() as conn:
-            venue = repo.get_venue_detail(conn, venue_id)
-            if venue is None or not venue.pinned:
-                raise Refused("there is no pin here to confirm")
-            repo.upsert_venue(
-                conn,
-                venue_id=venue_id,
-                name=venue.name,
-                short_name=venue.short_name,
-                address=venue.address,
-                lat=venue.lat,
-                lon=venue.lon,
-                pin_confirmed=True,
-                geocoder=venue.geocoder,
-            )
-        redirect(f"/venues/{venue_id}?ok=" + _q("Pin confirmed."))
 
     @app.post("/venues/<venue_id:int>/alias")
     def venue_alias(venue_id):

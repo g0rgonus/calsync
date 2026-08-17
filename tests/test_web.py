@@ -692,7 +692,49 @@ def test_a_venue_created_from_a_diagnostic_appears_here(client, tmp_path):
 
     page = client.get("/venues")["body"]
     assert "Riverview" in page
-    assert "no pin" in page
+
+
+def test_a_venue_is_a_name_and_an_address_and_nothing_else(client, tmp_path):
+    """calsync stopped emitting a coordinate pin, so the console stopped
+    curating one. A "confirm this pin" control for something nothing writes is
+    the same lie as configuration that looks honoured and isn't.
+    """
+    client.post("/venues", {"name": "Passage", "address": "1 Passage Ave"})
+    vid = venue_id(tmp_path, "Passage")
+    page = client.get(f"/venues/{vid}")["body"]
+
+    assert "1 Passage Ave" in page
+    for gone in ("Latitude", "Longitude", "unconfirmed", "These are right"):
+        assert gone not in page, f"{gone!r} still on the page"
+
+
+def test_the_location_written_to_a_calendar_is_name_then_address(tmp_path):
+    """What actually reaches a phone: one line a maps app can resolve."""
+    from datetime import datetime, timezone
+
+    from calsync.models import Activity, Child, Event, Venue
+    from calsync.render import render
+    from calsync.settings import Settings
+    from calsync.targets.ics_file import to_ics
+
+    conn = db.open_db(tmp_path / "settings.db")
+    when = datetime(2026, 3, 11, 23, tzinfo=timezone.utc)
+    event = Event(uid="u", activity_id="a", starts_at=when, ends_at=when,
+                  is_game=True, tz="America/New_York",
+                  venue=Venue(raw="Riverview", name="Riverview Farm Park",
+                              address="1 Riverview Rd, Newport News VA"))
+    rendered = render(
+        event,
+        Activity(id="a", child_id="c", name="Comets", sport="soccer",
+                 emoji="⚽️", tz="America/New_York"),
+        [Child(id="c", name="Millie", initial="M", birth_order=1)],
+        Settings.load(conn),
+    )
+    ics = to_ics(rendered).decode()
+
+    assert "Riverview Farm Park" in ics and "1 Riverview Rd" in ics
+    assert "GEO:" not in ics
+    assert "X-APPLE-STRUCTURED-LOCATION" not in ics
 
 
 def test_a_field_designator_is_refused_as_a_venue_name(client):
@@ -711,47 +753,6 @@ def test_a_plural_fields_name_is_not_mistaken_for_a_designator(client, tmp_path)
     assert client.post("/venues", {"name": "Riverview Farm Park Soccer Fields"})["status"] == 303
 
 
-def test_coordinates_typed_by_a_person_count_as_confirmed(client, tmp_path):
-    client.post("/venues", {"name": "Passage", "lat": "37.06", "lon": "-76.49"})
-
-    conn = db.connect(tmp_path / "calsync.db")
-    venue = next(v for v in repo.venues_detailed(conn) if v.name == "Passage")
-    assert venue.pinned and venue.pin_confirmed
-    assert not venue.proposed
-
-
-def test_a_venue_with_no_coordinates_is_not_treated_as_a_problem(client):
-    client.post("/venues", {"name": "Passage"})
-    page = client.get("/venues")["body"]
-    assert "no pin" in page
-    assert "the location still reads correctly" in page
-
-
-def test_half_a_pin_is_refused(client):
-    assert "two decimal numbers" in client.post(
-        "/venues", {"name": "Passage", "lat": "37.06"}
-    )["body"]
-
-
-def test_coordinates_off_the_planet_are_refused(client):
-    assert "not a point on Earth" in client.post(
-        "/venues", {"name": "Passage", "lat": "999", "lon": "0"}
-    )["body"]
-
-
-def test_an_unconfirmed_pin_is_surfaced_and_can_be_confirmed(client, tmp_path):
-    """What a geocoder or a model leaves behind: coordinates nobody vouched for."""
-    conn = db.connect(tmp_path / "calsync.db")
-    repo.upsert_venue(conn, name="Passage", lat=37.06, lon=-76.49,
-                      pin_confirmed=False, geocoder="nominatim")
-    vid = venue_id(tmp_path, "Passage")
-
-    assert "coordinates nobody has vouched for" in client.get("/venues")["body"]
-    assert "unconfirmed" in client.get(f"/venues/{vid}")["body"]
-
-    client.post(f"/venues/{vid}/confirm")
-    conn = db.connect(tmp_path / "calsync.db")
-    assert repo.get_venue_detail(conn, vid).pin_confirmed
 
 
 def test_renaming_keeps_the_old_name_resolving(client, tmp_path):
@@ -764,20 +765,6 @@ def test_renaming_keeps_the_old_name_resolving(client, tmp_path):
     assert repo.resolve_venue_alias(conn, "Riverview").name == "Riverview Farm Park"
     assert repo.resolve_venue_alias(conn, "Riverview Farm Park") is not None
 
-
-def test_editing_an_address_does_not_promote_an_unconfirmed_pin(client, tmp_path):
-    conn = db.connect(tmp_path / "calsync.db")
-    repo.upsert_venue(conn, name="Passage", lat=37.06, lon=-76.49,
-                      pin_confirmed=False, geocoder="nominatim")
-    vid = venue_id(tmp_path, "Passage")
-
-    client.post(f"/venues/{vid}",
-                {"name": "Passage", "address": "1 Passage Ave", "lat": "37.06", "lon": "-76.49"})
-
-    conn = db.connect(tmp_path / "calsync.db")
-    venue = repo.get_venue_detail(conn, vid)
-    assert venue.address == "1 Passage Ave"
-    assert not venue.pin_confirmed, "an unrelated edit vouched for someone else's pin"
 
 
 def test_aliases_can_be_added_and_dropped(client, tmp_path):

@@ -8,9 +8,8 @@ why targets serialize the domain object themselves:
   rejected outright, so ids are derived deterministically instead.
 - **No arbitrary properties.** ``extendedProperties.private`` takes their
   place, and it is where our real UID lives so an event can be matched back.
-- **Location is a plain string** that Google geocodes itself. There is no
-  equivalent of ``X-APPLE-STRUCTURED-LOCATION``, so a hand-refined pin cannot
-  be expressed — the capability flag says so rather than us pretending.
+- **Location is a plain string** that Google geocodes itself — which is now
+  what every target does, so this stopped being a difference.
 - **Collections are calendar ids**, not paths, so a logical collection name
   has to be mapped to something like ``…@group.calendar.google.com``.
 
@@ -99,7 +98,6 @@ class GoogleCalendarTarget:
 
     def capabilities(self) -> Capabilities:
         return Capabilities(
-            structured_location=False,   # no exact-pin equivalent
             custom_properties=True,      # extendedProperties.private
             alarms=True,
             cancellation_tombstones=True,

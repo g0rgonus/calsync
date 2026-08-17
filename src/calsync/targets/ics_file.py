@@ -14,7 +14,6 @@ from __future__ import annotations
 from pathlib import Path
 
 from icalendar import Alarm, Calendar, Event as VEvent
-from icalendar.prop import vUri
 
 from ..render import RenderedEvent
 from . import Capabilities, TargetRef, register
@@ -23,24 +22,7 @@ PRODID = "-//calsync//EN"
 
 #: Metres. Apple uses this to decide when you've "arrived"; a field-sized
 #: radius keeps travel-time alerts from firing across a large park.
-APPLE_RADIUS = 72
 
-
-def _apple_structured_location(event: RenderedEvent) -> vUri:
-    """Apple's exact-pin property, as Apple's own clients write it.
-
-    Must be a URI value with real parameters — encoding it as text escapes the
-    semicolons and commas, and Apple then ignores the whole property. This is
-    the difference between "navigate to the park" and "navigate to the right
-    corner of the park", which for youth sports is most of the value.
-    """
-    prop = vUri(f"geo:{event.lat:.6f},{event.lon:.6f}")
-    prop.params["VALUE"] = "URI"
-    prop.params["X-TITLE"] = event.venue_name or event.location_text or ""
-    if event.location_text:
-        prop.params["X-ADDRESS"] = event.location_text
-    prop.params["X-APPLE-RADIUS"] = str(APPLE_RADIUS)
-    return prop
 
 
 def to_vevent(event: RenderedEvent, *, sequence: int = 0) -> VEvent:
@@ -61,12 +43,6 @@ def to_vevent(event: RenderedEvent, *, sequence: int = 0) -> VEvent:
         ve.add("location", event.location_text)
     if event.url:
         ve.add("url", event.url)
-
-    if event.has_coordinates:
-        ve.add("geo", (event.lat, event.lon))
-        # encode=0: the value is already a vUri with its parameters set, and
-        # letting icalendar re-encode it would escape it into uselessness.
-        ve.add("X-APPLE-STRUCTURED-LOCATION", _apple_structured_location(event), encode=0)
 
     ve.add("status", "CANCELLED" if event.cancelled else "CONFIRMED")
 
@@ -106,7 +82,6 @@ class IcsFileTarget:
 
     def capabilities(self) -> Capabilities:
         return Capabilities(
-            structured_location=True,
             custom_properties=True,
             alarms=True,
             cancellation_tombstones=True,

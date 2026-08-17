@@ -5,7 +5,7 @@ Google Calendar, to iCloud over CalDAV, or to a directory of `.ics` files.
 
 Targets receive a :class:`~calsync.render.RenderedEvent` and serialize it
 themselves. That matters because the wire formats are not translations of each
-other: iCalendar carries `X-APPLE-STRUCTURED-LOCATION` and arbitrary `X-`
+other: iCalendar carries arbitrary `X-`
 properties, Google carries `extendedProperties.private` and geocodes a plain
 location string, and neither can round-trip the other's identifiers.
 
@@ -23,9 +23,6 @@ from ..render import RenderedEvent
 
 @dataclass(frozen=True)
 class Capabilities:
-    #: Apple's X-APPLE-STRUCTURED-LOCATION — an exact pin plus a friendly
-    #: title. CalDAV only; Google geocodes the location string instead.
-    structured_location: bool = False
     #: Somewhere to stash our own identifiers so a foreign edit can be spotted.
     custom_properties: bool = False
     #: Per-event reminders rather than calendar-wide defaults.

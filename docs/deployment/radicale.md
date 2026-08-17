@@ -22,12 +22,19 @@ deployment preference.
 | R2 | **ETags on `PUT` responses**, and honours `If-Match` / `If-None-Match` | Conflict detection. Without it, a concurrent edit is silently overwritten |
 | R3 | Returns **412** on a stale `If-Match` | The writer raises rather than clobbering |
 | R4 | **Preserves unknown `X-` properties** verbatim on round-trip | `X-CALSYNC-UID`, `-SOURCE`, `-HASH` carry provenance |
-| R5 | Preserves `X-APPLE-STRUCTURED-LOCATION` **unescaped**, with its parameters intact | A server that re-encodes it as text destroys the exact pin |
+| R5 | Preserves `LOCATION` text verbatim | Venue name plus street address is the whole of what gets somebody to the right car park |
 | R6 | Accepts resource names containing mixed case and hyphens (`360Player-event-4823901.ics`) | UIDs come from upstream and are not ours to rewrite |
 | R7 | `MKCALENDAR`, or pre-created collections | The target calls `ensure_collection`; 405/409 are treated as "already exists" |
 | R8 | Two principals: one read-write, one read-only | §3 |
 
-R4 and R5 are the ones worth actually testing rather than assuming — a
+**R5 was originally about `X-APPLE-STRUCTURED-LOCATION`, and this server fails
+that.** Radicale re-serializes the property and reads the comma in
+`geo:lat,lon` as a value separator, keeping only the latitude — a pin at
+longitude 0, about 6000km out. calsync no longer emits an exact pin at all
+(a name and an address resolve fine in a maps app), so the requirement is now
+the weaker and sufficient one above. `tests/test_acceptance.py` checks it.
+
+R4 is the one worth actually testing rather than assuming — a
 database-backed server that normalizes properties can quietly drop both.
 
 ---
@@ -140,7 +147,7 @@ curl -su "$AUTH" -X PUT "$BASE/games/360Player-event-4823901.ics" \
 # R4/R5 — read it back and confirm nothing was normalized away
 curl -su "$AUTH" "$BASE/games/360Player-event-4823901.ics" \
   | tr -d '\r' | sed ':a;N;$!ba;s/\n //g' \
-  | grep -E 'X-CALSYNC|X-APPLE-STRUCTURED-LOCATION'
+  | grep -E 'X-CALSYNC|LOCATION'
 
 # R3 — stale If-Match must be refused, not applied
 curl -su "$AUTH" -X PUT "$BASE/games/360Player-event-4823901.ics" \
@@ -159,7 +166,7 @@ Pass criteria:
 |---|---|
 | MKCALENDAR | `201`, or `405`/`409` on re-run |
 | PUT new | `201` **with an `ETag` header** |
-| Read back | Both `X-CALSYNC-*` and `X-APPLE-STRUCTURED-LOCATION` present, the latter with `VALUE=URI` and **no backslash escaping** |
+| Read back | `X-CALSYNC-*` present, and `LOCATION` carrying the venue name and street address verbatim |
 | Stale `If-Match` | `412` |
 | Read-only write | `403` |
 

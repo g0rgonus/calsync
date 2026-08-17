@@ -128,7 +128,7 @@ Decisions that span several files and are easy to undo by accident:
   change and every event re-renders without re-fetching. Don't add a stored title.
 - **`render()` returns a domain object, not ICS.** Targets serialize it
   themselves, because the wire formats aren't translations of each other —
-  iCalendar has `X-APPLE-STRUCTURED-LOCATION` and arbitrary `X-` properties,
+  iCalendar has arbitrary `X-` properties,
   Google has `extendedProperties.private` and constrained base32hex event ids.
   If `render()` returned iCalendar text, every non-CalDAV target would parse it back.
 - **Targets declare `Capabilities` rather than assume them**, so the writer
@@ -195,8 +195,13 @@ family calendar, so treat them as contracts, not defaults:
   re-pushes every event the evening it happened. Never propagate upstream `SEQUENCE`.
 - **Datetimes are absolute instants.** `Event.__post_init__` rejects naive values —
   a naive datetime means an adapter lost the offset, which silently shifts every render.
-- **Never invent coordinates.** An unresolvable location keeps its raw text; a
-  non-clickable location beats a wrong pin.
+- **No coordinates are emitted at all.** Events carry `LOCATION` as
+  "Venue Name, Street Address" and nothing else — that is what a maps app needs
+  to give a tappable, correct destination. calsync used to also write `GEO` and
+  `X-APPLE-STRUCTURED-LOCATION` for an exact pin; it depended on a coordinate
+  round-trip that Radicale silently truncated at the comma in `geo:lat,lon`,
+  producing a confident pin at longitude 0 instead of a working address. Do not
+  reintroduce it. `venues.lat/lon` still exist and are import-only.
 - **Feeds have no format — coaches type them.** Three TeamReach teams on the same
   platform in the same season use three incompatible SUMMARY conventions, and
   differ in which fields they populate at all. Adapters read by *strategy* (try

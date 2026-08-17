@@ -352,7 +352,10 @@ def test_alias_resolution_supplies_what_the_feed_lacks(conn, source, target):
     _sync(conn, source, target)
 
     written = "\n".join(p.read_text() for p in target.directory.rglob("*.ics"))
-    assert "GEO:37.5;-75.8" in written, "confirmed pin never reached the event"
+    # The address, which is the whole point of the table filling one in — and
+    # now the whole of what a maps app needs, since calsync stopped emitting a
+    # coordinate pin.
+    assert "7160 Rescue Ln" in written, "the known address never reached the event"
 
 
 # --- diagnostics reach the report -------------------------------------------

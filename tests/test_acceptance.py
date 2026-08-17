@@ -184,39 +184,20 @@ def test_r4_unknown_x_properties_survive_a_round_trip(collection, password):
     assert "X-CALSYNC-HASH:0123456789abcdef" in body
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="R5 FAILS against tomsquest/docker-radicale:latest. Radicale "
-           "re-serializes X-APPLE-STRUCTURED-LOCATION and treats the comma in "
-           "geo:lat,lon as a value separator, keeping only the latitude — the "
-           "pin lands at longitude 0, ~6000km out. Escaping it as geo:lat\\,lon "
-           "does survive the round trip, but whether Apple's clients then read "
-           "it back correctly cannot be tested from here, so the encoding "
-           "change is Dan's call. Marked strict so this flips to a failure the "
-           "day it starts working.",
-)
-def test_r5_the_apple_pin_survives_with_its_parameters(collection, password):
-    """The one most likely to break, and the most expensive when it does.
+def test_r5_the_location_text_survives_a_round_trip(collection, password):
+    """R5 used to be about Apple's exact-pin property, which calsync no longer
+    emits — a venue name and street address resolve fine in a maps app, and the
+    pin route depended on a coordinate round-trip this very server truncated.
 
-    A server that re-encodes this as text keeps something that still looks like
-    a location and no longer navigates anywhere. This is the check the project's
-    own "a wrong pin is worse than no pin" rule exists for, and it is currently
-    failing in production shape.
+    What still has to survive is the location *text*, because that is now the
+    whole of what gets somebody to the right car park.
     """
-    sent = _probe()
-    call("PUT", collection + UID, password=password, body=sent,
+    call("PUT", collection + UID, password=password, body=_probe(),
          headers={"Content-Type": "text/calendar; charset=utf-8"})
     got = _unfold(call("GET", collection + UID, password=password).body.decode())
 
-    assert "X-APPLE-STRUCTURED-LOCATION" in got
-    # Compare against what calsync sent, not against a literal: the point is
-    # that the server changed nothing, whatever calsync's writer chose to emit.
-    pin = _property(_unfold(sent), "X-APPLE-STRUCTURED-LOCATION")
-    assert _property(got, "X-APPLE-STRUCTURED-LOCATION") == pin, (
-        "the server rewrote the pin — an approximate location that still looks "
-        "like a real one is worse than none"
-    )
-    assert "37.0871" in pin and "76.5127" in pin, "calsync itself dropped a coordinate"
+    assert "Riverview Farm Park" in got
+    assert "1 Riverview Rd" in got
 
 
 def test_r6_an_upstream_resource_name_is_accepted(collection, password):

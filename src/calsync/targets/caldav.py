@@ -49,7 +49,6 @@ class CalDavTarget:
 
     def capabilities(self) -> Capabilities:
         return Capabilities(
-            structured_location=True,
             custom_properties=True,
             alarms=True,
             cancellation_tombstones=True,

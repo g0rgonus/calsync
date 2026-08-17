@@ -28,7 +28,7 @@ def unfold(ics: bytes | str) -> str:
     """Undo RFC 5545 line folding so assertions can match whole values.
 
     Folding at 75 octets is correct output, not a defect — but it splits long
-    properties like X-APPLE-STRUCTURED-LOCATION across lines.
+    long property values across lines.
     """
     text = ics.decode() if isinstance(ics, bytes) else ics
     return text.replace("\r\n ", "").replace("\n ", "")
@@ -89,10 +89,6 @@ def test_unknown_target_kind_is_a_clear_error():
 def test_capabilities_differ_and_are_declared_not_assumed():
     ics = targets.build("ics_file", directory="/tmp/x").capabilities()
     goog = targets.build("google", calendar_map={}).capabilities()
-    # Apple's exact-pin property has no Google equivalent; the flag says so
-    # rather than the writer emitting something Google silently drops.
-    assert ics.structured_location is True
-    assert goog.structured_location is False
     assert goog.custom_properties is True     # extendedProperties.private
     assert goog.creates_collections is False  # calendars made out of band
 
@@ -126,19 +122,21 @@ def test_body_omits_absent_optional_fields(rendered):
 # --- ics / caldav serialization ---------------------------------------------
 
 
-def test_ics_carries_geo_and_apple_structured_location(rendered):
-    ics = unfold(to_ics(rendered))
-    assert "GEO:37.2308;-76.5197" in ics
-    # Must be a URI value with real parameters. Encoded as text, the
-    # semicolons and commas get escaped and Apple ignores the property.
-    assert "X-APPLE-STRUCTURED-LOCATION;VALUE=URI;" in ics
-    assert "geo:37.230800,-76.519700" in ics
-    assert 'X-TITLE="Wolf Trap Park"' in ics
-    assert 'X-ADDRESS="Wolf Trap Park, 1009 Wolf Trap Rd, Yorktown VA 23692"' in ics
-    assert "X-APPLE-RADIUS=72" in ics
-    # Nothing in the property may be backslash-escaped.
-    line = next(l for l in ics.splitlines() if l.startswith("X-APPLE-STRUCTURED"))
-    assert "\\;" not in line and "\\," not in line
+def test_ics_gives_the_location_as_text_a_maps_app_can_resolve(rendered):
+    """Venue name and street address, nothing more.
+
+    calsync used to also emit GEO and X-APPLE-STRUCTURED-LOCATION for an exact
+    pin. It no longer does: a name and an address are enough for a maps app to
+    give a tappable, correct destination, and the exact-pin route cost a
+    coordinate round-trip that Radicale silently truncated (docs/deployment/
+    radicale.md R5) — a confidently wrong pin instead of a working address.
+    """
+    ics = to_ics(rendered).decode()
+
+    assert "LOCATION:" in ics
+    assert "Wolf Trap Park" in ics
+    assert "GEO:" not in ics
+    assert "X-APPLE-STRUCTURED-LOCATION" not in ics
 
 
 def test_ics_has_alarm_from_the_activity_policy(rendered):
