@@ -102,8 +102,10 @@ Promote when, over the events present:
 - every venue resolves to a known venue row
 - at least one fixture has been seen, so the fixture path has actually been exercised
 
-The first three are already emitted by the adapters. Nothing consumes them yet
-(see §7).
+All four are computed and reported: `SyncReport.diagnostics` carries the adapter's
+gaps plus `unresolved_venues`, `fixtures_seen` counts games, and
+`SyncReport.promotable` is the gate itself. `calsync promote` refuses unless it
+passes, and says which condition failed. `--force` overrides.
 
 ## 6. Where AI belongs, and where it does not
 
@@ -134,14 +136,34 @@ Because the title is a render and not data, getting naming wrong is cheap — ev
 event re-renders from stored fields without re-fetching. It is not a one-way door
 and does not need a model to be right first time.
 
-## 7. What this needs that does not exist yet
+## 7. How the UI reaches the data
 
-- **Per-source staging.** `collection_template` is an instance-wide setting and
-  `routing.collection_for()` does not take the source, so one feed cannot be
-  staged while others run normally.
-- **Parse diagnostics are dropped.** Adapters set `unknown_types`,
-  `unknown_categories` and `unidentified` on `PollResult`; `sync.py` never reads
-  them and `SyncReport` has no field for them. The promotion gate depends
-  entirely on data that is currently computed and thrown away.
-- **A feed-inspection endpoint** — fetch a URL and return the derivations in §2
-  without creating anything, so the UI can offer them before a source exists.
+**Directly, via `repo.py` and `config.py` in the same process.** Configuration
+does not go through the calsync API — see "Configuration is not in this API" in
+[API.md](API.md) for the reasoning and, importantly, for what that does *not*
+license: agents still propose rather than write, and still cannot approve.
+
+Practically this means the onboarding flow is a thin web layer over functions
+that already exist and are already tested — `config.apply`, `repo.set_staging`,
+`sync_source(dry_run=True)` for the preview and the promotion gate.
+
+It also means the poller and the UI are two writers on one SQLite file, so
+`db.connect()` sets a busy timeout. Keep UI write transactions short.
+
+## 8. State of play
+
+Built and tested: per-source staging (`sources.staging_collection`), the
+diagnostics that feed the gate, `calsync stage` / `promote`, and the placement
+check that makes promotion actually relocate events.
+
+Still missing for the UI:
+
+- **Feed inspection.** A function that fetches a URL and returns the derivations
+  in §2 — team name, season bounds, candidate team token, venues, event counts —
+  **without creating an activity or a source**. Everything downstream of step 2
+  exists; this is what makes the paste-a-URL step possible, and today the only
+  way to see any of it is to create a source and sync it.
+- **The web layer itself.** Thin, over `config.apply`, `repo.set_staging` and
+  `sync_source(dry_run=True)`.
+- **Clone-forward.** Copy last season's activity for a kid+sport, so a new team
+  is two fields rather than a dozen (§1).

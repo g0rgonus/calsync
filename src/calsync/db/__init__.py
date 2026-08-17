@@ -86,10 +86,20 @@ DEFAULT_SETTINGS: dict[str, str] = {
 }
 
 
+#: Milliseconds to wait for a write lock before giving up. The poller and the web
+#: UI are two processes on one file (docs/API.md, "Configuration is not in this
+#: API"), and SQLite's default is to fail *immediately* on contention rather than
+#: wait — so without this an ordinary config edit during a poll raises
+#: "database is locked". WAL already allows readers to proceed throughout; this
+#: only covers writer-against-writer, which is brief and rare here.
+BUSY_TIMEOUT_MS = 5000
+
+
 def connect(path: str | Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
     return conn
 
 

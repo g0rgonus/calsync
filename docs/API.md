@@ -18,6 +18,36 @@ structural, not conventional. Reads are standing (low risk, and Hermes needs
 them for the paste flow); amendment writes come from a per-task token scoped to
 named UUIDs.
 
+### Configuration is not in this API
+
+Children, sports, venues, venue aliases, activities, sources and settings are
+**edited directly in SQLite** by the web UI, in the same process. They do not go
+through this API and no scope above covers them.
+
+The "only writer" rule is about the **calendar store** — nothing but calsync
+writes to Radicale. Configuration tables are not the calendar store, and the gate
+that motivates the rule does not apply to them: it exists so an *agent* cannot
+approve its own proposals, not to stand between you and your own kid's team name.
+This is a single-household tool on a private tailnet with one human operator, so
+an HTTP layer over config CRUD would add a component and a token to manage
+without adding a control.
+
+**What this does not license.** The boundary is agent-vs-human, not
+inside-vs-outside the house:
+
+- Hermes and the pollers still create *proposals*; they never write events, and
+  they never approve. Being on a private network changes nothing about that —
+  the risk is an agent acting on a bad parse, not a stranger on the internet.
+- Nothing but calsync writes to Radicale, still.
+- If a future component that is not the operator's own browser needs to change
+  configuration, it needs an API and this decision gets revisited.
+
+**Consequence:** the poller and the UI are then two processes on one SQLite file.
+The schema runs in WAL mode, which permits concurrent readers alongside one
+writer, but a second writer fails immediately unless a busy timeout is set —
+`db.connect()` sets one. Keep any UI write transaction short; do not hold one
+open across a request.
+
 ### Hermes reads through the API, not CalDAV
 
 Giving Hermes a read-only Radicale account looks equivalent and isn't:

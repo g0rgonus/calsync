@@ -15,13 +15,16 @@ Radicale, including the R1–R8 acceptance checks in
 contract, not as a description of the code. `docs/ONBOARDING.md` is the spec for
 the web UI, and it is the next thing to build.
 
-**Open sequencing question, undecided:** `docs/API.md` says the web UI is an API
-client (`ui` scope), but its scope table covers the *calendar data* path —
-documents, proposals, events, amendments. Configuration CRUD (children,
-activities, sources, venues) is not in it. So it is genuinely unsettled whether
-config management goes through the API or straight to SQLite in the same process.
-Decide that before writing UI code; it determines whether the API has to exist
-first.
+**Configuration does not go through the API.** The web UI edits children,
+activities, sources, venues and settings directly in SQLite via `repo.py` and
+`config.py`, in the same process — so the UI can be built now, without the API
+existing. Reasoning in `docs/API.md`, "Configuration is not in this API".
+
+The boundary that decision respects is **agent versus human, not network
+position**: Hermes and the pollers still submit proposals, still cannot approve
+them, and nothing but calsync writes to Radicale. "It's on a private tailnet" is
+not a reason to weaken those — the risk there is an agent acting on a bad parse,
+not a stranger on the internet.
 
 The Google target is implemented and tested but not wired to the CLI.
 
