@@ -19,7 +19,7 @@ import bottle
 from bottle import Bottle, redirect, request, static_file, template
 
 from .. import config as config_mod
-from .. import db, dormancy, matrix, notify, repo, retire, sources, targeting
+from .. import db, dormancy, enrichment, matrix, notify, repo, retire, sources, targeting
 from ..fetch import FetchError, http_fetch, render_url
 from ..inspection import InspectionError, inspect_feed
 from ..normalize import venue as venue_norm
@@ -594,13 +594,13 @@ def create_app(
         """
         with connect() as conn:
             settings = Settings.load(conn)
-            enrichment = slugify(settings.enrichment_collection) if \
-                settings.enrichment_collection else ""
+            enrichment_collection = slugify(settings.enrichment_collection) \
+                if settings.enrichment_collection else ""
             sources_ = repo.list_sources(conn, enabled_only=True)
             held = {
-                s.id: repo.events_in_collection(conn, s.id, enrichment)
+                s.id: repo.events_in_collection(conn, s.id, enrichment_collection)
                 for s in sources_
-            } if enrichment else {}
+            } if enrichment_collection else {}
 
         # Only the sources with something waiting, so the page is empty when
         # there is nothing to do rather than a list of everything that is fine.
@@ -623,10 +623,46 @@ def create_app(
             return render(
                 "review.tpl",
                 queues=queues,
-                enrichment=enrichment,
+                enrichment=enrichment_collection,
+                # Answers waiting on a decision, across every source. Listed
+                # separately from the questions because they are a different
+                # act: answering is work, deciding is a glance.
+                pending=repo.list_tasks(conn, state=repo.ANSWERED),
                 venues=repo.list_venues(conn),
                 flash=_flash(),
             )
+
+    @app.post("/review/<task_id>/<decision:re:approve|reject>")
+    def decide(task_id, decision):
+        """The review gate, and the only place an answer becomes configuration.
+
+        Reached from the console rather than the API on purpose: an agent can
+        put an answer in front of you and has no path to this handler. Applying
+        calls exactly the same `repo` helpers the manual answer forms call, so
+        an approved answer and a hand-typed one write the same row.
+        """
+        with connect() as conn:
+            task = repo.get_task(conn, task_id)
+            if task is None:
+                raise Refused("no such question")
+            if task.state != repo.ANSWERED:
+                raise Refused(
+                    f"that question is {task.state}, so there is nothing waiting "
+                    "on a decision"
+                )
+            if decision == "reject":
+                repo.decide_task(conn, task_id, repo.REJECTED)
+                conn.commit()
+                redirect("/review?ok=" + _q("Rejected. The question stays open."))
+
+            try:
+                did = enrichment.apply(conn, task)
+            except (enrichment.AnswerError, repo.NotFound) as exc:
+                raise Refused(f"could not apply that answer: {exc}") from exc
+            repo.decide_task(conn, task_id, repo.APPROVED)
+            conn.commit()
+        redirect("/review?ok=" + _q(
+            f"Approved — {did}. The next poll re-renders and releases the events."))
 
     @app.get("/settings")
     def settings_page():

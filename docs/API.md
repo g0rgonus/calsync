@@ -274,12 +274,22 @@ the API, not in chat.
 
 ```http
 GET  /v1/tasks?state=open
-POST /v1/tasks/{id}/result       # scoped task token, 1h TTL
+POST /v1/tasks/{id}/result       # built
 GET  /v1/schema/{name}           # JSON Schema, machine copy of this doc
 ```
 
-The task token is scoped to that task and the event UUIDs it names. It is not
-a standing credential and cannot write anything the task didn't cover.
+`POST /v1/tasks/{id}/result` exists. It takes `{"answer": {...},
+"answered_by": "...", "rationale": "..."}` and **stores it without applying
+it** — the response says `"applied": false` for exactly that reason. A human
+approves in the console, which is the only path to the code that writes an
+alias, a vocabulary word or a venue row.
+
+It uses the standing token rather than the scoped per-task token described
+below. That token exists in this document because an unreviewed answer could
+otherwise be turned into a write against arbitrary events; with a human
+approval in front of every application, a hijacked answer produces a queue item
+and nothing else. **Scoped tokens become necessary the moment anything applies
+an answer automatically**, and that is the condition to re-read this under.
 
 ## Amendments
 

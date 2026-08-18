@@ -26,6 +26,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 from . import matrix, notify, repo
 from .inspection import name_candidates
@@ -309,10 +310,15 @@ def _dispatch_body(activity_name: str, held: int, items: tuple[Task, ...]) -> st
         "activity": activity_name,
         "held": held,
         "tasks": [task.as_dict() for task in items],
-        # Filled in when the answer endpoint exists. Explicitly null rather than
-        # absent, so an agent can tell "not answerable yet" from "this message
-        # forgot to say how" — and so the shape does not change when it lands.
-        "respond_via": None,
+        # The endpoint takes an answer and stores it. It cannot apply one —
+        # approving happens in the console, by a person, which is why this
+        # names no way to do it.
+        "respond_via": {
+            "endpoint": "POST /v1/tasks/{task_id}/result",
+            "body": {"answer": "{...}", "answered_by": "you",
+                     "rationale": "optional"},
+            "applied_on_receipt": False,
+        },
     }, indent=2, sort_keys=True))
     lines.append("```")
     return "\n".join(lines)
@@ -367,6 +373,22 @@ def dispatch(
         # questions go out whenever somebody does configure it.
         return outcome
 
+    # Recorded *before* the post, and independently of whether it succeeds.
+    # These rows are what lets the answer endpoint refuse a question calsync
+    # never asked; a post that fails is retried next poll, but the task is still
+    # a real question and an answer to it is still legitimate.
+    stamp = datetime.now(timezone.utc).isoformat()
+    for task in open_tasks:
+        repo.record_task(
+            conn, task_id=task.id, source_id=source.id, kind=task.kind,
+            type=task.type, context=task.context, candidates=task.candidates,
+            dispatched_at=stamp,
+        )
+    # Anything we are no longer asking has been answered by hand, or the feed
+    # changed. Closed so the queue does not imply a question nobody will ask.
+    repo.resolve_stale_tasks(conn, source.id, tuple(t.id for t in open_tasks))
+    conn.commit()
+
     activity = repo.get_activity(conn, source.activity_id)
     try:
         sender(
@@ -387,3 +409,94 @@ def dispatch(
     )
     conn.commit()
     return outcome
+
+
+# --- applying an approved answer -------------------------------------------
+#
+# The only place a task's answer becomes configuration, and it is reached from
+# the console rather than the API. That is the review gate made structural: an
+# agent can put an answer in front of you and has no path to this function.
+#
+# Each branch calls exactly the same `repo` helper the console's own answer form
+# calls, so an approved agent answer and a hand-typed one write the same row and
+# cannot drift apart.
+
+
+class AnswerError(ValueError):
+    """An answer that cannot be applied, phrased for whoever has to fix it."""
+
+
+def _need(answer: dict, key: str) -> str:
+    value = (answer or {}).get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise AnswerError(f"answer needs a non-empty {key!r}")
+    return value.strip()
+
+
+def validate(task_type: str, answer: dict) -> None:
+    """Check an answer's shape without applying it.
+
+    Called on the way in, so a malformed answer is refused at the API rather
+    than sitting in the queue until somebody approves it and discovers it does
+    not fit — which would put the error in front of the one person who cannot
+    do anything about it.
+    """
+    if task_type == "resolve_activity":
+        _need(answer, "alias")
+    elif task_type == "classify_kind":
+        _need(answer, "label")
+        if not isinstance((answer or {}).get("is_game"), bool):
+            raise AnswerError("answer needs 'is_game' as true or false")
+    elif task_type == "normalize_venue":
+        # Either it is a new place, or another name for one we know.
+        if not (answer or {}).get("same_as"):
+            _need(answer, "name")
+    else:
+        raise AnswerError(f"no answer shape is defined for {task_type!r}")
+
+
+def apply(conn, task: repo.Task) -> str:
+    """Write an approved answer as configuration. Returns what it did.
+
+    Never called for anything but an approved task, and never by the API.
+    """
+    answer = task.answer or {}
+    validate(task.type, answer)
+    source = repo.get_source(conn, task.source_id)
+    if source is None:
+        raise AnswerError(f"source {task.source_id!r} no longer exists")
+
+    if task.type == "resolve_activity":
+        alias = _need(answer, "alias")
+        repo.add_activity_alias(conn, source.activity_id, alias, source="hermes")
+        return f"taught {alias!r} as a name for this team"
+
+    if task.type == "classify_kind":
+        label = _need(answer, "label")
+        is_game = bool(answer.get("is_game"))
+        repo.teach_event_type(conn, source.id, label, is_game=is_game)
+        return f"recorded {label!r} as a {'game' if is_game else 'practice'}"
+
+    if task.type == "normalize_venue":
+        seen = task.context[0] if task.context else _need(answer, "name")
+        existing = (answer.get("same_as") or "").strip()
+        if existing:
+            row = conn.execute(
+                "SELECT id FROM venues WHERE canonical_name = ?", (existing,)
+            ).fetchone()
+            if row is None:
+                raise AnswerError(f"no venue called {existing!r} to alias to")
+            repo.add_venue_alias(conn, int(row["id"]), seen)
+            return f"recorded {seen!r} as another name for {existing!r}"
+        name = _need(answer, "name")
+        # `pin_confirmed` stays 0: whatever a model proposes about a place is
+        # unconfirmed until a human vouches for the pin, and approving the
+        # *alias* is not vouching for coordinates.
+        venue_id = repo.upsert_venue(
+            conn, name=name, address=(answer.get("address") or None) or None,
+            geocoder="hermes",
+        )
+        repo.add_venue_alias(conn, venue_id, seen)
+        return f"created venue {name!r} and recorded {seen!r} as a name for it"
+
+    raise AnswerError(f"cannot apply a {task.type!r} answer")

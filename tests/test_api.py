@@ -414,3 +414,136 @@ def test_what_the_api_says_is_what_was_written(client, tmp_path):
             assert vevent["LOCATION"].strip().startswith(
                 event["venue"]["canonical_name"]
             )
+
+
+# --- answering a question calsync asked -------------------------------------
+#
+# The write half, and it writes nothing anybody can see. An answer is stored for
+# a human to approve in the console; there is no parameter on this endpoint that
+# applies one, which is the review gate made structural rather than conventional.
+
+
+def _post(client, path, body, *, token=TOKEN):
+    from io import BytesIO, StringIO
+
+    raw = json.dumps(body).encode()
+    environ = {
+        "REQUEST_METHOD": "POST", "PATH_INFO": path, "QUERY_STRING": "",
+        "SERVER_NAME": "localhost", "SERVER_PORT": "8731",
+        "SERVER_PROTOCOL": "HTTP/1.1", "wsgi.input": BytesIO(raw),
+        "wsgi.errors": StringIO(), "wsgi.url_scheme": "http",
+        "HTTP_HOST": "localhost:8731", "CONTENT_TYPE": "application/json",
+        "CONTENT_LENGTH": str(len(raw)),
+    }
+    if token is not None:
+        environ["HTTP_AUTHORIZATION"] = f"Bearer {token}"
+    captured = {}
+
+    def start_response(status, headers, exc_info=None):
+        captured["status"] = int(status.split()[0])
+
+    body_out = b"".join(client.app(environ, start_response)).decode()
+    captured["body"] = body_out
+    try:
+        captured["json"] = json.loads(body_out)
+    except ValueError:
+        captured["json"] = None
+    return captured
+
+
+@pytest.fixture
+def asked(db_path):
+    """One dispatched question, as if the poller had posted it."""
+    conn = db.connect(db_path)
+    repo.record_task(
+        conn, task_id="task_abc123", source_id="p360-james-rush",
+        kind="unidentified", type="resolve_activity",
+        context=("Fury vs Hawks",), candidates=("Hawks", "Fury"),
+        dispatched_at="2026-07-20T12:00:00+00:00",
+    )
+    conn.commit()
+    conn.close()
+    return "task_abc123"
+
+
+def test_an_answer_is_stored_and_explicitly_not_applied(client, asked, db_path):
+    reply = _post(client, f"/v1/tasks/{asked}/result",
+                  {"answer": {"alias": "Hawks"}, "answered_by": "hermes/1.4",
+                   "rationale": "Hawks appears on both sides"})
+
+    assert reply["status"] == 200
+    assert reply["json"]["applied"] is False
+    assert reply["json"]["state"] == "answered"
+
+    conn = db.connect(db_path)
+    assert repo.get_task(conn, asked).state == repo.ANSWERED
+    # The gate: nothing was written as configuration.
+    assert conn.execute("SELECT COUNT(*) n FROM activity_aliases").fetchone()["n"] == 0
+
+
+def test_answering_a_question_nobody_asked_is_refused(client):
+    """Rows are written when a question is dispatched, so this is the check that
+    stops anything holding the token from inventing work for a human."""
+    reply = _post(client, "/v1/tasks/task_invented/result",
+                  {"answer": {"alias": "Whoever"}, "answered_by": "hermes"})
+
+    assert reply["status"] == 404
+    assert reply["json"]["error"]["code"] == "unknown_task"
+
+
+def test_an_answer_needs_to_say_what_produced_it(client, asked):
+    """A bad answer has to be traceable to a prompt weeks later."""
+    reply = _post(client, f"/v1/tasks/{asked}/result", {"answer": {"alias": "x"}})
+
+    assert reply["status"] == 422
+    assert reply["json"]["error"]["code"] == "no_attribution"
+
+
+def test_a_malformed_answer_is_refused_with_the_shape_it_wanted(client, asked):
+    """Refused on the way in, not at approval time.
+
+    The alternative puts the error in front of the one person who cannot fix it.
+    """
+    reply = _post(client, f"/v1/tasks/{asked}/result",
+                  {"answer": {"wrong": "shape"}, "answered_by": "hermes"})
+
+    assert reply["status"] == 422
+    assert reply["json"]["error"]["code"] == "bad_answer"
+    assert "alias" in json.dumps(reply["json"]["error"]["expected"])
+
+
+def test_re_answering_a_decided_question_is_refused(client, asked, db_path):
+    """Answering again would quietly reopen a decision somebody has taken."""
+    conn = db.connect(db_path)
+    repo.decide_task(conn, asked, repo.APPROVED)
+    conn.commit()
+    conn.close()
+
+    reply = _post(client, f"/v1/tasks/{asked}/result",
+                  {"answer": {"alias": "Hawks"}, "answered_by": "hermes"})
+
+    assert reply["status"] == 409
+    assert reply["json"]["error"]["code"] == "already_decided"
+
+
+def test_answering_without_the_token_is_refused(client, asked):
+    reply = _post(client, f"/v1/tasks/{asked}/result",
+                  {"answer": {"alias": "Hawks"}, "answered_by": "hermes"},
+                  token="wrong")
+
+    assert reply["status"] == 401
+
+
+def test_there_is_no_way_to_approve_through_the_api(client, asked, db_path):
+    """The gate, stated as an assertion.
+
+    Approving is a console action. Anything an agent sends here lands in the
+    queue whatever it claims about itself.
+    """
+    _post(client, f"/v1/tasks/{asked}/result",
+          {"answer": {"alias": "Hawks"}, "answered_by": "hermes",
+           "state": "approved", "approved": True, "apply": True})
+
+    conn = db.connect(db_path)
+    assert repo.get_task(conn, asked).state == repo.ANSWERED
+    assert conn.execute("SELECT COUNT(*) n FROM activity_aliases").fetchone()["n"] == 0

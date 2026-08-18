@@ -310,7 +310,14 @@ calsync asks, Hermes answers, you approve — needs no inbound Matrix at all:
 | Hold what cannot be placed | An enrichment collection and a review queue | **built** |
 | Notify that something is waiting | A Pushover trigger, once per question | **built** |
 | Post the question to the room | Outbound only; `matrix.send` already exists | **built** |
-| Accept an answer | `POST /v1/tasks/{id}/result`, stored pending, never applied | |
+| Accept an answer | `POST /v1/tasks/{id}/result`, stored pending, never applied | **built** |
+
+That completes the task-dispatch loop: calsync holds what it cannot place, asks
+in the room, accepts an answer over the API, and waits for a person. The answer
+is applied by `/review/<id>/approve` in the console and by nothing else, so §1's
+identity model is not needed for it — authority is the API token for *answering*
+and the console for *deciding*, and those are different acts by different
+parties.
 
 Task ids are derived from the question rather than allocated, so the same
 unanswered question is the same task on every poll — which is what dedupes a

@@ -11,7 +11,7 @@ from wsgiref.simple_server import WSGIRequestHandler, WSGIServer, make_server
 
 from bottle import Bottle, HTTPResponse, request, response
 
-from .. import db, repo
+from .. import db, enrichment, repo
 from ..normalize import title as title_norm
 from ..secrets import SecretError, SecretStore
 from ..settings import Settings
@@ -156,7 +156,91 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None) -> Bo
                 }
             )
 
+    @app.post("/v1/tasks/<task_id>/result")
+    def answer_task(task_id):
+        """Accept an answer to a question calsync asked. Applies nothing.
+
+        Three refusals, and each one is the point rather than defensiveness:
+
+        - **An unknown task id is rejected.** Rows are written when a question
+          is dispatched, so anything holding this token can only answer
+          questions calsync actually asked. Without that check, a bad paste is
+          one step from a plausible-looking alias in front of a tired human.
+        - **A malformed answer is rejected here**, not at approval time. The
+          alternative puts the error in front of the one person who cannot fix
+          it.
+        - **A decided task is rejected.** Re-answering something already
+          approved or rejected would quietly reopen a decision.
+
+        What it does *not* do is apply anything. The answer moves to `answered`
+        and waits for a human in the console. That is the whole review gate, and
+        it is structural: there is no parameter on this endpoint that approves.
+        """
+        try:
+            body = json.loads(request.body.read() or b"{}")
+        except ValueError as exc:
+            raise ApiError(400, "bad_json", f"body is not JSON: {exc}") from exc
+        if not isinstance(body, dict):
+            raise ApiError(400, "bad_json", "body must be a JSON object")
+
+        answer = body.get("answer")
+        if not isinstance(answer, dict):
+            raise ApiError(422, "no_answer", "send an 'answer' object")
+        answered_by = str(body.get("answered_by") or "").strip()
+        if not answered_by:
+            raise ApiError(
+                422, "no_attribution",
+                "send 'answered_by' naming what produced this — it is what makes "
+                "a bad answer traceable to a prompt weeks later",
+            )
+
+        with connect() as conn:
+            task = repo.get_task(conn, task_id)
+            if task is None:
+                raise ApiError(
+                    404, "unknown_task",
+                    "no question with that id was ever asked", got=task_id,
+                )
+            if task.state in (repo.APPROVED, repo.REJECTED):
+                raise ApiError(
+                    409, "already_decided",
+                    f"that question was already {task.state}; answering again "
+                    "would reopen a decision somebody has taken",
+                )
+            try:
+                enrichment.validate(task.type, answer)
+            except enrichment.AnswerError as exc:
+                raise ApiError(
+                    422, "bad_answer", str(exc),
+                    expected=_ANSWER_SHAPES.get(task.type),
+                ) from exc
+
+            repo.record_answer(
+                conn, task_id=task_id, answer=answer,
+                rationale=(body.get("rationale") or None),
+                answered_by=answered_by,
+                answered_at=clock().isoformat(),
+            )
+            return _dump({
+                "task_id": task_id,
+                "state": repo.ANSWERED,
+                "applied": False,
+                "detail": "stored for review; nothing changes until a human "
+                          "approves it in the console",
+            })
+
     return app
+
+
+#: What each task type's answer must look like, returned alongside a 422 so a
+#: client can correct itself rather than guess.
+_ANSWER_SHAPES = {
+    "resolve_activity": {"alias": "Hawks"},
+    "classify_kind": {"label": "Skills Session", "is_game": False},
+    "normalize_venue": {"name": "Riverview Farm Park",
+                        "address": "optional",
+                        "same_as": "or the name of a venue already known"},
+}
 
 
 # --- serialization ----------------------------------------------------------

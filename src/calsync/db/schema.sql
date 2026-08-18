@@ -193,3 +193,47 @@ CREATE TABLE IF NOT EXISTS poll_runs (
     detail      TEXT,
     raw_sha256  TEXT
 );
+
+-- Questions calsync asked, and the answers waiting on a human.
+--
+-- One table rather than "tasks" plus "answers", because it is one lifecycle:
+-- a question is asked, something answers it, somebody decides. Splitting it
+-- would mean a join to discover a state that is a single column.
+--
+-- **Nothing here is ever applied on arrival.** An answer sits in `answered`
+-- until a person approves it, and approving is what writes the alias, the
+-- vocabulary word or the venue row. That is the whole review gate: an agent
+-- cannot approve its own answer because approving does not happen here at all,
+-- it happens in the console (docs/API.md, "Configuration is not in this API").
+--
+-- Rows are written when a task is *dispatched*, which is what lets the endpoint
+-- refuse an answer to a question calsync never asked. Without that, anything
+-- holding the API token could invent a task id and have its answer queued for
+-- approval — one bad paste away from a plausible-looking alias in front of a
+-- tired human at 11pm.
+CREATE TABLE IF NOT EXISTS tasks (
+    id            TEXT PRIMARY KEY,
+    source_id     TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+    -- The diagnostic behind it, and the docs/MATRIX.md §2 task vocabulary.
+    kind          TEXT NOT NULL,
+    type          TEXT NOT NULL,
+    context       TEXT NOT NULL,              -- JSON array, as the coach typed it
+    candidates    TEXT NOT NULL DEFAULT '[]', -- JSON array, best first
+    dispatched_at TEXT NOT NULL,
+
+    -- Filled in by whatever answers. Never acted on directly.
+    answer        TEXT,                       -- JSON object, shape per `type`
+    rationale     TEXT,
+    answered_by   TEXT,
+    answered_at   TEXT,
+
+    -- open      dispatched, nothing has answered
+    -- answered  an answer is waiting for a human
+    -- approved  applied; the next poll re-renders and releases the events
+    -- rejected  discarded, with the question still open
+    -- resolved  the question stopped being asked (somebody answered it by hand)
+    state         TEXT NOT NULL DEFAULT 'open',
+    decided_at    TEXT
+);
+CREATE INDEX IF NOT EXISTS tasks_state ON tasks(state);
+CREATE INDEX IF NOT EXISTS tasks_source ON tasks(source_id);

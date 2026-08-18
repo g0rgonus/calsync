@@ -1128,3 +1128,150 @@ def id_taken(conn: sqlite3.Connection, table: str, candidate: str) -> bool:
         conn.execute(f"SELECT 1 FROM {table} WHERE id = ?", (candidate,)).fetchone()
         is not None
     )
+
+
+# --- questions we asked, and answers waiting on a human ---------------------
+#
+# The review gate, as rows. An answer arrives, sits, and is applied only when
+# somebody approves it — so the agent-versus-human boundary docs/API.md argues
+# for is a property of the schema rather than a convention anybody has to
+# remember.
+
+OPEN, ANSWERED, APPROVED, REJECTED, RESOLVED = (
+    "open", "answered", "approved", "rejected", "resolved"
+)
+
+
+@dataclass(frozen=True)
+class Task:
+    id: str
+    source_id: str
+    kind: str
+    type: str
+    context: tuple[str, ...]
+    candidates: tuple[str, ...]
+    state: str
+    answer: dict | None = None
+    rationale: str | None = None
+    answered_by: str | None = None
+    answered_at: str | None = None
+
+    @property
+    def waiting(self) -> bool:
+        """Has an answer nobody has decided on yet."""
+        return self.state == ANSWERED
+
+
+def _task(row: sqlite3.Row) -> Task:
+    return Task(
+        id=row["id"],
+        source_id=row["source_id"],
+        kind=row["kind"],
+        type=row["type"],
+        context=tuple(json.loads(row["context"] or "[]")),
+        candidates=tuple(json.loads(row["candidates"] or "[]")),
+        state=row["state"],
+        answer=json.loads(row["answer"]) if row["answer"] else None,
+        rationale=row["rationale"],
+        answered_by=row["answered_by"],
+        answered_at=row["answered_at"],
+    )
+
+
+def record_task(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    source_id: str,
+    kind: str,
+    type: str,
+    context: tuple[str, ...],
+    candidates: tuple[str, ...],
+    dispatched_at: str,
+) -> None:
+    """Note that this question went out.
+
+    Idempotent on the id, and deliberately does **not** touch an existing row's
+    answer or state: task ids are derived from the question, so re-dispatching
+    the same unanswered question must not discard an answer that arrived in the
+    meantime or un-approve a decision already taken.
+    """
+    conn.execute(
+        """
+        INSERT INTO tasks (id, source_id, kind, type, context, candidates,
+                           dispatched_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            candidates = excluded.candidates,
+            dispatched_at = excluded.dispatched_at
+        """,
+        (task_id, source_id, kind, type, json.dumps(list(context)),
+         json.dumps(list(candidates)), dispatched_at),
+    )
+
+
+def get_task(conn: sqlite3.Connection, task_id: str) -> Task | None:
+    row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    return _task(row) if row else None
+
+
+def list_tasks(conn: sqlite3.Connection, *, state: str | None = None) -> list[Task]:
+    sql = "SELECT * FROM tasks"
+    params: tuple = ()
+    if state:
+        sql += " WHERE state = ?"
+        params = (state,)
+    sql += " ORDER BY dispatched_at DESC, id"
+    return [_task(r) for r in conn.execute(sql, params)]
+
+
+def record_answer(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    answer: dict,
+    rationale: str | None,
+    answered_by: str,
+    answered_at: str,
+) -> None:
+    """Store an answer. **Applies nothing.**
+
+    The state moves to `answered`, which is a queue for a human and not an
+    instruction to anybody. Whatever wrote this cannot progress it further —
+    that is the gate, and it is here rather than in a caller's discipline.
+    """
+    conn.execute(
+        "UPDATE tasks SET answer = ?, rationale = ?, answered_by = ?, "
+        "answered_at = ?, state = ?, decided_at = NULL WHERE id = ?",
+        (json.dumps(answer), rationale, answered_by, answered_at, ANSWERED, task_id),
+    )
+    conn.commit()
+
+
+def decide_task(conn: sqlite3.Connection, task_id: str, state: str) -> None:
+    conn.execute(
+        "UPDATE tasks SET state = ?, decided_at = datetime('now') WHERE id = ?",
+        (state, task_id),
+    )
+
+
+def resolve_stale_tasks(
+    conn: sqlite3.Connection, source_id: str, live_ids: tuple[str, ...]
+) -> int:
+    """Close questions that stopped being asked.
+
+    Somebody answering by hand on the source page makes the diagnostic go away,
+    and a task nobody will ever ask again should not sit in the queue implying
+    otherwise. Only open and answered rows: a decision already taken is history.
+    """
+    placeholders = ",".join("?" * len(live_ids))
+    sql = (
+        "UPDATE tasks SET state = ?, decided_at = datetime('now') "
+        "WHERE source_id = ? AND state IN (?, ?)"
+    )
+    params: list = [RESOLVED, source_id, OPEN, ANSWERED]
+    if live_ids:
+        sql += f" AND id NOT IN ({placeholders})"
+        params.extend(live_ids)
+    cursor = conn.execute(sql, params)
+    return cursor.rowcount

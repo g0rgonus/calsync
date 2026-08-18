@@ -1825,3 +1825,128 @@ def test_clearing_the_enrichment_collection_actually_clears_it(client, tmp_path)
 
     conn = db.connect(tmp_path / "calsync.db")
     assert Settings.load(conn).enrichment_collection == ""
+
+
+# --- deciding on an answer --------------------------------------------------
+#
+# The only place an answer becomes configuration, and it is reached by a person.
+# An agent can put something in front of you and has no path to this handler.
+
+
+def _answered_task(tmp_path, *, task_type="resolve_activity", answer=None,
+                   context=("Fury vs Hawks",)):
+    conn = db.connect(tmp_path / "calsync.db")
+    source_id = repo.list_sources(conn, enabled_only=False)[0].id
+    repo.record_task(
+        conn, task_id="task_x1", source_id=source_id, kind="unidentified",
+        type=task_type, context=context, candidates=("Hawks",),
+        dispatched_at="2026-03-01T12:00:00+00:00",
+    )
+    conn.commit()
+    repo.record_answer(
+        conn, task_id="task_x1", answer=answer or {"alias": "Hawks"},
+        rationale="Hawks is on both sides of every fixture",
+        answered_by="hermes/1.4", answered_at="2026-03-01T12:05:00+00:00",
+    )
+    conn.close()
+    return "task_x1", source_id
+
+
+def test_a_waiting_answer_is_shown_with_who_gave_it(client, tmp_path):
+    onboard(client, token="")
+    _answered_task(tmp_path)
+
+    page = client.get("/review")["body"]
+
+    assert "Answers waiting on you" in page
+    assert "hermes/1.4" in page
+    assert "Hawks is on both sides" in page, "the rationale is why you can judge it"
+    assert "/approve" in page and "/reject" in page
+
+
+def test_approving_writes_the_same_row_the_manual_form_would(client, tmp_path):
+    onboard(client, token="")
+    task_id, source_id = _answered_task(tmp_path)
+
+    client.post(f"/review/{task_id}/approve")
+
+    conn = db.connect(tmp_path / "calsync.db")
+    activity_id = repo.get_source(conn, source_id).activity_id
+    assert "Hawks" in repo.get_activity(conn, activity_id).aliases
+    assert repo.get_task(conn, task_id).state == repo.APPROVED
+
+
+def test_rejecting_applies_nothing_and_leaves_the_question_open(client, tmp_path):
+    onboard(client, token="")
+    task_id, source_id = _answered_task(tmp_path)
+
+    client.post(f"/review/{task_id}/reject")
+
+    conn = db.connect(tmp_path / "calsync.db")
+    activity_id = repo.get_source(conn, source_id).activity_id
+    assert repo.get_activity(conn, activity_id).aliases == ()
+    assert repo.get_task(conn, task_id).state == repo.REJECTED
+
+
+def test_approving_twice_is_refused(client, tmp_path):
+    """The second click of a double-tap must not re-apply anything."""
+    onboard(client, token="")
+    task_id, _ = _answered_task(tmp_path)
+    client.post(f"/review/{task_id}/approve")
+
+    body = client.post(f"/review/{task_id}/approve")["body"]
+
+    assert "nothing waiting on a decision" in body
+
+
+def test_approving_a_classification_teaches_the_source_its_vocabulary(
+    client, tmp_path
+):
+    """The other answer shape, and it writes to sources.config not an alias."""
+    onboard(client, token="")
+    task_id, source_id = _answered_task(
+        tmp_path, task_type="classify_kind", context=("Skills Session",),
+        answer={"label": "Skills Session", "is_game": False},
+    )
+
+    client.post(f"/review/{task_id}/approve")
+
+    conn = db.connect(tmp_path / "calsync.db")
+    assert "Skills Session" in repo.get_source(conn, source_id).config["practice_words"]
+
+
+def test_approving_a_venue_answer_leaves_the_pin_unconfirmed(client, tmp_path):
+    """A model may propose a place; only a human vouches for coordinates.
+
+    Approving the alias is not vouching for a pin, so `pin_confirmed` stays 0 —
+    the invariant that keeps a confident wrong pin off a parent's phone.
+    """
+    onboard(client, token="")
+    task_id, _ = _answered_task(
+        tmp_path, task_type="normalize_venue", context=("Riverview",),
+        answer={"name": "Riverview Farm Park", "address": "1 Riverview Rd"},
+    )
+
+    client.post(f"/review/{task_id}/approve")
+
+    conn = db.connect(tmp_path / "calsync.db")
+    venue = next(v for v in repo.venues_detailed(conn)
+                 if v.name == "Riverview Farm Park")
+    assert not venue.pin_confirmed
+    assert "Riverview" in venue.aliases, "the string the feed used was not recorded"
+
+
+def test_an_answer_that_cannot_be_applied_says_so_and_changes_nothing(
+    client, tmp_path
+):
+    onboard(client, token="")
+    task_id, _ = _answered_task(
+        tmp_path, task_type="normalize_venue", context=("Riverview",),
+        answer={"same_as": "A Place That Does Not Exist"},
+    )
+
+    body = client.post(f"/review/{task_id}/approve")["body"]
+
+    conn = db.connect(tmp_path / "calsync.db")
+    assert "could not apply" in body
+    assert repo.get_task(conn, task_id).state == repo.ANSWERED, "decided anyway"

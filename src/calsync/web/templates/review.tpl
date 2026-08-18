@@ -18,7 +18,45 @@
 </div>
 % end
 
-% if not queues:
+% if pending:
+<h2>Answers waiting on you</h2>
+<p class="note" style="margin-top:-0.5rem">
+  Proposed by something else and applied by nobody. Approving writes the same
+  row your own answer below would write; rejecting leaves the question open.
+</p>
+% for task in pending:
+<div class="card" style="margin-bottom:1rem">
+  <p class="label" style="margin-bottom:0.4rem">{{ task.type.replace('_', ' ') }}</p>
+  <p style="margin:0 0 0.6rem">
+%   for item in task.context[:6]:
+    <span class="raw">{{ item }}</span>
+%   end
+%   if len(task.context) > 6:
+    <span class="note">and {{ len(task.context) - 6 }} more</span>
+%   end
+  </p>
+  <div class="raw-block" style="margin-bottom:0.8rem">
+%   for key, value in sorted(task.answer.items()):
+{{ key }}: {{ value }}
+%   end
+  </div>
+%   if task.rationale:
+  <p class="note" style="margin-top:-0.4rem">“{{ task.rationale }}”</p>
+%   end
+  <p class="note">answered by <span class="raw">{{ task.answered_by }}</span> · {{ task.answered_at }}</p>
+  <div class="btn-row">
+    <form method="post" action="/review/{{ task.id }}/approve">
+      <button class="btn btn-answer" type="submit">Approve</button>
+    </form>
+    <form method="post" action="/review/{{ task.id }}/reject">
+      <button class="btn btn-quiet" type="submit">Reject</button>
+    </form>
+  </div>
+</div>
+% end
+% end
+
+% if not queues and not pending:
 <div class="card">
   <p style="margin:0">
     <strong>Nothing waiting.</strong> Every event calsync has seen went to a
@@ -27,8 +65,11 @@
 </div>
 % end
 
+% if queues:
+<h2 style="margin-top:2rem">Questions</h2>
+% end
 % for q in queues:
-<h2>{{ q['activity'].name }}</h2>
+<h3 style="margin-bottom:0.4rem">{{ q['activity'].name }}</h3>
 <div class="card" style="margin-bottom:1.4rem">
   <p class="note" style="margin-top:0">
 %   if q['held']:

@@ -17,9 +17,10 @@ table, pins and merges; `/household` edits kids and the sport catalog;
 `/settings` covers the `settings` table, and a team's own fields are on its
 source page. Nothing in the day-to-day path needs sqlite3 any more.
 
-**The HTTP API exists in read-only form** (`calsync api`, `src/calsync/api/`):
-`GET /v1/events` and `GET /v1/events/{uid}`, behind a bearer token from the
-secret store. It rests on `event_content`, which records what each event was
+**The HTTP API** (`calsync api`, `src/calsync/api/`) serves `GET /v1/events`,
+`GET /v1/events/{uid}` and `POST /v1/tasks/{id}/result`, behind a bearer token
+from the secret store. The write endpoint stores an answer and **applies
+nothing** — approving happens in the console, by a person. It rests on `event_content`, which records what each event was
 alongside `event_state`'s record of where it went (`docs/API.md`, "What calsync
 remembers"). The write half — documents, proposals, approvals, task tokens,
 `PATCH` and its amendment overlay — is deliberately unbuilt, because none of its
@@ -68,7 +69,7 @@ so a fresh clone needs:
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/pytest                                    # 450 tests, ~2.6s
+.venv/bin/pytest                                    # 467 tests, ~2.7s
 .venv/bin/pytest tests/test_player360.py -k content_hash    # single test
 ```
 
@@ -291,6 +292,20 @@ Decisions that span several files and are easy to undo by accident:
   answers all of them. Everything else stays per-item — whether "Skills Session"
   is a game says nothing about "Playoff Game2". A human clicking the suggested
   button and an agent taking the first candidate must be choosing from one list.
+- **The review gate is structural, not conventional.** `POST
+  /v1/tasks/{id}/result` stores an answer as `answered` and there is no
+  parameter on it that approves — applying happens in `enrichment.apply`,
+  reached only from the console's `/review/<id>/approve`. An agent can put
+  something in front of you and has no path to the function that writes it. It
+  refuses three things on purpose: an unknown task id (rows are written when a
+  question is *dispatched*, so nothing can invent work for a human), a malformed
+  answer (refused on the way in, not at approval time, where the error would
+  land on the one person who cannot fix it), and a re-answer of a decided task.
+- **An approved answer writes the same row a hand-typed one would.**
+  `enrichment.apply` calls exactly the `repo` helpers the console's own answer
+  forms call, so the agent path and the manual path cannot drift. An approved
+  venue answer still leaves `pin_confirmed = 0`: approving an alias is not
+  vouching for coordinates.
 - **Staging beats enrichment.** A source still being onboarded is already held
   somewhere; splitting its events across two holding calendars would make the
   promotion gate harder to read, not safer. `SyncReport.awaiting_review` matches

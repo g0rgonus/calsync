@@ -385,18 +385,76 @@ def test_the_push_and_the_room_are_tracked_separately(conn, target):
     assert len(room.posted) == 1, "the room re-posted because it shared a flag"
 
 
-def test_the_payload_says_it_cannot_be_answered_yet(conn, target):
-    """Honest rather than aspirational: the answer endpoint is not built.
+def test_the_payload_says_where_to_answer_and_that_it_will_not_be_applied(
+    conn, target
+):
+    """An agent must not read "accepted" as "done".
 
-    Explicitly null instead of absent, so an agent can tell "not answerable" from
-    "this message forgot to say how", and so the shape does not change when the
-    endpoint lands.
+    The endpoint stores an answer and cannot apply one, so the message says so
+    rather than leaving it to be inferred from the absence of a promise.
     """
     _configure_matrix(conn)
     room = Room()
     _dispatch(conn, target, room)
 
-    assert _payload(room.posted[0])["respond_via"] is None
+    respond = _payload(room.posted[0])["respond_via"]
+    assert "/v1/tasks/" in respond["endpoint"]
+    assert respond["applied_on_receipt"] is False
+
+
+def test_dispatching_records_the_questions_it_asked(conn, target):
+    """What lets the endpoint refuse an answer to a question nobody asked."""
+    _configure_matrix(conn)
+    room = Room()
+    _dispatch(conn, target, room)
+
+    asked = repo.list_tasks(conn)
+    assert asked, "posted questions but recorded none of them"
+    assert {t.id for t in asked} == {
+        t["task_id"] for t in _payload(room.posted[0])["tasks"]
+    }
+    assert all(t.state == repo.OPEN for t in asked)
+
+
+def test_answering_by_hand_closes_the_task(conn, target):
+    """A question nobody will ask again must not sit in the queue.
+
+    The console's own answer form makes the diagnostic disappear, and the next
+    dispatch is what notices.
+    """
+    _configure_matrix(conn)
+    room = Room()
+    _dispatch(conn, target, room)
+    identity = [t for t in repo.list_tasks(conn) if t.type == "resolve_activity"]
+    assert identity
+
+    repo.add_activity_alias(conn, "a", "Hawks")
+    _dispatch(conn, target, room)
+
+    assert repo.get_task(conn, identity[0].id).state == repo.RESOLVED
+
+
+def test_redispatching_never_discards_an_answer_already_given(conn, target):
+    """Task ids are derived, so the same question recurs every poll.
+
+    Re-recording it must not wipe an answer that arrived in between, or a reply
+    would be lost to a poll that happened to land a second later.
+    """
+    _configure_matrix(conn)
+    room = Room()
+    _dispatch(conn, target, room)
+    task = next(t for t in repo.list_tasks(conn) if t.type == "resolve_activity")
+
+    repo.record_answer(conn, task_id=task.id, answer={"alias": "Hawks"},
+                       rationale=None, answered_by="hermes",
+                       answered_at="2026-03-01T12:00:00+00:00")
+    conn.execute("UPDATE sources SET review_dispatched = NULL WHERE id = 's'")
+    conn.commit()
+    _dispatch(conn, target, room)
+
+    kept = repo.get_task(conn, task.id)
+    assert kept.state == repo.ANSWERED
+    assert kept.answer == {"alias": "Hawks"}
 
 
 def test_a_refused_post_is_not_recorded_so_it_is_retried(conn, target):
