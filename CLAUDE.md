@@ -69,7 +69,7 @@ so a fresh clone needs:
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/pytest                                    # 475 tests, ~2.9s
+.venv/bin/pytest                                    # 486 tests, ~3.0s
 .venv/bin/pytest tests/test_player360.py -k content_hash    # single test
 ```
 
@@ -89,7 +89,17 @@ calsync --db drive.db sync --out ./out
 calsync --db drive.db status                   # per-source health + recent polls
 calsync --db drive.db web                      # the console, on localhost:8730
 calsync --db drive.db api                      # the read API, on localhost:8731
+calsync --db drive.db check                    # can the configured calendar be reached?
+calsync --db drive.db set radicale_url http://radicale:5232
 ```
+
+**`check` before anything else on a new deployment.** `radicale_url` defaults to
+`http://localhost:5232`, which is right when calsync runs on the box and wrong
+inside every container, where localhost is the container itself. A stack left
+that way comes up healthy, writes nothing, reports it once per event, and then
+backs off to three-hourly — which is exactly how it went unnoticed for days.
+`scripts/dev-stack.sh` now sets it and runs `check`, and the console has the
+same button on `/settings`.
 
 The console is the same code paths as the CLI with a browser in front. It runs a
 live dry-run to render the gate, exactly as `calsync promote` does, rather than
@@ -292,6 +302,14 @@ Decisions that span several files and are easy to undo by accident:
   answers all of them. Everything else stays per-item — whether "Skills Session"
   is a game says nothing about "Playoff Game2". A human clicking the suggested
   button and an agent taking the first candidate must be choosing from one list.
+- **`targeting.build_target` builds a URL for the *principal*, not the server
+  root.** `CaldavTarget` composes `{base}/{collection}/`, and CalDAV collections
+  live under a user — Radicale answers 403 at the root. `radicale_url` is the
+  server, so the user is appended here. This was wrong for as long as the
+  function existed and no test caught it, because every test built its target by
+  hand with the user already on it. `tests/test_acceptance.py` now goes *through*
+  this function; that is the coverage that was missing, and it found this the
+  first time it ran.
 - **`GET /v1` is the contract, and it is generated rather than written.**
   `api/contract.py` is the single source, and a test holds it against the app's
   own route table in *both* directions — an undocumented route fails, and a

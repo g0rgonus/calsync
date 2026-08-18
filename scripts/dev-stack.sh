@@ -56,6 +56,19 @@ htpasswd -bB  config/radicale/users "$READER_USER"  "$password" 2>/dev/null
 echo "  wrote config/radicale/{config,rights,users}"
 
 docker compose --profile demo up -d radicale web feeds
+
+# The one value the defaults cannot know. `radicale_url` ships as
+# http://localhost:5232, which is right when calsync runs on this machine and
+# wrong inside every container, where localhost is the container itself. Left
+# unset, the stack comes up looking healthy and never writes a single event —
+# the poller reports it per event, then backs off to hours, which is how it went
+# unnoticed for days.
+docker compose run --rm --no-deps calsync set radicale_url http://radicale:5232 \
+  >/dev/null
+docker compose run --rm --no-deps calsync check || {
+  echo "  the stack is up but calsync cannot reach it — see above" >&2
+  exit 1
+}
 echo
 echo "  radicale  http://localhost:5232"
 echo "  console   http://localhost:8730"

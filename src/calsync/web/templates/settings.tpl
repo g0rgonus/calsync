@@ -1,5 +1,6 @@
 % rebase('layout.tpl', title='Settings', flash=flash, narrow=True)
 % setdefault('check', None)
+% setdefault('calendar_check', None)
 % setdefault('pushed', None)
 
 <p class="eyebrow">Instance configuration</p>
@@ -100,6 +101,28 @@
 
     <button class="btn" type="submit">Save calendar settings</button>
   </form>
+
+  <form method="post" action="/settings/calendar/verify" style="margin-top:1rem">
+    <button class="btn btn-answer" type="submit">Check these against the server</button>
+    <span class="note" style="margin-left:0.6rem">
+      Worth doing after any change here. A wrong address does not fail loudly —
+      the poller reports it per event, then backs off to hours.
+    </span>
+  </form>
+
+% if calendar_check:
+  <table class="derived" style="margin-top:1.2rem">
+%   for finding in calendar_check.findings:
+    <tr>
+      <th>{{ finding.label }}</th>
+      <td style="width:5rem;color:{{ 'var(--go)' if finding.ok else 'var(--stop)' }}">
+        {{ 'ok' if finding.ok else 'no' }}
+      </td>
+      <td>{{ finding.detail }}</td>
+    </tr>
+%   end
+  </table>
+% end
 </div>
 
 <h2>How titles read</h2>

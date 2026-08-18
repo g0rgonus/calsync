@@ -408,3 +408,100 @@ def test_the_api_serves_what_the_calendar_actually_holds(configured, tmp_path, p
     assert health["id"] == "tr-comets"
     assert health["last_success_at"] is not None
     assert health["last_error"] is None
+
+
+# --- the configured path, not a hand-built one ------------------------------
+#
+# Everything above constructs its target from `BASE` and a password, which is
+# how a deployment sat for days writing nothing while these were green:
+# `settings.radicale_url` was wrong, and no test ever read it. These go through
+# `targeting.build_target` — the function the poller actually calls — so the
+# settings→target→server path is exercised rather than assumed.
+
+
+@pytest.fixture
+def configured_by_settings(tmp_path, password):
+    """A database whose *settings* describe the live server."""
+    from calsync.settings import set_setting
+
+    conn = db.open_db(tmp_path / "configured.db")
+    set_setting(conn, "radicale_url", BASE)
+    set_setting(conn, "radicale_user", USER)
+    set_setting(conn, "radicale_secret_ref", "radicale_password")
+    set_setting(conn, "target_kind", "caldav")
+    conn.commit()
+    return conn
+
+
+def _store():
+    from calsync.secrets import SecretStore
+
+    return SecretStore(path=SECRETS, environ={})
+
+
+def test_the_configured_target_can_reach_the_server(configured_by_settings):
+    """`targeting.verify` against a real Radicale, not a stub.
+
+    The unit tests for it drive a fake transport, which proves the branching and
+    not that the probe it sends is one this server answers.
+    """
+    from calsync import targeting
+
+    check = targeting.verify(configured_by_settings, _store())
+
+    assert check.ok, [f"{f.label}: {f.detail}" for f in check.findings]
+
+
+def test_a_wrong_url_in_settings_is_caught_by_the_check(configured_by_settings):
+    """The original failure, reproduced against the real thing.
+
+    Radicale is up and healthy throughout; only the setting is wrong. That is
+    exactly the shape of the bug — a stack that looks fine and writes nothing.
+    """
+    from calsync import targeting
+    from calsync.settings import set_setting
+
+    set_setting(configured_by_settings, "radicale_url", "http://localhost:59999")
+
+    check = targeting.verify(configured_by_settings, _store())
+
+    assert not check.ok
+    assert "localhost" in check.findings[0].detail
+
+
+def test_a_sync_through_the_configured_target_writes_to_the_real_server(
+    configured_by_settings, password
+):
+    """The whole path the poller takes, end to end.
+
+    Nothing here names a URL: the target is built from settings, exactly as
+    `cmd_sync` and the poll loop build it. If the configured address is wrong
+    this fails, which is the coverage that was missing.
+    """
+    from calsync import targeting
+
+    conn = configured_by_settings
+    conn.executescript(
+        f"""
+        INSERT INTO children (id, name, initial, birth_order)
+             VALUES ('millie', 'Millie', 'M', 1);
+        INSERT INTO activities (id, child_id, name, sport_id, tz)
+             VALUES ('a', 'millie', 'Comets', 'soccer', 'America/New_York');
+        INSERT INTO sources (id, activity_id, kind, shape, staging_collection)
+             VALUES ('cfg', 'a', 'teamreach', 'feed', '{RUN}-configured');
+        """
+    )
+    conn.commit()
+
+    target = targeting.build_target(conn, secrets=_store())
+    report = sync_source(conn, repo.get_source(conn, "cfg"), target,
+                         now=NOW, raw=FIXTURE.read_bytes())
+
+    assert report.status == "ok", report.line()
+    assert report.created > 0
+
+    state = next(iter(repo.event_states(conn, "cfg").values()))
+    fetched = call("GET", f"{BASE}/{USER}/{RUN}-configured/{state.remote_id}.ics",
+                   password=password)
+    assert fetched.status == 200
+    call("DELETE", f"{BASE}/{USER}/{RUN}-configured/", password=password)

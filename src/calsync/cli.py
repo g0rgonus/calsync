@@ -23,7 +23,7 @@ from pathlib import Path
 from . import config as config_mod
 from . import db, repo
 from .secrets import SecretError, SecretStore
-from .settings import Settings
+from .settings import Settings, set_setting
 from . import digest, enrichment, matrix, polling, retire, seasonend, targeting
 from .sync import sync_source
 from .targets import build
@@ -412,6 +412,41 @@ def cmd_web(args) -> int:
     return 0
 
 
+def cmd_set(args) -> int:
+    """Set one setting, for scripting what the console does by hand.
+
+    Exists because a stack brought up from a clean clone needs at least one
+    value the defaults cannot know — `radicale_url` is `localhost` by default,
+    which is right on a laptop and wrong inside every container. Wiring that
+    into `scripts/dev-stack.sh` needed a way to say it in one line.
+
+    Unknown keys are refused. `Settings.load` reads a fixed set, so a typo would
+    otherwise write a row nothing ever reads and look like it worked.
+    """
+    conn = db.open_db(args.db)
+    if args.key not in db.DEFAULT_SETTINGS:
+        print(f"error: no setting called {args.key!r}", file=sys.stderr)
+        print("known: " + ", ".join(sorted(db.DEFAULT_SETTINGS)), file=sys.stderr)
+        return 2
+    set_setting(conn, args.key, args.value)
+    print(f"{args.key} = {args.value}")
+    return 0
+
+
+def cmd_check(args) -> int:
+    """Ask the configured calendar server whether it is really there.
+
+    The same check the console offers, for a terminal and for a first run — the
+    point at which a wrong address is cheap, rather than after a season of polls
+    that reported it three lines from the bottom of a log.
+    """
+    conn = db.open_db(args.db)
+    check = targeting.verify(conn, _secrets(args))
+    for finding in check.findings:
+        print(f"  {'ok ' if finding.ok else 'NO '} {finding.label}: {finding.detail}")
+    return 0 if check.ok else 1
+
+
 def cmd_api(args) -> int:
     """Serve the read API (docs/API.md).
 
@@ -548,6 +583,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_api.add_argument("--port", type=int, default=8731)
     p_api.add_argument("--secrets", help="path to a secrets JSON file")
     p_api.set_defaults(fn=cmd_api)
+
+    p_set = sub.add_parser("set", help="set one setting")
+    p_set.add_argument("key")
+    p_set.add_argument("value")
+    p_set.set_defaults(fn=cmd_set)
+
+    p_check = sub.add_parser("check", help="can the configured calendar be reached?")
+    p_check.add_argument("--secrets", help="path to a secrets JSON file")
+    p_check.set_defaults(fn=cmd_check)
 
     sub.add_parser("status", help="show per-source health").set_defaults(fn=cmd_status)
     return parser

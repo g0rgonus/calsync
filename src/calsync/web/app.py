@@ -79,6 +79,7 @@ def create_app(
     matrix_opener=None,
     push_opener=None,
     retire_target=None,
+    calendar_transport=None,
 ) -> Bottle:
     """Build the console.
 
@@ -557,7 +558,7 @@ def create_app(
             )
         return str(value if key == "max_disappearance_pct" else int(value))
 
-    def _settings_page(conn, check=None, pushed=None):
+    def _settings_page(conn, check=None, pushed=None, calendar_check=None):
         settings = Settings.load(conn)
         return render(
             "settings.tpl",
@@ -574,6 +575,7 @@ def create_app(
             radicale_has_password=secrets.has(settings.radicale_secret_ref),
             kinds=targeting.KINDS,
             check=check,
+            calendar_check=calendar_check,
             flash=_flash(),
         )
 
@@ -805,6 +807,24 @@ def create_app(
             if token:
                 secrets.put(ref, token)
         redirect("/settings?ok=" + _q("Matrix settings saved. Check them below."))
+
+    @app.post("/settings/calendar/verify")
+    def verify_calendar_settings():
+        """Ask the calendar server whether this configuration is real.
+
+        The check nothing did until a deployment spent days writing nothing,
+        because `radicale_url` pointed at localhost and the poller runs in a
+        container where localhost is itself. The failure was in the logs, once
+        per source per poll, behind a wall of per-event errors — and then the
+        backoff made it three-hourly. A button is what turns that into a
+        question somebody can ask.
+        """
+        with connect() as conn:
+            return _settings_page(
+                conn, calendar_check=targeting.verify(
+                    conn, secrets, transport=calendar_transport
+                )
+            )
 
     @app.post("/settings/matrix/verify")
     def verify_matrix_settings():

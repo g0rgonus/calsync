@@ -18,6 +18,8 @@ half a season applied.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from .secrets import SecretError, SecretStore
 from .settings import Settings
 from .targets import TargetError, build
@@ -87,7 +89,16 @@ def build_target(
     password = secrets.get(settings.radicale_secret_ref)
     return build(
         "caldav",
-        base_url=settings.radicale_url,
+        # The *principal*, not the server root. `CaldavTarget` composes
+        # `{base}/{collection}/`, and CalDAV collections live under a user —
+        # Radicale answers 403 for anything created at the root. `radicale_url`
+        # is the server (that is what the console calls it, and what the default
+        # `http://localhost:5232` is), so the user belongs here.
+        #
+        # This was wrong for as long as it existed and no test caught it,
+        # because every test built its target by hand with the user already
+        # appended. `tests/test_acceptance.py` now goes through this function.
+        base_url=f"{settings.radicale_url.rstrip('/')}/{settings.radicale_user}",
         transport=HttpTransport(username=settings.radicale_user, password=password),
         username=settings.radicale_user,
         password=password,
@@ -104,5 +115,124 @@ def describe(conn, *, out_dir: str | None = None) -> str:
     return settings.target_kind
 
 
-__all__ = ["KINDS", "WITHDRAWN", "build_target", "describe", "TargetError",
-           "SecretError"]
+__all__ = ["KINDS", "WITHDRAWN", "build_target", "describe", "verify", "Check",
+           "Finding", "TargetError", "SecretError"]
+
+
+# --- is the configured calendar actually reachable? -------------------------
+
+
+@dataclass(frozen=True)
+class Finding:
+    """One thing that was checked, and what came back."""
+
+    label: str
+    ok: bool
+    detail: str
+
+
+@dataclass(frozen=True)
+class Check:
+    findings: tuple[Finding, ...] = ()
+
+    @property
+    def ok(self) -> bool:
+        return bool(self.findings) and all(f.ok for f in self.findings)
+
+
+def verify(conn, secrets: SecretStore | None = None, *, transport=None) -> Check:
+    """Ask the configured calendar server whether this configuration is real.
+
+    Written after a deployment sat for days writing nothing, because
+    `radicale_url` was `http://localhost:5232` — correct on a laptop and wrong
+    inside every container, where localhost is the container itself. The poller
+    reported it, once per source per poll, buried in a wall of per-event errors,
+    and then backed off to three-hourly. Nothing else asked the question, so
+    nobody answered it.
+
+    The failures are separated for the same reason `matrix.verify` separates
+    its four: "it didn't work" leaves every cause on the table. Unreachable,
+    no credential, rejected credential and no principal are four different
+    afternoons.
+
+    Never returns the password and never puts it in a finding — these are
+    rendered on a page.
+    """
+    settings = Settings.load(conn)
+    secrets = secrets or SecretStore()
+
+    if settings.target_kind in WITHDRAWN:
+        return Check((Finding("Target", False, WITHDRAWN[settings.target_kind]),))
+    if settings.target_kind == "ics_file":
+        return Check((
+            Finding("Target", True,
+                    "Writing .ics files, so there is no server to check."),
+        ))
+    if settings.target_kind != "caldav":
+        return Check((
+            Finding("Target", False, f"unknown target kind {settings.target_kind!r}"),
+        ))
+
+    try:
+        password = secrets.get(settings.radicale_secret_ref)
+    except SecretError as exc:
+        return Check((Finding("Password", False, str(exc)),))
+
+    base = settings.radicale_url.rstrip("/")
+    transport = transport or HttpTransport(
+        username=settings.radicale_user, password=password
+    )
+    findings: list[Finding] = []
+
+    try:
+        transport("GET", base + "/")
+    except TargetError as exc:
+        # The one that bit. Named as a hostname problem rather than a generic
+        # failure, because from a container the answer is almost always the
+        # compose service name.
+        hint = ""
+        if "localhost" in base or "127.0.0.1" in base:
+            hint = (
+                " If calsync is running in a container, localhost is that "
+                "container — the calendar server is probably at "
+                "http://radicale:5232."
+            )
+        return Check((
+            Finding("Server", False, f"{base} did not answer: {exc}.{hint}"),
+        ))
+    findings.append(Finding("Server", True, f"{base} answered."))
+
+    # The principal, not the root: Radicale answers / for anyone, and a wrong
+    # username fails here rather than above.
+    try:
+        response = transport("PROPFIND", f"{base}/{settings.radicale_user}/",
+                             headers={"Depth": "0"})
+    except TargetError as exc:
+        return Check(tuple(findings) + (
+            Finding("Account", False,
+                    f"could not reach {settings.radicale_user!r}: {exc}"),
+        ))
+
+    if response.status in (401, 403):
+        findings.append(Finding(
+            "Account", False,
+            f"{settings.radicale_user!r} was rejected — check the password "
+            f"stored as {settings.radicale_secret_ref!r}.",
+        ))
+    elif response.status == 404:
+        findings.append(Finding(
+            "Account", False,
+            f"the server has no principal for {settings.radicale_user!r}.",
+        ))
+    elif 200 <= response.status < 400:
+        findings.append(Finding(
+            "Account", True,
+            f"{settings.radicale_user!r} authenticated and has a collection root.",
+        ))
+    else:
+        findings.append(Finding(
+            "Account", False,
+            f"the server answered {response.status} for "
+            f"{settings.radicale_user!r}.",
+        ))
+    return Check(tuple(findings))

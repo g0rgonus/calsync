@@ -1950,3 +1950,52 @@ def test_an_answer_that_cannot_be_applied_says_so_and_changes_nothing(
     conn = db.connect(tmp_path / "calsync.db")
     assert "could not apply" in body
     assert repo.get_task(conn, task_id).state == repo.ANSWERED, "decided anyway"
+
+
+def test_the_calendar_check_is_offered_and_stops_before_the_network(client):
+    """No credential is not a server problem, and must not be reported as one.
+
+    Four things go wrong with this configuration and the check separates them,
+    for the same reason the Matrix one does — "it didn't work" leaves all four
+    on the table.
+    """
+    assert "Check these against the server" in client.get("/settings")["body"]
+
+    result = client.post("/settings/calendar/verify")["body"]
+
+    assert "Password" in result
+    assert "Server" not in result, "blamed the server for a missing credential"
+
+
+def test_the_calendar_check_names_the_likely_cause_of_a_refused_connection(
+    tmp_path, secrets_path, feed
+):
+    """The button that would have caught a stack writing nothing for days.
+
+    `radicale_url` defaults to localhost, the poller runs in a container where
+    localhost is itself, and the failure appeared only as one line per event in
+    a log that then backed off to three-hourly. Nothing ever asked the question.
+
+    The transport is injected rather than left to the machine: run this on a box
+    where a Radicale happens to be listening on 5232 and the connection
+    succeeds, so the test would pass or fail on what else is running.
+    """
+    from calsync.targets import TargetError
+
+    def refusing(*_a, **_k):
+        raise TargetError("[Errno 111] Connection refused")
+
+    db.open_db(tmp_path / "calsync.db").close()
+    app = web_app.create_app(
+        tmp_path / "calsync.db",
+        secrets=SecretStore(path=secrets_path, environ={}),
+        fetcher=feed, clock=lambda: NOW, calendar_transport=refusing,
+    )
+    client = Client(app)
+    client.post("/settings/calendar", {"radicale_password": "hunter2"})
+
+    result = client.post("/settings/calendar/verify")["body"]
+
+    assert "did not answer" in result
+    assert "radicale:5232" in result, "did not suggest the compose service name"
+    assert "hunter2" not in result, "the password reached a page"
