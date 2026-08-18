@@ -290,6 +290,41 @@
 % end
 </div>
 
+<h2>Read API</h2>
+<div class="card">
+  <div class="banner banner-info" style="margin-bottom:1.2rem">
+    <strong>Reads only.</strong>
+    <span class="raw">calsync api</span> serves
+    <span class="raw">GET /v1/events</span> so a program can get a child, an
+    activity and a venue as fields instead of unpicking them from a calendar
+    title. Nothing can write through it — proposals, approvals and amendments
+    are described in <span class="raw">docs/API.md</span> and are not built.
+  </div>
+
+  <p class="note" style="margin-top:0">
+    This serves your kids' names, times and locations to whatever holds the
+    token, so keep it behind the same VPN or proxy as this console rather than
+    treating one bearer token as enough on its own.
+    <span class="raw">calsync api</span> will not start until a token exists.
+  </p>
+
+  <form method="post" action="/settings/api">
+    <div class="row">
+      <label class="field" style="margin-bottom:0.8rem">
+        <span class="label">Bearer token</span>
+        <input type="password" name="api_token" autocomplete="new-password"
+               placeholder="{{ 'set — leave blank to keep it' if api_has_token else 'not set' }}">
+      </label>
+      <label class="field" style="margin-bottom:0.8rem">
+        <span class="label">Token secret name</span>
+        <input type="text" name="api_token_ref" class="mono"
+               value="{{ api_token_ref }}" autocomplete="off">
+      </label>
+    </div>
+    <button class="btn" type="submit">Save API settings</button>
+  </form>
+</div>
+
 <h2>Matrix</h2>
 <div class="card">
   <div class="banner banner-info" style="margin-bottom:1.2rem">

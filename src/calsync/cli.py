@@ -377,6 +377,21 @@ def cmd_web(args) -> int:
     return 0
 
 
+def cmd_api(args) -> int:
+    """Serve the read API (docs/API.md).
+
+    Separate from the console because the posture is different, not because the
+    port is: the console has no login and does not need one, being loopback-only
+    with one human operator, whereas this serves programs over a bearer token.
+    It refuses to start until that token exists, since a read API for a family's
+    schedule that comes up unusable is a thing nobody notices is broken.
+    """
+    from .api import create_app, serve
+
+    serve(create_app(args.db, secrets=_secrets(args)), host=args.host, port=args.port)
+    return 0
+
+
 def cmd_status(args) -> int:
     conn = db.open_db(args.db)
     sources = repo.list_sources(conn, enabled_only=False)
@@ -486,6 +501,13 @@ def build_parser() -> argparse.ArgumentParser:
              "to send Sec-Fetch-Site",
     )
     p_web.set_defaults(fn=cmd_web)
+
+    p_api = sub.add_parser("api", help="serve the read API for agents")
+    p_api.add_argument("--host", default="127.0.0.1",
+                       help="bind address (default: loopback; put a VPN in front)")
+    p_api.add_argument("--port", type=int, default=8731)
+    p_api.add_argument("--secrets", help="path to a secrets JSON file")
+    p_api.set_defaults(fn=cmd_api)
 
     sub.add_parser("status", help="show per-source health").set_defaults(fn=cmd_status)
     return parser

@@ -10,8 +10,9 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass
+from datetime import datetime
 
-from .models import Activity, Child, Venue
+from .models import Activity, Child, Event, Venue
 
 
 class NotFound(KeyError):
@@ -366,6 +367,154 @@ def prune_event_content(conn: sqlite3.Connection, *, before: str) -> int:
         (before,),
     )
     return cursor.rowcount
+
+
+@dataclass(frozen=True)
+class StoredEvent:
+    """An event reassembled from its receipt, plus where it went.
+
+    ``event`` is a real :class:`~calsync.models.Event`, which is the point: it
+    goes back through ``normalize/title.py`` and ``render.py`` unchanged, so a
+    reader gets the same title the calendar has rather than an approximation of
+    it — and gets it re-composed now, so a naming-convention change shows up
+    without anything being re-fetched.
+    """
+
+    event: Event
+    source_id: str
+    activity_id: str
+    child_id: str
+    collection: str
+    cancelled: bool
+    observed_at: str
+
+
+_STORED_SQL = f"""
+    SELECT s.uid, s.source_id, s.collection, s.cancelled, s.starts_at,
+           s.content_hash, c.observed_at,
+           {', '.join('c.' + col for col in CONTENT_COLUMNS)},
+           src.activity_id, a.child_id
+      FROM event_state s
+      JOIN event_content c ON c.uid = s.uid
+      JOIN sources src ON src.id = s.source_id
+      JOIN activities a ON a.id = src.activity_id
+"""
+
+
+def _stored_event(row: sqlite3.Row) -> StoredEvent:
+    venue = None
+    if row["venue_raw"]:
+        # No coordinates. Events carry LOCATION as name and address, and
+        # `venues` is the only table that holds a pin.
+        venue = Venue(
+            raw=row["venue_raw"],
+            name=row["venue_name"],
+            address=row["venue_address"],
+            field=row["venue_field"],
+        )
+    return StoredEvent(
+        event=Event(
+            uid=row["uid"],
+            activity_id=row["activity_id"],
+            starts_at=datetime.fromisoformat(row["starts_at"]),
+            ends_at=datetime.fromisoformat(row["ends_at"]),
+            is_game=bool(row["is_game"]),
+            tz=row["tz"],
+            venue=venue,
+            opponent=row["opponent"],
+            home=None if row["home"] is None else bool(row["home"]),
+            detail=row["detail"],
+            body=row["body"],
+            url=row["url"],
+            source_id=row["source_id"],
+            source_category=row["source_category"],
+            content_hash=row["content_hash"],
+            kit=row["kit"],
+            arrive_at=(
+                datetime.fromisoformat(row["arrive_at"]) if row["arrive_at"] else None
+            ),
+        ),
+        source_id=row["source_id"],
+        activity_id=row["activity_id"],
+        child_id=row["child_id"],
+        collection=row["collection"],
+        cancelled=bool(row["cancelled"]),
+        observed_at=row["observed_at"],
+    )
+
+
+def stored_events(
+    conn: sqlite3.Connection,
+    *,
+    start: str,
+    end: str,
+    child_id: str | None = None,
+    activity_id: str | None = None,
+) -> list[StoredEvent]:
+    """Everything written whose start falls in ``[start, end]``.
+
+    Always bounded. An open-ended read of a family's schedule is not something
+    this should make easy, and the retention prune means there is nothing to
+    find below the sync window anyway.
+
+    Cancelled events are included. They are tombstones rather than purges
+    (docs/API.md), and a caller that cannot see the cancellation is a caller
+    still holding the old time.
+    """
+    sql = _STORED_SQL + " WHERE s.starts_at >= ? AND s.starts_at <= ?"
+    params: list = [start, end]
+    if child_id:
+        sql += " AND a.child_id = ?"
+        params.append(child_id)
+    if activity_id:
+        sql += " AND src.activity_id = ?"
+        params.append(activity_id)
+    sql += " ORDER BY s.starts_at, s.uid"
+    return [_stored_event(row) for row in conn.execute(sql, params)]
+
+
+def stored_event(conn: sqlite3.Connection, uid: str) -> StoredEvent | None:
+    """One event by uid, unbounded by date — you already know which one you want."""
+    row = conn.execute(_STORED_SQL + " WHERE s.uid = ?", (uid,)).fetchone()
+    return _stored_event(row) if row else None
+
+
+def venue_ref(conn: sqlite3.Connection, *candidates: str | None) -> sqlite3.Row | None:
+    """The `venues` row behind a stored venue name, by any of its aliases.
+
+    Resolved at read time rather than stored, so a pin somebody confirms this
+    afternoon is visible against events written last month without re-writing
+    any of them.
+    """
+    for candidate in candidates:
+        if not candidate:
+            continue
+        row = conn.execute(
+            """
+            SELECT v.id, v.canonical_name, v.address, v.pin_confirmed
+              FROM venue_aliases a JOIN venues v ON v.id = a.venue_id
+             WHERE a.alias = ? COLLATE NOCASE
+            """,
+            (candidate,),
+        ).fetchone()
+        if row is not None:
+            return row
+    return None
+
+
+def source_health(conn: sqlite3.Connection) -> dict[str, sqlite3.Row]:
+    """Per-source freshness, keyed by id.
+
+    A read of stored content is only as good as the poll that produced it, so
+    anything serving that content has to be able to say when it last worked.
+    """
+    return {
+        row["id"]: row
+        for row in conn.execute(
+            "SELECT id, enabled, poll_interval_s, last_success_at, last_error,"
+            " last_error_at FROM sources"
+        )
+    }
 
 
 def record_poll_run(

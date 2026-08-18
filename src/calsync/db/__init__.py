@@ -103,6 +103,10 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "matrix_user_id": "",
     "matrix_room_id": "",
     "matrix_secret_ref": "matrix_access_token",
+    # The read API's bearer token. Named here, stored in the secret store like
+    # every other credential, so a settings row stays safe to read and export.
+    # `calsync api` refuses to start until the value exists.
+    "api_token_ref": "api_token",
     # Pushover, for the few things that need you rather than merely informing
     # you. Both credentials live in the secret store; these name them.
     "pushover_token_ref": "pushover_token",

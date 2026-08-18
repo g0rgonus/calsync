@@ -1489,6 +1489,38 @@ def test_pushover_credentials_go_to_the_secret_store(client, tmp_path, secrets_p
     assert "app-token" not in client.get("/settings")["body"]
 
 
+def test_the_api_token_goes_to_the_secret_store(client, tmp_path, secrets_path):
+    """A bearer token that reads a family's schedule is a credential like any
+    other, and the settings table has to stay safe to export."""
+    client.post("/settings/api", {"api_token": "hermes-bearer"})
+
+    assert json.loads(secrets_path.read_text())["api_token"] == "hermes-bearer"
+    assert b"hermes-bearer" not in (tmp_path / "calsync.db").read_bytes()
+    assert "hermes-bearer" not in client.get("/settings")["body"]
+
+
+def test_the_api_token_can_be_stored_under_a_chosen_name(client, secrets_path):
+    client.post(
+        "/settings/api", {"api_token_ref": "hermes_token", "api_token": "abc123"}
+    )
+
+    assert json.loads(secrets_path.read_text())["hermes_token"] == "abc123"
+    assert "hermes_token" in client.get("/settings")["body"]
+
+
+def test_the_api_section_does_not_imply_a_write_path(client):
+    """Proposals, approvals and amendments are specified and not built.
+
+    A settings page describing the product as more capable than it is misleads
+    exactly as much as one describing it as less — the same rule the Matrix
+    section is held to.
+    """
+    page = client.get("/settings")["body"]
+
+    assert "GET /v1/events" in page
+    assert "Nothing can write through it" in page
+
+
 def test_a_test_notification_reports_what_happened(tmp_path, secrets_path, feed):
     """These are used a few times a year, so a typo has to surface now."""
     sent = []

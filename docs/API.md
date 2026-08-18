@@ -219,14 +219,50 @@ that's your regression corpus for prompt changes.
 ## Events
 
 ```http
-GET    /v1/events?from=&to=&child=&activity=
-GET    /v1/events/{uid}              # includes provenance chain
+GET    /v1/events?from=&to=&child=&activity=      # built
+GET    /v1/events/{uid}                           # built
 PATCH  /v1/events/{uid}              # bumps SEQUENCE
 DELETE /v1/events/{uid}              # STATUS:CANCELLED tombstone, not a purge
 ```
 
-Cancellation writes a tombstone so the deletion propagates to subscribers.
-Purging would leave a stale event on every device that already synced it.
+The two reads are **the only part of this document that exists**. `calsync api`
+serves them on port 8731; everything else here — documents, proposals, review,
+tasks, amendments — is a design contract with no code behind it, because none
+of its consumers exist yet. Cancellation still writes a tombstone rather than
+purging, so a deletion propagates instead of leaving a stale event on every
+device that already synced it; that is what `cancelled: true` on a read means.
+
+```json
+{
+  "from": "2026-08-11T00:00:00+00:00",
+  "to": "2026-09-01T00:00:00+00:00",
+  "count": 1,
+  "events": [ { "…": "as in `events/query` below" } ],
+  "sources": [
+    { "id": "p360-james-rush", "enabled": true,
+      "last_success_at": "2026-08-18T02:08:25+00:00",
+      "last_error": null, "stale": false }
+  ]
+}
+```
+
+**Bounds.** `from` defaults to now, `to` to fourteen days out, and a span wider
+than the sync window is refused — nothing is written outside it, so a wider ask
+is a misunderstanding rather than a big query. Content is pruned below
+`sync_window_back_days`, and a request reaching under that floor is clamped and
+told so via `retained_from`, never answered with a silently shorter list.
+
+**`sources` is the staleness answer.** A stored copy lags its feed by at most
+one poll, exactly as the calendar always has — fine, as long as it is legible.
+A source whose last poll failed, or which has gone quiet for more than a couple
+of its own intervals, is named here rather than having its events served as
+though they were current. Same rule `digest.py` follows when it names feeds it
+could not read: quietly omitting one reads as "nothing on".
+
+**Auth is a bearer token and nothing else.** No cookies, so no CSRF surface and
+no `Sec-Fetch-Site` check — the console needs one precisely because it has no
+token, and this has the opposite arrangement. The token lives in the secret
+store under `api_token_ref`; `calsync api` refuses to start without it.
 
 ---
 

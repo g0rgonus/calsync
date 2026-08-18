@@ -35,6 +35,7 @@ class Settings:
     season_nudge_days: int
     season_shutoff_days: int
     default_tz: str
+    api_token_ref: str
 
     @classmethod
     def load(cls, conn: sqlite3.Connection) -> "Settings":
@@ -65,6 +66,7 @@ class Settings:
             season_nudge_days=int(raw["season_nudge_days"]),
             season_shutoff_days=int(raw["season_shutoff_days"]),
             default_tz=raw["default_tz"],
+            api_token_ref=raw["api_token_ref"],
         )
 
 

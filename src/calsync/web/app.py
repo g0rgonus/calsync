@@ -556,6 +556,8 @@ def create_app(
             matrix_has_token=secrets.has(matrix.load(conn).secret_ref),
             pushover=notify.load(conn),
             pushover_ready=notify.load(conn).available(secrets),
+            api_token_ref=Settings.load(conn).api_token_ref,
+            api_has_token=secrets.has(Settings.load(conn).api_token_ref),
             pushed=pushed,
             radicale_has_password=secrets.has(settings.radicale_secret_ref),
             kinds=targeting.KINDS,
@@ -622,6 +624,23 @@ def create_app(
                 if value:
                     secrets.put(ref, value)
         redirect("/settings?ok=" + _q("Notification settings saved."))
+
+    @app.post("/settings/api")
+    def save_api_settings():
+        """The read API's bearer token.
+
+        Stored in the secret store like every other credential, so the settings
+        table stays safe to read, export and paste into a bug report. `calsync
+        api` refuses to start until the value is there, which is why this form
+        says whether it is rather than making you find out by starting it.
+        """
+        with connect() as conn:
+            ref = _field("api_token_ref").strip() or "api_token"
+            set_setting(conn, "api_token_ref", ref)
+            token = _field("api_token")
+            if token:
+                secrets.put(ref, token)
+        redirect("/settings?ok=" + _q("API settings saved."))
 
     @app.post("/settings/notifications/test")
     def test_notification():

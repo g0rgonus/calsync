@@ -17,15 +17,17 @@ table, pins and merges; `/household` edits kids and the sport catalog;
 `/settings` covers the `settings` table, and a team's own fields are on its
 source page. Nothing in the day-to-day path needs sqlite3 any more.
 
-**There is still no HTTP API.** Its prerequisite is met: `event_content` now
-records what each event was, alongside `event_state`'s record of where it went
-(`docs/API.md`, "What calsync remembers"). The write half — proposals,
-approvals, task tokens, `PATCH` and its amendment overlay — is deliberately
-unbuilt, because none of its consumers exist.
+**The HTTP API exists in read-only form** (`calsync api`, `src/calsync/api/`):
+`GET /v1/events` and `GET /v1/events/{uid}`, behind a bearer token from the
+secret store. It rests on `event_content`, which records what each event was
+alongside `event_state`'s record of where it went (`docs/API.md`, "What calsync
+remembers"). The write half — documents, proposals, approvals, task tokens,
+`PATCH` and its amendment overlay — is deliberately unbuilt, because none of its
+consumers exist and a review gate with nothing to review cannot be shown to work.
 
- `docs/API.md`, `docs/MATRIX.md` and
-`docs/MATCHING.md` specify components that do not exist — read them as the design
-contract, not as a description of the code.
+`docs/MATRIX.md`, `docs/MATCHING.md` and everything in `docs/API.md` past the
+two read endpoints specify components that do not exist — read those as the
+design contract, not as a description of the code.
 
 **Configuration does not go through the API.** The console edits children,
 activities, sources, venues and settings directly in SQLite via `repo.py` and
@@ -52,7 +54,7 @@ so a fresh clone needs:
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/pytest                                    # 377 tests, ~1.8s
+.venv/bin/pytest                                    # 406 tests, ~1.9s
 .venv/bin/pytest tests/test_player360.py -k content_hash    # single test
 ```
 
@@ -71,6 +73,7 @@ calsync --db drive.db sync --out ./out --dry-run
 calsync --db drive.db sync --out ./out
 calsync --db drive.db status                   # per-source health + recent polls
 calsync --db drive.db web                      # the console, on localhost:8730
+calsync --db drive.db api                      # the read API, on localhost:8731
 ```
 
 The console is the same code paths as the CLI with a browser in front. It runs a
@@ -111,11 +114,13 @@ sources/<feed>.py  →  Event      →  diff.py   →  render.py       →  targ
 (parse + hash)        (models.py)   (guards)     (RenderedEvent)    (serialize + write)
                                                                           ↓
                                     sync.py orchestrates ─────────→  repo.record_*
-                                                                    (event_state)
+                                                        (event_state + event_content)
+                                                                          ↓
+inspection.py  →  onboarding.py  →  config.apply                     api/ reads it
+(bytes to        (draft to rows,     (rows)                          back out as
+ derivations)     credential out)                                    fields
 
-inspection.py  →  onboarding.py  →  config.apply       web/ is a browser over
-(bytes to        (draft to rows,     (rows)            those three, plus
- derivations)     credential out)                      sync_source(dry_run=True)
+web/ is a browser over the onboarding row, plus sync_source(dry_run=True).
 ```
 
 The onboarding half runs *before* a source exists, which is why it is separate:
@@ -294,6 +299,11 @@ the CalDAV server requirements and acceptance checks.
   front of a page unreachable without one is a thing to maintain, not a control.
   Writes *are* checked, via `Sec-Fetch-Site`; never reintroduce an `Origin`-vs-
   `Host` comparison, which any Host-rewriting proxy turns into a total outage.
+- **The API is a separate app for a different reason, not a different port.**
+  It serves programs over a bearer token, so it has no `Sec-Fetch-Site` check
+  (no cookies, nothing to ride) and it refuses to start without a credential.
+  The console's "no login is the right call" reasoning does not transfer; don't
+  merge the two apps or give either the other's posture.
 - Normalization is deterministic — no model in the parse path, so the same feed
   always renders the same title and any change traces to a config change.
 - Commit messages are imperative and explain the *why*, with no conventional-commit
