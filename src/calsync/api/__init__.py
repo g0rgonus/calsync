@@ -2,7 +2,7 @@
 
 Two endpoints, `GET /v1/events` and `GET /v1/events/{uid}`. They exist because
 of the argument in docs/API.md §"Hermes reads through the API, not CalDAV": an
-agent handed a read-only Radicale account would have to pull `Nora 🏊 Distance
+agent handed a read-only Radicale account would have to pull `Nadia 🏊 Distance
 Set` back apart into a child and an activity, reverse-engineering a string we
 generated ourselves, and would re-break every time the naming convention
 changed. So structured identity comes out as fields, and the rendered title

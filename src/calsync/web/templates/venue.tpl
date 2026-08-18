@@ -38,8 +38,8 @@
   <p class="note">
     Every string here resolves to this place, with no lookup and no guessing.
     This is what makes a venue a one-time cost: coaches type
-    <span class="raw">Riverview</span>, <span class="raw">Riverview Farm Park</span>
-    and <span class="raw">Riverview#2</span> for the same field, and each one only
+    <span class="raw">Kingsmere</span>, <span class="raw">Kingsmere Meadow Park</span>
+    and <span class="raw">Kingsmere#2</span> for the same field, and each one only
     has to be learned once.
   </p>
 

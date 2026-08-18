@@ -114,7 +114,7 @@ class FeedInspection:
         """The proposed name for *our* team, or None if the feed can't say.
 
         Decisive means: seen at least twice, and at least twice as often as the
-        runner-up. A feed of "Game vs Jaguars" fixtures yields opponents at one
+        runner-up. A feed of "Game vs Cougars" fixtures yields opponents at one
         appearance each and correctly proposes nothing — proposing the first
         opponent as our own team would be worse than proposing nothing, because
         it looks like an answer.
@@ -131,7 +131,7 @@ class FeedInspection:
     def team_name(self) -> str | None:
         """What to prefill the team name with.
 
-        The calendar name is the better label — "Hawks Spring 2026" is what the
+        The calendar name is the better label — "Otters Spring 2026" is what the
         coach called it — and the frequency token is the better *alias*, since
         that is the string that actually appears in fixtures.
         """
@@ -200,7 +200,7 @@ def _start(component) -> datetime | None:
 def fixture_sides(summary: str) -> tuple[str, str] | None:
     """The two team names in a fixture summary, or None if it isn't one.
 
-    A summary whose left side is nothing but a type word ("Game vs Jaguars")
+    A summary whose left side is nothing but a type word ("Game vs Cougars")
     returns None: it names an opponent but says nothing about who we are, so it
     is not evidence either way.
     """
@@ -210,7 +210,7 @@ def fixture_sides(summary: str) -> tuple[str, str] | None:
         return None
 
     left, right = parts[0].strip(), parts[1].strip()
-    # A venue can be tacked on after the opponent — "Hawks vs Rockets - Passage".
+    # A venue can be tacked on after the opponent — "Otters vs Meteors - Windmere".
     if "-" in right:
         right = right.partition("-")[0].strip()
 
@@ -263,7 +263,7 @@ def _venues(components) -> tuple[VenueCandidate, ...]:
         cleaned = teamreach.clean_venue(raw)
         if not cleaned:
             continue
-        # Peel a street address off first ("Wolf Trap Park 1009 Wolf Trap Rd"),
+        # Peel a street address off first ("Thistledown Park 1009 Thistledown Rd"),
         # then the field designator off the name that remains.
         parsed = venue_norm.parse(cleaned)
         if parsed is None:

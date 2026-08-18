@@ -830,7 +830,7 @@ def merge_venues(conn: sqlite3.Connection, *, losing_id: int, winning_id: int) -
     """Fold one venue into another. Returns how many aliases moved across.
 
     Near-duplicates are the normal way this table goes wrong: three coaches type
-    "Riverview", "Riverview Farm Park" and "Riverview Farm Park Soccer Fields"
+    "Kingsmere", "Kingsmere Meadow Park" and "Kingsmere Meadow Park Soccer Fields"
     for one park, and each becomes its own row with its own pin. Merging keeps
     every alias — they are all real strings seen in real feeds — and adds the
     losing name as one more, so events that used it still resolve.
@@ -969,7 +969,7 @@ def update_activity(
 
     Four of these are not cosmetic: ``official_name``, ``short_name``, ``league``
     and ``age_group`` all feed :meth:`Activity.known_tokens`, which is what
-    decides whether "U10DA TASL Match vs Beach FC" yields an opponent or nothing
+    decides whether "U10PL PSL Match vs Harbour FC" yields an opponent or nothing
     at all. Editing them re-parses the feed on the next poll.
 
     ``home_venue_id`` is the only thing that can mark a game as away, since some

@@ -304,7 +304,7 @@ so the blast radius is small. Say it out loud so it's a decision, not a
 surprise.
 
 **C5. Backpressure and rate limits.** iCloud CalDAV throttles. Batch, back off,
-and never let a full re-sync fire hundreds of requests in a burst.
+and never let a full re-sync blaze hundreds of requests in a burst.
 
 ### D. Operations
 
@@ -419,8 +419,8 @@ these tables have to exist regardless because none of it is a calendar event:
 children          (id, name, nicknames, birth_order, color)
 activities        (id, child_id, name, official_name, sport, emoji,
                    short_name, season_start, season_end, tz, alarm_policy)
-activity_aliases  (activity_id, alias, source)   -- "U10DA" in a coach email
-                                                 -- must resolve to "Rush"
+activity_aliases  (activity_id, alias, source)   -- "U10PL" in a coach email
+                                                 -- must resolve to "Vanguard"
 sources           (id, activity_id, kind, shape, tier, config_json, secret_ref,
                    trust_rank, last_success_at, health)
                    -- shape: feed | document | relay
@@ -588,8 +588,8 @@ collection_template   "{type}"          games / practices     (this setup)
                       "{child}-{type}"  both
                       "family"          everything in one
 
-title_template        "{kids} {emoji} {detail}"        -> James ⚽️ vs Beach FC
-                      "{emoji} {kids}: {detail}"       -> ⚽️ James: vs Beach FC
+title_template        "{kids} {emoji} {detail}"        -> Jesse ⚽️ vs Harbour FC
+                      "{emoji} {kids}: {detail}"       -> ⚽️ Jesse: vs Harbour FC
 ```
 
 Fields available to the title template: `{kids} {emoji} {detail} {sport}

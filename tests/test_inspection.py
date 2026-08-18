@@ -21,9 +21,9 @@ from calsync.inspection import InspectionError, detect_kind, inspect_feed
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
-HURRICANES = FIXTURES / "teamreach_sample.ics"
-HAWKS = FIXTURES / "teamreach_hawks_sample.ics"
-COMETS = FIXTURES / "teamreach_comets_sample.ics"
+TEMPEST = FIXTURES / "teamreach_sample.ics"
+OTTERS = FIXTURES / "teamreach_otters_sample.ics"
+WRENS = FIXTURES / "teamreach_wrens_sample.ics"
 PLAYER360 = FIXTURES / "player360_sample.ics"
 
 
@@ -32,109 +32,109 @@ def read(path: Path):
 
 
 @pytest.fixture(scope="module")
-def hawks():
-    return read(HAWKS)
+def otters():
+    return read(OTTERS)
 
 
 @pytest.fixture(scope="module")
-def comets():
-    return read(COMETS)
+def wrens():
+    return read(WRENS)
 
 
 @pytest.fixture(scope="module")
-def hurricanes():
-    return read(HURRICANES)
+def tempest():
+    return read(TEMPEST)
 
 
 @pytest.fixture(scope="module")
-def rush():
+def vanguard():
     return read(PLAYER360)
 
 
 # --- the §2 table -----------------------------------------------------------
 
 
-def test_team_name_comes_from_the_calendar_name(hawks, comets, hurricanes):
-    assert hawks.calendar_name == "Hawks Spring 2026"
-    assert comets.calendar_name == "Comets"
-    assert hurricanes.calendar_name == "Inter HURRICANES"
+def test_team_name_comes_from_the_calendar_name(otters, wrens, tempest):
+    assert otters.calendar_name == "Otters Spring 2026"
+    assert wrens.calendar_name == "Wrens"
+    assert tempest.calendar_name == "Inter TEMPEST"
 
 
-def test_player360_publishes_a_generic_calendar_name(rush):
+def test_player360_publishes_a_generic_calendar_name(vanguard):
     """Marked "generic" in the table — the operator has to name that one."""
-    assert rush.calendar_name == "360Player Event calendar"
-    assert rush.team_token is None
+    assert vanguard.calendar_name == "360Player Event calendar"
+    assert vanguard.team_token is None
 
 
-def test_every_feed_yields_season_bounds(hawks, comets, hurricanes, rush):
-    for inspection in (hawks, comets, hurricanes, rush):
+def test_every_feed_yields_season_bounds(otters, wrens, tempest, vanguard):
+    for inspection in (otters, wrens, tempest, vanguard):
         assert inspection.season_start is not None
         assert inspection.season_end is not None
         assert inspection.season_start <= inspection.season_end
 
 
-def test_hawks_team_token_falls_out_of_frequency(hawks):
+def test_hawks_team_token_falls_out_of_frequency(otters):
     """Our name is on every fixture; each opponent appears once or twice."""
-    counts = {t.token: t.count for t in hawks.tokens}
-    assert counts["Hawks"] == 12
-    assert max(n for token, n in counts.items() if token != "Hawks") <= 2
-    assert hawks.team_token == "Hawks"
+    counts = {t.token: t.count for t in otters.tokens}
+    assert counts["Otters"] == 12
+    assert max(n for token, n in counts.items() if token != "Otters") <= 2
+    assert otters.team_token == "Otters"
 
 
-def test_a_type_versus_opponent_feed_proposes_no_token(comets):
-    """"Game vs Jaguars" names an opponent and says nothing about us.
+def test_a_type_versus_opponent_feed_proposes_no_token(wrens):
+    """"Game vs Cougars" names an opponent and says nothing about us.
 
     Every opponent appears exactly once, so the top candidate would be an
     arbitrary other team. Proposing it would look like an answer.
     """
-    assert comets.team_token is None
+    assert wrens.team_token is None
 
 
-def test_a_feed_with_no_fixtures_in_the_summary_proposes_no_token(hurricanes):
-    """"Game - Riverview #2" is type-then-venue; no team name appears at all."""
-    assert hurricanes.tokens == ()
-    assert hurricanes.team_token is None
+def test_a_feed_with_no_fixtures_in_the_summary_proposes_no_token(tempest):
+    """"Game - Kingsmere #2" is type-then-venue; no team name appears at all."""
+    assert tempest.tokens == ()
+    assert tempest.team_token is None
 
 
-def test_every_feed_yields_venues(hawks, comets, hurricanes, rush):
-    for inspection in (hawks, comets, hurricanes, rush):
+def test_every_feed_yields_venues(otters, wrens, tempest, vanguard):
+    for inspection in (otters, wrens, tempest, vanguard):
         assert inspection.venues, "no venues derived"
 
 
-def test_venues_exclude_the_field_designator(hurricanes):
-    """"Riverview #2" is one park with one pin, not a venue per field."""
-    names = [v.name for v in hurricanes.venues]
-    assert "Riverview" in names
+def test_venues_exclude_the_field_designator(tempest):
+    """"Kingsmere #2" is one park with one pin, not a venue per field."""
+    names = [v.name for v in tempest.venues]
+    assert "Kingsmere" in names
     assert not any("#" in name for name in names)
 
-    riverview = next(v for v in hurricanes.venues if v.name == "Riverview")
-    assert riverview.fields == ("#2",)
+    kingsmere = next(v for v in tempest.venues if v.name == "Kingsmere")
+    assert kingsmere.fields == ("#2",)
 
 
-def test_venues_are_read_from_the_summary_when_there_is_no_location(hurricanes):
+def test_venues_are_read_from_the_summary_when_there_is_no_location(tempest):
     """This feed sets no LOCATION at all — the venue is the summary tail."""
-    assert any("no event sets LOCATION" in w for w in hurricanes.warnings)
-    names = {v.name for v in hurricanes.venues}
-    assert {"Riverview", "Passage", "Menchville"} <= names
+    assert any("no event sets LOCATION" in w for w in tempest.warnings)
+    names = {v.name for v in tempest.venues}
+    assert {"Kingsmere", "Windmere", "Ashgrove"} <= names
 
 
-def test_player360_venue_addresses_are_split_off(rush):
-    wolf_trap = next(v for v in rush.venues if v.name == "Wolf Trap Park")
-    assert wolf_trap.address == "1009 Wolf Trap Rd, Yorktown VA 23692"
-    assert wolf_trap.count == 3
+def test_player360_venue_addresses_are_split_off(vanguard):
+    thistledown = next(v for v in vanguard.venues if v.name == "Thistledown Park")
+    assert thistledown.address == "1009 Thistledown Rd, Marbury NX 40114"
+    assert thistledown.count == 3
 
 
-def test_venues_are_ordered_by_how_often_they_appear(comets):
-    counts = [v.count for v in comets.venues]
+def test_venues_are_ordered_by_how_often_they_appear(wrens):
+    counts = [v.count for v in wrens.venues]
     assert counts == sorted(counts, reverse=True)
-    assert comets.venues[0].name == "Sanford Elementary School"
+    assert wrens.venues[0].name == "Larkspur Elementary School"
 
 
 # --- counts -----------------------------------------------------------------
 
 
-def test_counts_account_for_every_event(hawks, comets, hurricanes, rush):
-    for inspection in (hawks, comets, hurricanes, rush):
+def test_counts_account_for_every_event(otters, wrens, tempest, vanguard):
+    for inspection in (otters, wrens, tempest, vanguard):
         total = (
             inspection.reads_as_games
             + inspection.reads_as_practices
@@ -143,23 +143,23 @@ def test_counts_account_for_every_event(hawks, comets, hurricanes, rush):
         assert total == inspection.event_count
 
 
-def test_a_us_vs_them_feed_reads_its_fixtures_without_any_configuration(hawks):
+def test_a_us_vs_them_feed_reads_its_fixtures_without_any_configuration(otters):
     """A named opponent implies a fixture, which is this feed's only signal."""
-    assert hawks.reads_as_games == 12
-    assert hawks.has_fixtures
+    assert otters.reads_as_games == 12
+    assert otters.has_fixtures
 
 
-def test_player360_classifies_on_categories(rush):
-    assert rush.reads_as_games == 2
-    assert rush.reads_as_practices == 2
+def test_player360_classifies_on_categories(vanguard):
+    assert vanguard.reads_as_games == 2
+    assert vanguard.reads_as_practices == 2
 
 
 # --- adapter detection ------------------------------------------------------
 
 
-def test_adapter_is_detected_from_prodid(hawks, rush):
-    assert hawks.kind == "teamreach"
-    assert rush.kind == "player360"
+def test_adapter_is_detected_from_prodid(otters, vanguard):
+    assert otters.kind == "teamreach"
+    assert vanguard.kind == "player360"
 
 
 def test_an_unrecognised_producer_is_not_guessed_at():
@@ -189,19 +189,19 @@ def test_a_valid_but_eventless_feed_is_refused():
 # --- purity -----------------------------------------------------------------
 
 
-def test_inspection_is_reproducible(hawks):
+def test_inspection_is_reproducible(otters):
     """Same bytes, same proposal — an unstable one would look like a change."""
-    again = read(HAWKS)
-    assert again == hawks
+    again = read(OTTERS)
+    assert again == otters
 
 
-def test_the_raw_body_is_hashed(hawks):
-    assert len(hawks.raw_sha256) == 64
+def test_the_raw_body_is_hashed(otters):
+    assert len(otters.raw_sha256) == 64
 
 
-def test_summaries_are_carried_back_as_evidence(comets):
+def test_summaries_are_carried_back_as_evidence(wrens):
     """The operator has to be able to see the convention, not just the verdict."""
     # "Practice" and "Practice " are the same convention typed twice; the
     # evidence panel should say 8, not split them.
-    assert ("Practice", 8) in comets.summaries
-    assert any(s.startswith("Game vs") for s, _ in comets.summaries)
+    assert ("Practice", 8) in wrens.summaries
+    assert any(s.startswith("Game vs") for s, _ in wrens.summaries)

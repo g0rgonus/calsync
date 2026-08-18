@@ -17,7 +17,7 @@ from calsync import db, repo, retire
 from calsync.sync import sync_source
 from calsync.targets import TargetError, build
 
-FIXTURE = Path(__file__).parent / "fixtures" / "teamreach_comets_sample.ics"
+FIXTURE = Path(__file__).parent / "fixtures" / "teamreach_wrens_sample.ics"
 NOW = datetime(2026, 3, 1, 12, 0, tzinfo=timezone.utc)
 
 
@@ -27,12 +27,12 @@ def conn(tmp_path):
     connection.executescript(
         """
         INSERT INTO children (id, name, initial, birth_order)
-             VALUES ('millie', 'Millie', 'M', 1);
+             VALUES ('mira', 'Mira', 'M', 1);
         INSERT INTO activities (id, child_id, name, sport_id, tz)
-             VALUES ('millie-soccer-comets', 'millie', 'Comets', 'soccer',
+             VALUES ('mira-soccer-wrens', 'mira', 'Wrens', 'soccer',
                      'America/New_York');
         INSERT INTO sources (id, activity_id, kind, shape)
-             VALUES ('tr-comets', 'millie-soccer-comets', 'teamreach', 'feed');
+             VALUES ('tr-wrens', 'mira-soccer-wrens', 'teamreach', 'feed');
         """
     )
     connection.commit()
@@ -46,7 +46,7 @@ def target(tmp_path):
 
 @pytest.fixture
 def synced(conn, target):
-    source = repo.get_source(conn, "tr-comets")
+    source = repo.get_source(conn, "tr-wrens")
     report = sync_source(conn, source, target, now=NOW, raw=FIXTURE.read_bytes())
     assert report.created > 0
     return report
@@ -69,17 +69,17 @@ class Refusing:
 
 
 def test_retiring_cancels_every_live_event(conn, target, synced, tmp_path):
-    report = retire.retire_source(conn, repo.get_source(conn, "tr-comets"), target, now=NOW)
+    report = retire.retire_source(conn, repo.get_source(conn, "tr-wrens"), target, now=NOW)
 
     assert report.ok
     assert report.cancelled == synced.created
-    assert all(s.cancelled for s in repo.event_states(conn, "tr-comets").values())
+    assert all(s.cancelled for s in repo.event_states(conn, "tr-wrens").values())
     assert not list((tmp_path / "out").rglob("*.ics")), "events left on the calendar"
 
 
 def test_retiring_stops_the_polling(conn, target, synced):
-    retire.retire_source(conn, repo.get_source(conn, "tr-comets"), target, now=NOW)
-    assert not repo.get_source(conn, "tr-comets").enabled
+    retire.retire_source(conn, repo.get_source(conn, "tr-wrens"), target, now=NOW)
+    assert not repo.get_source(conn, "tr-wrens").enabled
     assert repo.list_sources(conn, enabled_only=True) == []
 
 
@@ -90,10 +90,10 @@ def test_cancelling_without_disabling_would_undo_itself(conn, target, synced):
     still enabled sees every event in its feed as new on the very next poll and
     puts the whole season straight back.
     """
-    retire.retire_source(conn, repo.get_source(conn, "tr-comets"), target, now=NOW)
-    repo.set_enabled(conn, "tr-comets", True)
+    retire.retire_source(conn, repo.get_source(conn, "tr-wrens"), target, now=NOW)
+    repo.set_enabled(conn, "tr-wrens", True)
 
-    again = sync_source(conn, repo.get_source(conn, "tr-comets"), target,
+    again = sync_source(conn, repo.get_source(conn, "tr-wrens"), target,
                         now=NOW, raw=FIXTURE.read_bytes())
 
     assert again.created == synced.created, (
@@ -108,28 +108,28 @@ def test_a_target_that_refuses_leaves_the_source_enabled(conn, synced):
     Polling stays on so a later run retries, and nothing is marked gone that is
     still on somebody's phone.
     """
-    report = retire.retire_source(conn, repo.get_source(conn, "tr-comets"), Refusing(),
+    report = retire.retire_source(conn, repo.get_source(conn, "tr-wrens"), Refusing(),
                                   now=NOW)
 
     assert not report.ok
     assert not report.disabled
-    assert repo.get_source(conn, "tr-comets").enabled
-    assert repo.tracked_events(conn, "tr-comets") == synced.created
+    assert repo.get_source(conn, "tr-wrens").enabled
+    assert repo.tracked_events(conn, "tr-wrens") == synced.created
 
 
 def test_a_partial_failure_still_records_what_did_come_off(conn, synced):
     """State follows the target, per event, in that order."""
-    report = retire.retire_source(conn, repo.get_source(conn, "tr-comets"),
+    report = retire.retire_source(conn, repo.get_source(conn, "tr-wrens"),
                                   Refusing(after=3), now=NOW)
 
     assert report.cancelled == 3
     assert report.errors
-    assert repo.tracked_events(conn, "tr-comets") == synced.created - 3
+    assert repo.tracked_events(conn, "tr-wrens") == synced.created - 3
 
 
 def test_retiring_twice_is_harmless(conn, target, synced):
-    retire.retire_source(conn, repo.get_source(conn, "tr-comets"), target, now=NOW)
-    second = retire.retire_source(conn, repo.get_source(conn, "tr-comets"), target, now=NOW)
+    retire.retire_source(conn, repo.get_source(conn, "tr-wrens"), target, now=NOW)
+    second = retire.retire_source(conn, repo.get_source(conn, "tr-wrens"), target, now=NOW)
 
     assert second.ok
     assert second.cancelled == 0
@@ -142,17 +142,17 @@ def test_retiring_twice_is_harmless(conn, target, synced):
 def test_a_source_with_live_events_cannot_be_forgotten(conn, synced):
     """The whole point. Deleting the row strands every event permanently."""
     with pytest.raises(ValueError, match="Retire it first"):
-        retire.forget_source(conn, "tr-comets", now=NOW)
+        retire.forget_source(conn, "tr-wrens", now=NOW)
 
-    assert repo.get_source(conn, "tr-comets") is not None
+    assert repo.get_source(conn, "tr-wrens") is not None
 
 
 def test_a_retired_source_can_be_forgotten(conn, target, synced):
-    retire.retire_source(conn, repo.get_source(conn, "tr-comets"), target, now=NOW)
-    retire.forget_source(conn, "tr-comets", now=NOW)
+    retire.retire_source(conn, repo.get_source(conn, "tr-wrens"), target, now=NOW)
+    retire.forget_source(conn, "tr-wrens", now=NOW)
 
-    assert repo.get_source(conn, "tr-comets") is None
-    assert repo.event_states(conn, "tr-comets") == {}
+    assert repo.get_source(conn, "tr-wrens") is None
+    assert repo.event_states(conn, "tr-wrens") == {}
 
 
 def test_the_tombstones_survive_retirement(conn, target, synced):
@@ -161,16 +161,16 @@ def test_the_tombstones_survive_retirement(conn, target, synced):
     Kept so a UID that reappears next season is recognised rather than adopted
     a second time.
     """
-    retire.retire_source(conn, repo.get_source(conn, "tr-comets"), target, now=NOW)
+    retire.retire_source(conn, repo.get_source(conn, "tr-wrens"), target, now=NOW)
 
-    states = repo.event_states(conn, "tr-comets")
+    states = repo.event_states(conn, "tr-wrens")
     assert len(states) == synced.created
     assert all(s.cancelled for s in states.values())
 
 
 # --- a finished season is not clutter ---------------------------------------
 #
-# The comets fixture runs 5 March to 16 May 2026. `NOW` sits before all of it,
+# The wrens fixture runs 5 March to 16 May 2026. `NOW` sits before all of it,
 # so every test above retires a season that has not happened yet — which is the
 # mid-season case, and the one where removing events is right.
 
@@ -191,37 +191,37 @@ def test_retiring_a_finished_season_keeps_every_event(conn, target, synced, tmp_
     """
     before = sorted(p.name for p in (tmp_path / "out").rglob("*.ics"))
 
-    report = retire.retire_source(conn, repo.get_source(conn, "tr-comets"),
+    report = retire.retire_source(conn, repo.get_source(conn, "tr-wrens"),
                                   target, now=AFTER)
 
     assert report.ok
     assert report.cancelled == 0
     assert report.kept == synced.created
     assert sorted(p.name for p in (tmp_path / "out").rglob("*.ics")) == before
-    assert not any(s.cancelled for s in repo.event_states(conn, "tr-comets").values())
+    assert not any(s.cancelled for s in repo.event_states(conn, "tr-wrens").values())
 
 
 def test_retiring_a_finished_season_still_stops_the_polling(conn, target, synced):
     """Which is the thing that was actually wanted."""
-    report = retire.retire_source(conn, repo.get_source(conn, "tr-comets"),
+    report = retire.retire_source(conn, repo.get_source(conn, "tr-wrens"),
                                   target, now=AFTER)
 
     assert report.disabled
-    assert not repo.get_source(conn, "tr-comets").enabled
+    assert not repo.get_source(conn, "tr-wrens").enabled
 
 
 def test_retiring_midway_removes_what_is_left_and_keeps_what_happened(
     conn, target, synced
 ):
     """Both halves of the rule in one run, on one real season."""
-    report = retire.retire_source(conn, repo.get_source(conn, "tr-comets"),
+    report = retire.retire_source(conn, repo.get_source(conn, "tr-wrens"),
                                   target, now=MIDWAY)
 
     assert report.cancelled > 0, "nothing was upcoming, so this proves nothing"
     assert report.kept > 0, "nothing had happened, so this proves nothing"
     assert report.cancelled + report.kept == synced.created
 
-    for state in repo.event_states(conn, "tr-comets").values():
+    for state in repo.event_states(conn, "tr-wrens").values():
         played = datetime.fromisoformat(state.starts_at) < MIDWAY
         assert state.cancelled is not played, (
             f"{state.starts_at} was {'kept' if played else 'removed'} wrongly"
@@ -231,7 +231,7 @@ def test_retiring_midway_removes_what_is_left_and_keeps_what_happened(
 def test_the_report_says_what_was_left_alone(conn, target, synced):
     """"Retired, 0 events removed" reads like a failure. It is a whole season
     being kept, and the line has to say so."""
-    line = retire.retire_source(conn, repo.get_source(conn, "tr-comets"),
+    line = retire.retire_source(conn, repo.get_source(conn, "tr-wrens"),
                                 target, now=AFTER).line()
 
     assert "0 cancelled" in line
@@ -245,18 +245,18 @@ def test_past_events_do_not_block_forgetting(conn, target, synced):
     to do to a game played in April — where an *upcoming* event would be
     stranded with nothing able to move it.
     """
-    retire.retire_source(conn, repo.get_source(conn, "tr-comets"), target, now=AFTER)
-    retire.forget_source(conn, "tr-comets", now=AFTER)
+    retire.retire_source(conn, repo.get_source(conn, "tr-wrens"), target, now=AFTER)
+    retire.forget_source(conn, "tr-wrens", now=AFTER)
 
-    assert repo.get_source(conn, "tr-comets") is None
+    assert repo.get_source(conn, "tr-wrens") is None
 
 
 def test_an_event_still_to_come_blocks_forgetting(conn, synced):
     """The guard that matters, stated against the clock rather than the count."""
     with pytest.raises(ValueError, match="still to come"):
-        retire.forget_source(conn, "tr-comets", now=NOW)
+        retire.forget_source(conn, "tr-wrens", now=NOW)
 
-    assert repo.get_source(conn, "tr-comets") is not None
+    assert repo.get_source(conn, "tr-wrens") is not None
 
 
 def test_a_kept_season_is_not_restored_by_re_enabling(conn, target, synced):
@@ -266,10 +266,10 @@ def test_a_kept_season_is_not_restored_by_re_enabling(conn, target, synced):
     They are not: both sides of the diff are filtered to the sync window, so an
     event old enough to be kept is invisible to it from either direction.
     """
-    retire.retire_source(conn, repo.get_source(conn, "tr-comets"), target, now=AFTER)
-    repo.set_enabled(conn, "tr-comets", True)
+    retire.retire_source(conn, repo.get_source(conn, "tr-wrens"), target, now=AFTER)
+    repo.set_enabled(conn, "tr-wrens", True)
 
-    again = sync_source(conn, repo.get_source(conn, "tr-comets"), target,
+    again = sync_source(conn, repo.get_source(conn, "tr-wrens"), target,
                         now=AFTER, raw=FIXTURE.read_bytes())
 
     assert again.created == 0, "a kept season was written to the calendar a second time"

@@ -35,8 +35,8 @@ SECRETISH = re.compile(r"token|key|auth|secret|access|sig|pass|cred|ticket", re.
 #: Below this length a path segment is a word, not a credential.
 OPAQUE_MIN = 12
 
-#: Short prefixes so a source id reads like ``tr-hawks`` rather than
-#: ``teamreach-hawks-spring-2026``. Anything unlisted uses its own kind.
+#: Short prefixes so a source id reads like ``tr-otters`` rather than
+#: ``teamreach-otters-spring-2026``. Anything unlisted uses its own kind.
 _KIND_PREFIX = {"teamreach": "tr", "player360": "p360"}
 
 _WORDY = re.compile(r"^[a-z][a-z-]*$", re.IGNORECASE)
@@ -242,7 +242,7 @@ def _verify_round_trip(template: str, secrets: dict[str, str], original: str) ->
         )
     # Look at the template with its placeholders removed. The refs are derived
     # from the source id, which is derived from the team name — so a feed at
-    # ``/ics/hawks`` vaulted under ``tr_hawks_spring_2026`` would otherwise
+    # ``/ics/otters`` vaulted under ``tr_hawks_spring_2026`` would otherwise
     # report its own placeholder as the leak.
     remainder = _PLACEHOLDER.sub("", template)
     if any(value and value in remainder for value in secrets.values()):
@@ -253,7 +253,7 @@ def _verify_round_trip(template: str, secrets: dict[str, str], original: str) ->
 
 
 def propose_ids(conn, *, child_id: str, sport: str, team_name: str, kind: str):
-    """Readable, stable, unique ids. ``patrick-soccer-hawks`` / ``tr-hawks``."""
+    """Readable, stable, unique ids. ``parker-soccer-otters`` / ``tr-otters``."""
     team = slugify(team_name)
     activity = _unique(conn, "activities", f"{slugify(child_id)}-{slugify(sport)}-{team}")
     prefix = _KIND_PREFIX.get(kind, slugify(kind))
@@ -285,7 +285,7 @@ class Draft:
     kind: str
     tz: str
     #: The string that means *us* in fixture summaries. Becomes an activity
-    #: alias, which is what resolves "Hawks vs Strikers" into an opponent and a
+    #: alias, which is what resolves "Otters vs Chargers" into an opponent and a
     #: home/away flag.
     token: str | None = None
     season_start: str | None = None

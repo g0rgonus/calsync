@@ -135,7 +135,7 @@
 
   <div class="raw-block" style="margin-bottom:1.1rem">{{ sample }}</div>
   <p class="note" style="margin-top:-0.7rem;margin-bottom:1.1rem">
-    ↑ a home game against Strikers, as it would appear right now
+    ↑ a home game against Chargers, as it would appear right now
   </p>
 
   <form method="post" action="/settings/titles">
@@ -155,7 +155,7 @@
       <label class="field" style="margin-bottom:0.8rem">
         <span class="label">Two kids render as</span>
         <select name="multi_kid_style">
-% for style, note in (('initials', 'initials — P+J'), ('names', 'names — Patrick+James')):
+% for style, note in (('initials', 'initials — P+J'), ('names', 'names — Parker+Jesse')):
           <option value="{{ style }}" {{ 'selected' if settings.multi_kid_style == style else '' }}>{{ note }}</option>
 % end
         </select>

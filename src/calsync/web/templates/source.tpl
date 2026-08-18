@@ -126,7 +126,7 @@
 <div class="card">
   <p class="note" style="margin-top:0">
     The middle four are not cosmetic. Together with the names below they are what
-    the parser matches a fixture against, so "U10DA TASL Match vs Beach FC"
+    the parser matches a fixture against, so "U10PL PSL Match vs Harbour FC"
     yields an opponent rather than nothing. Changing them re-parses the feed on
     the next poll — no re-fetch, no re-onboarding.
   </p>
@@ -148,7 +148,7 @@
       <label class="field" style="margin-bottom:0.8rem">
         <span class="label">Official name</span>
         <input type="text" name="official_name" class="mono"
-               value="{{ activity.official_name or '' }}" placeholder="U10DA" autocomplete="off">
+               value="{{ activity.official_name or '' }}" placeholder="U10PL" autocomplete="off">
       </label>
       <label class="field" style="margin-bottom:0.8rem">
         <span class="label">Short name</span>
@@ -158,7 +158,7 @@
       <label class="field" style="margin-bottom:0.8rem">
         <span class="label">League</span>
         <input type="text" name="league" class="mono"
-               value="{{ activity.league or '' }}" placeholder="TASL" autocomplete="off">
+               value="{{ activity.league or '' }}" placeholder="PSL" autocomplete="off">
       </label>
       <label class="field" style="margin-bottom:0.8rem">
         <span class="label">Age group</span>

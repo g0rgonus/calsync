@@ -66,7 +66,7 @@ CREATE TABLE IF NOT EXISTS activities (
     name            TEXT NOT NULL,        -- human-readable, appears in titles
     sport_id        TEXT NOT NULL REFERENCES sports(id),
     emoji           TEXT,                 -- overrides the sport's default
-    official_name   TEXT,                 -- league designation, e.g. U10DA
+    official_name   TEXT,                 -- league designation, e.g. U10PL
     short_name      TEXT,
     league          TEXT,
     age_group       TEXT,

@@ -86,7 +86,7 @@ ENDPOINTS: dict[tuple[str, str], dict] = {
 ANSWER_SHAPES: dict[str, dict] = {
     "resolve_activity": {
         "question": "which of these names is our team?",
-        "answer": {"alias": "Hawks"},
+        "answer": {"alias": "Otters"},
     },
     "classify_kind": {
         "question": "is this label a game or a practice?",
@@ -95,7 +95,7 @@ ANSWER_SHAPES: dict[str, dict] = {
     "normalize_venue": {
         "question": "where is this?",
         "answer": {
-            "name": "Riverview Farm Park",
+            "name": "Kingsmere Meadow Park",
             "address": "optional",
             "same_as": "or the canonical name of a venue already known",
         },

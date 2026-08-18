@@ -52,7 +52,7 @@
       <label class="field" style="margin-bottom:0.8rem">
         <span class="label">Name</span>
         <input type="text" name="name" required autocomplete="off"
-               placeholder="Riverview Farm Park">
+               placeholder="Kingsmere Meadow Park">
       </label>
       <label class="field" style="margin-bottom:0.8rem;flex:0 1 9rem">
         <span class="label">Short name</span>
@@ -65,8 +65,8 @@
     </label>
     <button class="btn" type="submit">Add</button>
     <span class="note" style="margin-left:0.6rem">
-      Name the place, not the field within it — <span class="raw">Riverview</span>,
-      not <span class="raw">Riverview #2</span>.
+      Name the place, not the field within it — <span class="raw">Kingsmere</span>,
+      not <span class="raw">Kingsmere #2</span>.
     </span>
   </form>
 </div>

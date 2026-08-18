@@ -5,12 +5,12 @@ Findings in docs/sources/teamreach.md.
 **There is no TeamReach format.** Coaches type these events by hand, and which
 fields even exist varies per team. Three real feeds, three conventions:
 
-    Inter HURRICANES   no LOCATION    "Game - Riverview #2"    type then VENUE
-    Hawks              LOCATION       "Hawks vs Strikers"      US vs THEM
-    Comets             LOCATION       "Game vs Jaguars"        type then OPPONENT
+    Inter TEMPEST   no LOCATION    "Game - Kingsmere #2"    type then VENUE
+    Otters              LOCATION       "Otters vs Chargers"      US vs THEM
+    Wrens             LOCATION       "Game vs Cougars"        type then OPPONENT
 
 A parser built around any one of those silently mangles the other two — the
-"Hawks vs Strikers" feed has no type word at all, so an adapter keyed on
+"Otters vs Chargers" feed has no type word at all, so an adapter keyed on
 "Game"/"Practice" files every fixture as a practice.
 
 So this reads by *strategy* rather than by format: try each known shape, use
@@ -43,7 +43,7 @@ HASH_FIELDS = ("DTSTART", "DTEND", "SUMMARY", "LOCATION", "DESCRIPTION")
 #: and "- " interchangeably.
 _SEPARATOR = re.compile(r"\s*-\s*")
 
-#: Opponent separator. Deliberately excludes a bare "at": "Practice at Riverview"
+#: Opponent separator. Deliberately excludes a bare "at": "Practice at Kingsmere"
 #: names a venue, not an opponent, and treating it as a fixture would invent one.
 _VERSUS = re.compile(r"\s+(?:vs\.?|v\.)\s+|\s+@\s+", re.IGNORECASE)
 
@@ -57,7 +57,7 @@ _TYPE_PREFIX = re.compile(
 
 #: A trailing "6pm" / "6:30 pm" / "18:00" that the DTSTART already carries.
 #: Requires a meridiem or a ``:`` — a bare trailing number is not a time, and
-#: stripping one would turn "Riverview #2" into "Riverview #".
+#: stripping one would turn "Kingsmere #2" into "Kingsmere #".
 _TRAILING_TIME = re.compile(
     r"[\s.,]+(?:\d{1,2}[:.]\d{2}\s*(?:am|pm)?|\d{1,2}\s*(?:am|pm))\s*$",
     re.IGNORECASE,
@@ -101,8 +101,8 @@ def clean_venue(raw: str) -> str:
     """Tidy the venue half of a SUMMARY without renaming anything.
 
     Whitespace, a trailing period and a redundant trailing time are noise. A
-    missing space before ``#`` is closed up because "Riverview#2" and
-    "Riverview #2" are demonstrably the same field in the same feed.
+    missing space before ``#`` is closed up because "Kingsmere#2" and
+    "Kingsmere #2" are demonstrably the same field in the same feed.
 
     Anything beyond that is left alone — mapping variants onto one canonical
     venue is the ``venue_aliases`` table's job, not a regex's.
@@ -131,7 +131,7 @@ def classify(
     """True for a game, False for a practice, None if undeterminable.
 
     An explicit type word wins. Failing that, a named opponent implies a
-    fixture — which is the only signal the "Hawks vs Strikers" feed offers, and
+    fixture — which is the only signal the "Otters vs Chargers" feed offers, and
     without it every game there files as a practice.
 
     None is deliberate: it routes to practices (a mis-filed practice is a
@@ -188,7 +188,7 @@ def parse_summary(summary: str, tokens: tuple[str, ...] = ()) -> SummaryParse:
     """Read a SUMMARY by trying each known shape in turn.
 
     ``tokens`` are the strings identifying *our* team (``Activity.known_tokens``),
-    which is what makes "Hawks vs Strikers" resolvable: whichever side is us
+    which is what makes "Otters vs Chargers" resolvable: whichever side is us
     fixes both the opponent and home/away. Without a token match the fixture is
     left unidentified rather than guessed at — naming ourselves as the opponent
     would be worse than naming nobody.
@@ -214,7 +214,7 @@ def parse_summary(summary: str, tokens: tuple[str, ...] = ()) -> SummaryParse:
         event_type = (prefix.group(0).strip() if prefix else None) or None
 
         if not stripped_left:
-            # "Game vs Jaguars" — the left side is purely a type label, so the
+            # "Game vs Cougars" — the left side is purely a type label, so the
             # summary says nothing about who hosted.
             return SummaryParse(event_type, right or None, None, venue_text)
         if _matches_us(stripped_left, tokens):
@@ -312,7 +312,7 @@ def parse_feed(
             # operator can add an activity alias; no opponent is claimed.
             unidentified.add(raw_summary.strip())
             # And held: with no opponent recognised there is no fixture signal
-            # either, so this lands in practices. On the Hawks feed that was 12
+            # either, so this lands in practices. On the Otters feed that was 12
             # of 20 events in the wrong calendar until one alias was taught.
             unresolved.append(models.UNIDENTIFIED)
 
@@ -340,7 +340,7 @@ def parse_feed(
         if venue_source:
             cleaned = clean_venue(venue_source)
             if cleaned:
-                # Split the field designator off the venue name: "Riverview #2"
+                # Split the field designator off the venue name: "Kingsmere #2"
                 # is one park, not a distinct place needing its own pin.
                 name, field = venue_norm.split_field(cleaned)
                 # No address and no coordinates anywhere in this feed — the

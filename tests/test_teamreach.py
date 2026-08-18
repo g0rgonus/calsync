@@ -29,7 +29,7 @@ FIXTURE = Path(__file__).parent / "fixtures" / "teamreach_sample.ics"
 ACTIVITY = Activity(
     id="kid-teamreach",
     child_id="kid",
-    name="Inter Hurricanes",
+    name="Inter Tempest",
     sport="soccer",
     emoji="⚽️",
     tz="America/New_York",
@@ -38,7 +38,7 @@ ACTIVITY = Activity(
 
 @pytest.fixture(scope="module")
 def result():
-    return parse_feed(FIXTURE.read_bytes(), ACTIVITY, source_id="tr-hurricanes")
+    return parse_feed(FIXTURE.read_bytes(), ACTIVITY, source_id="tr-tempest")
 
 
 @pytest.fixture(scope="module")
@@ -66,7 +66,7 @@ def test_uid_is_stable_and_passed_through(by_uid):
 
 def test_registry_dispatches_by_kind():
     result = parse(
-        "teamreach", FIXTURE.read_bytes(), ACTIVITY, source_id="tr-hurricanes"
+        "teamreach", FIXTURE.read_bytes(), ACTIVITY, source_id="tr-tempest"
     )
     assert len(result.events) == 23
 
@@ -81,8 +81,8 @@ def test_times_are_utc(by_uid):
 
 
 def test_practice_and_game_are_distinguished_without_categories(by_uid):
-    assert by_uid["24253410@teamreach"].is_game is False   # "Practice - Passage "
-    assert by_uid["24610930@teamreach"].is_game is True    # "Game - Riverview #2"
+    assert by_uid["24253410@teamreach"].is_game is False   # "Practice - Windmere "
+    assert by_uid["24610930@teamreach"].is_game is True    # "Game - Kingsmere #2"
 
 
 @pytest.mark.parametrize(
@@ -106,7 +106,7 @@ def test_unrecognised_type_falls_to_practice_and_is_surfaced():
     ics = (
         "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//TeamReach//EN\r\n"
         "BEGIN:VEVENT\r\nUID:1@teamreach\r\nDTSTART:20260303T230000Z\r\n"
-        "DTEND:20260304T000000Z\r\nSUMMARY:Team Photo - Passage\r\nEND:VEVENT\r\n"
+        "DTEND:20260304T000000Z\r\nSUMMARY:Team Photo - Windmere\r\nEND:VEVENT\r\n"
         "END:VCALENDAR\r\n"
     )
     result = parse_feed(ics, ACTIVITY, source_id="x")
@@ -121,12 +121,12 @@ def test_unrecognised_type_falls_to_practice_and_is_surfaced():
 @pytest.mark.parametrize(
     "summary, event_type, venue",
     [
-        ("Practice - Passage ", "Practice", "Passage"),
-        ("Practice  - Passage ", "Practice", "Passage"),      # doubled space
-        ("Practice- Passage", "Practice", "Passage"),          # no leading space
-        ("Game - Riverview#2", "Game", "Riverview #2"),        # missing # space
-        ("Playoff Game - Passage.  6pm", "Playoff Game", "Passage"),
-        ("Make Up Game- Passage ", "Make Up Game", "Passage"),
+        ("Practice - Windmere ", "Practice", "Windmere"),
+        ("Practice  - Windmere ", "Practice", "Windmere"),      # doubled space
+        ("Practice- Windmere", "Practice", "Windmere"),          # no leading space
+        ("Game - Kingsmere#2", "Game", "Kingsmere #2"),        # missing # space
+        ("Playoff Game - Windmere.  6pm", "Playoff Game", "Windmere"),
+        ("Make Up Game- Windmere ", "Make Up Game", "Windmere"),
     ],
 )
 def test_summary_variants_normalize_to_the_same_fields(summary, event_type, venue):
@@ -136,22 +136,22 @@ def test_summary_variants_normalize_to_the_same_fields(summary, event_type, venu
 
 
 def test_venue_variants_collapse_to_one_name(by_uid):
-    """"Riverview #2" and "Riverview#2" are the same place in the same feed."""
+    """"Kingsmere #2" and "Kingsmere#2" are the same place in the same feed."""
     venues = {e.venue.name for e in by_uid.values() if e.venue}
-    assert venues == {"Passage", "Menchville", "Riverview"}
+    assert venues == {"Windmere", "Ashgrove", "Kingsmere"}
 
 
 def test_field_designator_is_split_off_the_venue(by_uid):
     """One park, one pin, many fields.
 
     Folding "#2" into the name would mint a separate venue — and demand a
-    separate address and geocode — for every field at Riverview.
+    separate address and geocode — for every field at Kingsmere.
     """
-    riverview = [e for e in by_uid.values() if e.venue and e.venue.name == "Riverview"]
+    kingsmere = [e for e in by_uid.values() if e.venue and e.venue.name == "Kingsmere"]
 
-    assert riverview, "no Riverview events"
-    assert {e.venue.field for e in riverview} == {"#2"}
-    assert all(e.venue.name == "Riverview" for e in riverview)
+    assert kingsmere, "no Kingsmere events"
+    assert {e.venue.field for e in kingsmere} == {"#2"}
+    assert all(e.venue.name == "Kingsmere" for e in kingsmere)
 
 
 def test_a_summary_with_no_separator_still_yields_a_type():
@@ -180,75 +180,75 @@ def test_no_coordinates_or_address_are_invented(by_uid):
 # Same platform, same season, entirely different habits. These are the cases a
 # parser written against team 758329 alone gets silently wrong.
 
-HAWKS_FIXTURE = Path(__file__).parent / "fixtures" / "teamreach_hawks_sample.ics"
-COMETS_FIXTURE = Path(__file__).parent / "fixtures" / "teamreach_comets_sample.ics"
+HAWKS_FIXTURE = Path(__file__).parent / "fixtures" / "teamreach_otters_sample.ics"
+COMETS_FIXTURE = Path(__file__).parent / "fixtures" / "teamreach_wrens_sample.ics"
 
-HAWKS = Activity(id="hawks", child_id="kid", name="Hawks", sport="soccer",
+OTTERS = Activity(id="otters", child_id="kid", name="Otters", sport="soccer",
                  emoji="⚽️", tz="America/New_York")
-COMETS = Activity(id="comets", child_id="kid", name="Comets", sport="soccer",
+WRENS = Activity(id="wrens", child_id="kid", name="Wrens", sport="soccer",
                   emoji="⚽️", tz="America/New_York")
 
 
 @pytest.fixture(scope="module")
-def hawks():
-    return parse_feed(HAWKS_FIXTURE.read_bytes(), HAWKS, source_id="tr-hawks")
+def otters():
+    return parse_feed(HAWKS_FIXTURE.read_bytes(), OTTERS, source_id="tr-otters")
 
 
 @pytest.fixture(scope="module")
-def comets():
-    return parse_feed(COMETS_FIXTURE.read_bytes(), COMETS, source_id="tr-comets")
+def wrens():
+    return parse_feed(COMETS_FIXTURE.read_bytes(), WRENS, source_id="tr-wrens")
 
 
-def test_us_vs_them_summaries_are_games_despite_no_type_word(hawks):
-    """"Hawks vs Strikers" contains neither "Game" nor "Practice".
+def test_us_vs_them_summaries_are_games_despite_no_type_word(otters):
+    """"Otters vs Chargers" contains neither "Game" nor "Practice".
 
     Classifying on type words alone files all twelve fixtures as practices.
     """
-    assert sum(1 for e in hawks.events if e.is_game) == 12
-    assert sum(1 for e in hawks.events if not e.is_game) == 8
-    assert hawks.unknown_types == []
+    assert sum(1 for e in otters.events if e.is_game) == 12
+    assert sum(1 for e in otters.events if not e.is_game) == 8
+    assert otters.unknown_types == []
 
 
-def test_home_and_away_come_from_which_side_we_are_on(hawks):
-    by_opponent = {e.opponent: e for e in hawks.events if e.opponent}
+def test_home_and_away_come_from_which_side_we_are_on(otters):
+    by_opponent = {e.opponent: e for e in otters.events if e.opponent}
 
-    assert by_opponent["Strikers"].home is True    # "Hawks vs Strikers"
-    assert by_opponent["Siege"].home is False      # "Siege vs Hawks"
-    assert sum(1 for e in hawks.events if e.home is True) == 7
-    assert sum(1 for e in hawks.events if e.home is False) == 5
-    assert "Hawks" not in by_opponent, "named ourselves as the opponent"
-
-
-def test_type_led_fixtures_yield_an_opponent_but_no_home_claim(comets):
-    """"Game vs Jaguars" says who, not where — home must stay unknown."""
-    by_opponent = {e.opponent: e for e in comets.events if e.opponent}
-
-    assert "Jaguars" in by_opponent
-    assert by_opponent["Jaguars"].home is None
-    assert all(e.home is None for e in comets.events)
-    assert sum(1 for e in comets.events if e.is_game) == 11
+    assert by_opponent["Chargers"].home is True    # "Otters vs Chargers"
+    assert by_opponent["Rampart"].home is False      # "Rampart vs Otters"
+    assert sum(1 for e in otters.events if e.home is True) == 7
+    assert sum(1 for e in otters.events if e.home is False) == 5
+    assert "Otters" not in by_opponent, "named ourselves as the opponent"
 
 
-def test_a_leading_type_word_is_not_mistaken_for_a_team(comets):
-    """"First Game vs Knights" — the opponent is Knights, not "First Game"."""
-    by_opponent = {e.opponent: e for e in comets.events if e.opponent}
+def test_type_led_fixtures_yield_an_opponent_but_no_home_claim(wrens):
+    """"Game vs Cougars" says who, not where — home must stay unknown."""
+    by_opponent = {e.opponent: e for e in wrens.events if e.opponent}
 
-    assert "Knights" in by_opponent
-    assert by_opponent["Knights"].detail == "First Game"
-    assert by_opponent["Knights"].is_game is True
+    assert "Cougars" in by_opponent
+    assert by_opponent["Cougars"].home is None
+    assert all(e.home is None for e in wrens.events)
+    assert sum(1 for e in wrens.events if e.is_game) == 11
 
 
-def test_location_field_is_preferred_over_the_summary_tail(comets):
+def test_a_leading_type_word_is_not_mistaken_for_a_team(wrens):
+    """"First Game vs Sentries" — the opponent is Sentries, not "First Game"."""
+    by_opponent = {e.opponent: e for e in wrens.events if e.opponent}
+
+    assert "Sentries" in by_opponent
+    assert by_opponent["Sentries"].detail == "First Game"
+    assert by_opponent["Sentries"].is_game is True
+
+
+def test_location_field_is_preferred_over_the_summary_tail(wrens):
     """Teams that fill LOCATION get their venue from it, not from parsing."""
-    venues = {e.venue.name for e in comets.events if e.venue}
+    venues = {e.venue.name for e in wrens.events if e.venue}
 
-    assert "Sanford Elementary School" in venues
-    assert "Riverview Farm Park" in venues
+    assert "Larkspur Elementary School" in venues
+    assert "Kingsmere Meadow Park" in venues
 
 
-def test_description_is_carried_into_the_body(comets):
+def test_description_is_carried_into_the_body(wrens):
     """One coach keeps a snack rota there; it is real information to a parent."""
-    with_body = [e for e in comets.events if e.body]
+    with_body = [e for e in wrens.events if e.body]
 
     assert with_body, "dropped the DESCRIPTION every event carries"
     assert any("has snacks" in e.body for e in with_body)
@@ -269,16 +269,16 @@ def test_an_unidentifiable_fixture_claims_no_opponent():
 @pytest.mark.parametrize(
     "summary, opponent, home",
     [
-        ("Hawks vs Strikers", "Strikers", True),
-        ("Siege vs Hawks", "Siege", False),
-        ("Hawks @ Rockets", "Rockets", True),
-        ("Hawks v. Bruins", "Bruins", True),
-        ("Game vs Jaguars", "Jaguars", None),
-        ("Practice at Riverview", None, None),   # "at" is a venue, not a fixture
+        ("Otters vs Chargers", "Chargers", True),
+        ("Rampart vs Otters", "Rampart", False),
+        ("Otters @ Meteors", "Meteors", True),
+        ("Otters v. Badgers", "Badgers", True),
+        ("Game vs Cougars", "Cougars", None),
+        ("Practice at Kingsmere", None, None),   # "at" is a venue, not a fixture
     ],
 )
 def test_fixture_shapes(summary, opponent, home):
-    parsed = parse_summary(summary, ("Hawks",))
+    parsed = parse_summary(summary, ("Otters",))
     assert parsed.opponent == opponent
     assert parsed.home is home
 
@@ -291,7 +291,7 @@ def test_content_hash_ignores_modification_timestamps():
     every event — both are mtimes, so neither may reach the hash."""
     base = (
         "BEGIN:VEVENT\r\nUID:1@teamreach\r\nDTSTART:20260303T230000Z\r\n"
-        "DTEND:20260304T000000Z\r\nSUMMARY:Game - Passage\r\n"
+        "DTEND:20260304T000000Z\r\nSUMMARY:Game - Windmere\r\n"
         "DTSTAMP:{stamp}\r\nLAST-MODIFIED:{stamp}\r\nEND:VEVENT\r\n"
     )
     wrap = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//x//EN\r\n{}END:VCALENDAR\r\n"
@@ -317,7 +317,7 @@ def test_content_hash_reacts_to_a_real_change():
         cal = Calendar.from_ical(wrap.format(summary=summary))
         return content_hash([c for c in cal.walk() if c.name == "VEVENT"][0])
 
-    assert one("Game - Passage") != one("Game - Riverview #2")
+    assert one("Game - Windmere") != one("Game - Kingsmere #2")
 
 
 # --- guards -----------------------------------------------------------------
@@ -356,12 +356,12 @@ def test_missing_dtend_can_be_filled_by_deployment_choice():
 @pytest.mark.parametrize(
     "raw, name, field",
     [
-        ("Riverview #2", "Riverview", "#2"),
-        ("Riverview Farm Park Soccer Fields", "Riverview Farm Park Soccer Fields", None),
-        ("Sanford Elementary School", "Sanford Elementary School", None),
-        ("Stoney Run Athletic Complex", "Stoney Run Athletic Complex", None),
+        ("Kingsmere #2", "Kingsmere", "#2"),
+        ("Kingsmere Meadow Park Soccer Fields", "Kingsmere Meadow Park Soccer Fields", None),
+        ("Larkspur Elementary School", "Larkspur Elementary School", None),
+        ("Copperfield Athletic Complex", "Copperfield Athletic Complex", None),
         ("McReynolds Athletic Complex Field 3", "McReynolds Athletic Complex", "Field 3"),
-        ("Menchville High School Gym", "Menchville High School", "Gym"),
+        ("Ashgrove High School Gym", "Ashgrove High School", "Gym"),
     ],
 )
 def test_split_field_keeps_plural_place_names_intact(raw, name, field):

@@ -23,9 +23,9 @@ def conn(tmp_path):
     connection.executescript(
         """
         INSERT INTO children (id, name, initial, birth_order)
-             VALUES ('millie', 'Millie', 'M', 1);
+             VALUES ('mira', 'Mira', 'M', 1);
         INSERT INTO activities (id, child_id, name, sport_id, tz)
-             VALUES ('a', 'millie', 'Comets', 'soccer', 'UTC');
+             VALUES ('a', 'mira', 'Wrens', 'soccer', 'UTC');
         INSERT INTO sources (id, activity_id, kind, shape) VALUES ('s', 'a', 'teamreach', 'feed');
         """
     )
@@ -165,8 +165,8 @@ def test_both_stages_fire_as_a_season_ages(conn, secrets):
                      sender=pushed)
 
     assert [s["title"] for s in pushed.sent] == [
-        "Comets: season looks finished",
-        "Comets: polling stopped",
+        "Wrens: season looks finished",
+        "Wrens: polling stopped",
     ]
     assert not repo.get_source(conn, "s").enabled
 

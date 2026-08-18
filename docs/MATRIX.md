@@ -62,7 +62,7 @@ where the request is legible.
   "event_uuid": "3f9c1a2e-…@calsync",
   "context": {
     "venue_raw": "AC East pool",
-    "activity": "Swim — Riverside Aquatics",
+    "activity": "Swim — Brookvale Aquatics",
     "starts_at": "2026-09-14T17:30:00-04:00",
     "known_aliases": ["Aquatic Center", "AC", "Aquatic Ctr Main"]
   },
@@ -140,7 +140,7 @@ source for an agent.
 ```json
 POST /v1/amendments
 {
-  "selector": { "activity": "swim-practice", "child": "nora",
+  "selector": { "activity": "swim-practice", "child": "nadia",
                 "from": "2026-09-14", "to": "2026-09-20" },
   "patch":    { "venue_raw": "Aquatic Center East" },
   "rationale": "Coach message: main pool closed for maintenance",
@@ -234,7 +234,7 @@ capture path there is — better than email for anything a coach texts you.
 - Pasted text is a document too, which is what makes §3 work.
 
 Read-only queries are safe and useful for both members: `!cal today`,
-`!cal week`, `!cal next nora`, `!cal sources`, `!cal pending`.
+`!cal week`, `!cal next nadia`, `!cal sources`, `!cal pending`.
 
 ---
 

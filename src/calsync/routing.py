@@ -4,8 +4,8 @@ Splitting by event type is one household's choice, not a law. The template
 makes the others reachable without touching code:
 
     "{type}"            -> games / practices          (type-split)
-    "{child}"           -> james / patrick            (one per kid)
-    "{child}-{type}"    -> james-games / james-practices
+    "{child}"           -> jesse / parker            (one per kid)
+    "{child}-{type}"    -> jesse-games / jesse-practices
     "calendar"          -> everything in one place
 
 Reclassification between collections is a delete-then-create in CalDAV, not an

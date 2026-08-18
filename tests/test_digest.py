@@ -21,9 +21,9 @@ from calsync.sync import sync_source
 from calsync.targets import build
 
 FIXTURES = Path(__file__).parent / "fixtures"
-COMETS = (FIXTURES / "teamreach_comets_sample.ics").read_bytes()
+WRENS = (FIXTURES / "teamreach_wrens_sample.ics").read_bytes()
 
-#: The comets fixture's first practice is 2026-03-05 00:00Z.
+#: The wrens fixture's first practice is 2026-03-05 00:00Z.
 NOW = datetime(2026, 3, 4, 12, 0, tzinfo=timezone.utc)
 
 
@@ -33,9 +33,9 @@ def conn(tmp_path):
     connection.executescript(
         """
         INSERT INTO children (id, name, initial, birth_order)
-             VALUES ('millie', 'Millie', 'M', 1);
+             VALUES ('mira', 'Mira', 'M', 1);
         INSERT INTO activities (id, child_id, name, sport_id, tz)
-             VALUES ('a', 'millie', 'Comets', 'soccer', 'America/New_York');
+             VALUES ('a', 'mira', 'Wrens', 'soccer', 'America/New_York');
         INSERT INTO sources (id, activity_id, kind, shape, url_template)
              VALUES ('s', 'a', 'teamreach', 'feed', 'https://feed.example/c.ics');
         """
@@ -53,7 +53,7 @@ def synced(conn, tmp_path):
     """
     source = repo.list_sources(conn)[0]
     sync_source(conn, source, build("ics_file", directory=tmp_path / "out"),
-                now=NOW, raw=COMETS)
+                now=NOW, raw=WRENS)
     return conn
 
 
@@ -84,7 +84,7 @@ def test_the_message_says_what_the_calendar_says(synced, tmp_path):
     result = digest.collect(synced, now=NOW)
 
     assert {e.title for e in result.entries} <= _calendar_titles(tmp_path)
-    assert any("Millie" in e.title for e in result.entries)
+    assert any("Mira" in e.title for e in result.entries)
 
 
 def test_times_are_shown_in_the_venue_timezone(synced):
@@ -110,8 +110,8 @@ def test_a_source_that_has_not_been_polled_is_named_rather_than_read(conn):
     result = digest.collect(conn, now=NOW)
 
     assert result.empty
-    assert result.stale == ["Comets"]
-    assert "Not polled recently: Comets" in result.text()
+    assert result.stale == ["Wrens"]
+    assert "Not polled recently: Wrens" in result.text()
     assert "may be out of date" in result.text()
 
 
@@ -123,7 +123,7 @@ def test_a_failing_feed_is_named_even_though_older_events_are_still_readable(syn
     result = digest.collect(synced, now=NOW)
 
     assert not result.empty, "a broken feed should not lose events already written"
-    assert result.stale == ["Comets"]
+    assert result.stale == ["Wrens"]
 
 
 def test_a_paused_source_is_still_on_the_calendar_and_so_is_in_the_digest(synced):
@@ -228,7 +228,7 @@ CONFIG = matrix.MatrixConfig(
 
 def test_a_message_is_sent_to_the_room(secrets):
     server = Homeserver()
-    event_id = matrix.send(CONFIG, secrets, "**Wednesday**\n- 19:00  Millie ⚽️",
+    event_id = matrix.send(CONFIG, secrets, "**Wednesday**\n- 19:00  Mira ⚽️",
                            transaction_id="calsync-digest-2026-03-05", opener=server)
 
     url, payload = server.sent[0]
@@ -296,10 +296,10 @@ def test_a_push_carries_both_credentials_and_a_link():
             return {"pushover_token": "app-token", "pushover_user": "user-key"}[ref]
 
     notify.send(notify.PushoverConfig(), Store(), "Season looks finished",
-                title="Comets", url="http://box:8730/sources/s", opener=Server())
+                title="Wrens", url="http://box:8730/sources/s", opener=Server())
 
     assert sent["token"] == "app-token" and sent["user"] == "user-key"
-    assert sent["title"] == "Comets"
+    assert sent["title"] == "Wrens"
     assert sent["url"] == "http://box:8730/sources/s"
 
 

@@ -112,10 +112,10 @@ def test_vaulting_nothing_leaves_the_url_alone():
 def test_a_ref_name_that_contains_the_value_is_not_a_leak():
     """The refs come from the team name, so they often contain the path stem.
 
-    ``/ics/hawks`` vaulted under ``tr_hawks_spring`` leaves ``hawks`` inside the
+    ``/ics/otters`` vaulted under ``tr_hawks_spring`` leaves ``otters`` inside the
     placeholder — which is the placeholder doing its job, not a leaked value.
     """
-    url = "https://teamreach.example/ics/hawks"
+    url = "https://teamreach.example/ics/otters"
     template, secrets = templatise(url, ["path"], "tr_hawks_spring")
 
     assert template == "https://teamreach.example/ics/{{secret:tr_hawks_spring}}"

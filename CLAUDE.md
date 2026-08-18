@@ -114,8 +114,8 @@ Staging a new feed to an onboarding calendar, then promoting it once the parse
 is clean (`docs/ONBOARDING.md`):
 
 ```bash
-calsync --db drive.db stage tr-hawks          # routes to the `onboarding` collection
-calsync --db drive.db promote tr-hawks        # gated on a clean parse + a seen fixture
+calsync --db drive.db stage tr-otters          # routes to the `onboarding` collection
+calsync --db drive.db promote tr-otters        # gated on a clean parse + a seen fixture
 ```
 
 Docker: `docker compose up -d` runs Radicale, the poller and the console;
@@ -270,7 +270,7 @@ Decisions that span several files and are easy to undo by accident:
 - **An event we cannot classify waits; an event missing a pin does not.**
   `Event.unresolved` carries the questions that decide *where an event goes* —
   which calendar, not how it reads — and `routing.collection_for` sends those to
-  the `enrichment` collection. Measured on the Hawks feed, guessing put 12 of 20
+  the `enrichment` collection. Measured on the Otters feed, guessing put 12 of 20
   events in the wrong calendar, and correcting that later is a **move**, the
   delete-then-create this project treats as the dangerous operation. An
   unresolved *venue* is deliberately not on that list: it costs a map pin, the
@@ -393,8 +393,8 @@ family calendar, so treat them as contracts, not defaults:
   variance; a model is only for the residual, and its answer is written back as
   an alias so each venue is resolved once ever. Anything a model proposes stays
   `pin_confirmed = 0` until a human confirms it.
-- **Venue identity excludes the field designator.** "Riverview #2" is venue
-  `Riverview` plus field `#2` (`normalize/venue.split_field`). Folding the
+- **Venue identity excludes the field designator.** "Kingsmere #2" is venue
+  `Kingsmere` plus field `#2` (`normalize/venue.split_field`). Folding the
   designator into the name mints a separate venue, and a separate geocode, per
   field. The console refuses a typed name that carries one, which is the only
   place a human could reintroduce it.
@@ -431,6 +431,34 @@ the CalDAV server requirements and acceptance checks — which now include one
 comparing what `GET /v1/events` serves against the VEVENTs a real Radicale hands
 a real phone, since "the API said 7pm, the calendar says 8pm" is only worth
 testing against a calendar this process did not just write itself.
+
+## Fixtures are invented, always
+
+Every name, team, venue and address under `tests/fixtures/` is made up, and that
+is a rule rather than an accident. These files started as recordings of real
+feeds, which made them a location history for real children — dates, times and
+street addresses of where a specific family's kids would be. Useful test data
+and a thing you cannot publish.
+
+Scrubbing them is not search-and-replace on names, because the *shapes* are the
+tests. Keep every one of these when you touch a fixture:
+
+- `Thistledown Park 1009 Thistledown Rd, Marbury NX 40114` — comma before the
+  city, **none before the state**. `normalize/venue.py` splits on the first
+  street-number run precisely because feeds punctuate like this.
+- `Alder Reach Memorial Park 7160 Kestrel Ln, Fenwick, NX 40219` — the same
+  thing punctuated properly, so both paths are covered.
+- `Kingsmere #2` and `Kingsmere#2` — the field designator with and without a
+  space, which must split off the venue identity.
+- `Kingsmere Meadow Park Soccer Fields` — plural with no number, which must
+  **not** split; "Fields" is part of the name.
+- `Kingsmere` / `Kingsmere Meadow Park` / `Kingsmere Meadow Park Soccer Fields`
+  — three names for one place, which is what the venue merge path is for.
+- Trailing spaces and doubled separators, exactly as coaches typed them.
+
+If a golden test fails after you edit a fixture, you have probably changed a
+shape rather than a name — read `docs/sources/<source>.md` before touching the
+assertion.
 
 ## Conventions
 

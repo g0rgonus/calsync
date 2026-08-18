@@ -33,12 +33,12 @@ def unfold(ics: bytes | str) -> str:
     text = ics.decode() if isinstance(ics, bytes) else ics
     return text.replace("\r\n ", "").replace("\n ", "")
 
-RUSH = Activity(
-    id="james-soccer-rush", child_id="james", name="Rush", official_name="U10DA",
-    league="TASL", age_group="U10", home_venue="Wolf Trap Park",
+VANGUARD = Activity(
+    id="jesse-soccer-vanguard", child_id="jesse", name="Vanguard", official_name="U10PL",
+    league="PSL", age_group="U10", home_venue="Thistledown Park",
     sport="soccer", emoji="⚽️", tz="America/New_York",
 )
-JAMES = Child(id="james", name="James", initial="J", birth_order=2)
+JESSE = Child(id="jesse", name="Jesse", initial="J", birth_order=2)
 
 
 @pytest.fixture()
@@ -50,28 +50,28 @@ def settings(tmp_path):
 def event():
     return Event(
         uid="360Player-event-4823901",
-        activity_id="james-soccer-rush",
+        activity_id="jesse-soccer-vanguard",
         starts_at=datetime(2026, 8, 29, 14, 0, tzinfo=timezone.utc),
         ends_at=datetime(2026, 8, 29, 15, 0, tzinfo=timezone.utc),
         is_game=True,
         tz="America/New_York",
-        opponent="Beach FC",
+        opponent="Harbour FC",
         home=True,
         venue=Venue(
-            raw="Wolf Trap Park 1009 Wolf Trap Rd, Yorktown VA 23692",
-            name="Wolf Trap Park",
-            address="1009 Wolf Trap Rd, Yorktown VA 23692",
+            raw="Thistledown Park 1009 Thistledown Rd, Marbury NX 40114",
+            name="Thistledown Park",
+            address="1009 Thistledown Rd, Marbury NX 40114",
             lat=37.2308, lon=-76.5197, pin_confirmed=True,
         ),
-        url="https://app.360player.com/organization/41363/events/4823901",
-        source_id="p360-james-rush",
+        url="https://app.360player.com/organization/100200/events/4823901",
+        source_id="p360-jesse-vanguard",
         content_hash="abc123",
     )
 
 
 @pytest.fixture()
 def rendered(event, settings):
-    return render(event, RUSH, [JAMES], settings, alarm_minutes=90)
+    return render(event, VANGUARD, [JESSE], settings, alarm_minutes=90)
 
 
 # --- registry ---------------------------------------------------------------
@@ -97,7 +97,7 @@ def test_capabilities_differ_and_are_declared_not_assumed():
 
 
 def test_render_produces_a_domain_object_not_ics(rendered):
-    assert rendered.title == "James ⚽️ vs Beach FC"
+    assert rendered.title == "Jesse ⚽️ vs Harbour FC"
     assert rendered.collection == "games"
     assert rendered.has_coordinates
     assert "BEGIN:VEVENT" not in rendered.body
@@ -110,8 +110,8 @@ def test_body_always_states_venue_local_time(rendered):
 
 
 def test_body_includes_address_and_source(rendered):
-    assert "1009 Wolf Trap Rd, Yorktown VA 23692" in rendered.body
-    assert "p360-james-rush" in rendered.body
+    assert "1009 Thistledown Rd, Marbury NX 40114" in rendered.body
+    assert "p360-jesse-vanguard" in rendered.body
 
 
 def test_body_omits_absent_optional_fields(rendered):
@@ -134,7 +134,7 @@ def test_ics_gives_the_location_as_text_a_maps_app_can_resolve(rendered):
     ics = to_ics(rendered).decode()
 
     assert "LOCATION:" in ics
-    assert "Wolf Trap Park" in ics
+    assert "Thistledown Park" in ics
     assert "GEO:" not in ics
     assert "X-APPLE-STRUCTURED-LOCATION" not in ics
 
@@ -153,7 +153,7 @@ def test_ics_never_carries_upstream_sequence(rendered):
 
 def test_ics_carries_provenance(rendered):
     ics = unfold(to_ics(rendered))
-    assert "X-CALSYNC-SOURCE:p360-james-rush" in ics
+    assert "X-CALSYNC-SOURCE:p360-jesse-vanguard" in ics
     assert "X-CALSYNC-HASH:abc123" in ics
 
 
@@ -168,7 +168,7 @@ def test_ics_file_target_round_trip(tmp_path, rendered):
     assert ref.collection == "games"
     path = tmp_path / "games" / "360Player-event-4823901.ics"
     assert path.exists()
-    assert b"James" in path.read_bytes()
+    assert b"Jesse" in path.read_bytes()
 
     target.cancel(ref)
     assert not path.exists()
@@ -261,18 +261,18 @@ def test_google_event_ids_are_legal_and_stable():
 
 def test_google_payload_shape(rendered):
     payload = to_google_event(rendered)
-    assert payload["summary"] == "James ⚽️ vs Beach FC"
+    assert payload["summary"] == "Jesse ⚽️ vs Harbour FC"
     assert payload["start"]["timeZone"] == "America/New_York"
     assert payload["status"] == "confirmed"
     assert payload["reminders"]["overrides"] == [{"method": "popup", "minutes": 90}]
-    assert payload["location"].startswith("Wolf Trap Park")
+    assert payload["location"].startswith("Thistledown Park")
 
 
 def test_google_keeps_our_uid_in_extended_properties(rendered):
     private = to_google_event(rendered)["extendedProperties"]["private"]
     # The derived id is lossy, so this is the only way back to our event.
     assert private["calsync_uid"] == "360Player-event-4823901"
-    assert private["calsync_source"] == "p360-james-rush"
+    assert private["calsync_source"] == "p360-jesse-vanguard"
 
 
 def test_google_cancellation_status(rendered):

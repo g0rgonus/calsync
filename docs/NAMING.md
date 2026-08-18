@@ -45,20 +45,20 @@ the rule only binds on long opponent or tournament names.
 
 | Calendar | Title | Week view |
 |---|---|---|
-| Games | `James ⚽️ vs Northside` | fits |
-| Games | `James ⚽️ @ Central HS` | fits |
-| Practices | `Patrick 🏊‍♂️ Practice` | fits |
-| Practices | `James ⚽️ Practice` | fits |
-| Practices | `James ⚽️ Minicamp` | fits — upstream label wins |
+| Games | `Jesse ⚽️ vs Northside` | fits |
+| Games | `Jesse ⚽️ @ Central HS` | fits |
+| Practices | `Parker 🏊‍♂️ Practice` | fits |
+| Practices | `Jesse ⚽️ Practice` | fits |
+| Practices | `Jesse ⚽️ Minicamp` | fits — upstream label wins |
 | Practices | `P+J ⚽️ Practice` | fits |
 | Practices | `Kids ⚽️ Practice` | fits |
-| Games | `James ⚽️ Fall Classic R1` | `James ⚽️ Fall…` |
+| Games | `Jesse ⚽️ Fall Classic R1` | `Jesse ⚽️ Fall…` |
 
 Dropping the venue means most titles still fit **without truncation** even with
 the type label restored.
 
 **When the source carries its own label, it wins** — Player360's "Minicamp" is
-more specific than "Practice", so it renders as `James ⚽️ Minicamp`. The generic
+more specific than "Practice", so it renders as `Jesse ⚽️ Minicamp`. The generic
 `Practice` is the fallback for sources that say nothing useful, which is the
 normal case for a swim PDF.
 
@@ -70,15 +70,15 @@ character.
 
 ### Why multi-kid uses initials
 
-`Patrick+James` is 13 characters before the emoji even starts, so week view
-truncates to `Patrick+Jame…` — **losing the sport emoji**, which is the field
+`Parker+Jesse` is 13 characters before the emoji even starts, so week view
+truncates to `Parker+Jame…` — **losing the sport emoji**, which is the field
 doing the disambiguation work. `P+J` keeps it visible.
 
 Single-kid events keep the full name, since that's the common case and it fits
 comfortably. The small readability cost of initials lands on the rarer form,
 which is the right way round.
 
-This works because Patrick, James, and Millie have distinct initials. A fourth
+This works because Parker, Jesse, and Mira have distinct initials. A fourth
 kid whose name starts with P, J, or M breaks it — fall back to two-letter
 abbreviations (`Pa+Pe`) at that point, not to full names.
 
@@ -102,7 +102,7 @@ more informative. (Say the word if you'd rather they were symmetric.)
 Emoji render fine in Apple Calendar and in any Unicode-capable client. They do
 affect string search (searching "soccer" won't match ⚽️), so keep the sport
 name in `DESCRIPTION`. If you'd rather have color-blocking than name-scanning,
-emoji-first (`⚽️ James vs Northside`) is a defensible alternative — pick one and
+emoji-first (`⚽️ Jesse vs Northside`) is a defensible alternative — pick one and
 never mix.
 
 ---
@@ -113,7 +113,7 @@ never mix.
 rendered if the field is actually populated:
 
 ```
-Soccer · Rush (U10DA)                          ← activity config
+Soccer · Vanguard (U10PL)                          ← activity config
 Kickoff 10:00 ET                               ← venue-local time, always
 8v8 Festival Club Kickoff (2 games)            ← upstream DESCRIPTION,
                                                  only if it differs from SUMMARY
@@ -178,9 +178,9 @@ A plain string like `Field 4` won't geocode. The reliable recipe is three
 properties together:
 
 ```
-LOCATION:Riverside Park — Field 4\, 1200 Riverside Dr\, Springfield\, IL 62704
+LOCATION:Brookvale Park — Field 4\, 1200 Brookvale Dr\, Springfield\, IL 62704
 GEO:39.781700;-89.650100
-LOCATION:Riverside Park, 41 Riverside Dr, Newport News VA
+LOCATION:Brookvale Park, 41 Brookvale Dr, Halden VA
  :geo:39.781700,-89.650100
 ```
 
@@ -204,7 +204,7 @@ raw string  →  alias lookup  →  hit?  →  done (no AI, no API call)
 "RP Field 4"     (fuzzy)         miss
                                   ↓
                         LLM: parse + disambiguate
-                        "Riverside Park", sub="Field 4",
+                        "Brookvale Park", sub="Field 4",
                         city from league context
                                   ↓
                         Geocoding API: name+address → lat/lon
@@ -220,7 +220,7 @@ confident, plausible, wrong lat/lon. Use a real geocoder — Apple MapKit JS
 Geocoding, or Mapbox. Nominatim is free but weak on US sports facilities.
 
 **Do use an LLM for the part it's good at:** turning `RP4` /
-`Riverside #4` / `Riverside Pk Fld 4` into a structured venue guess, and using
+`Brookvale #4` / `Brookvale Pk Fld 4` into a structured venue guess, and using
 league context to resolve `Central HS` to the right one of four in the metro.
 This is genuine disambiguation and rule-based parsing fails at it.
 
@@ -304,10 +304,10 @@ the type whenever it *isn't* a routine practice:
 
 | Event | Title |
 |---|---|
-| Routine practice | `Patrick 🏊‍♂️ Practice` |
-| Team photos | `James ⚽️ Photos` |
-| Banquet | `James ⚽️ Banquet` |
-| Tryouts | `James ⚽️ Tryouts` |
+| Routine practice | `Parker 🏊‍♂️ Practice` |
+| Team photos | `Jesse ⚽️ Photos` |
+| Banquet | `Jesse ⚽️ Banquet` |
+| Tryouts | `Jesse ⚽️ Tryouts` |
 
 Every entry names its own type — no implicit cases to remember.
 

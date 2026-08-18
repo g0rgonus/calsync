@@ -25,7 +25,7 @@ A_FORTNIGHT_AGO = NOW - timedelta(days=14)
 
 def verdict(**overrides):
     kwargs = dict(
-        source_id="tr-comets",
+        source_id="tr-wrens",
         last_event_at=LAST_SPRING,
         upcoming_events=0,
         now=NOW,
@@ -107,9 +107,9 @@ def conn(tmp_path):
     connection.executescript(
         """
         INSERT INTO children (id, name, initial, birth_order)
-             VALUES ('millie', 'Millie', 'M', 1);
+             VALUES ('mira', 'Mira', 'M', 1);
         INSERT INTO activities (id, child_id, name, sport_id, tz)
-             VALUES ('a', 'millie', 'Comets', 'soccer', 'UTC');
+             VALUES ('a', 'mira', 'Wrens', 'soccer', 'UTC');
         INSERT INTO sources (id, activity_id, kind, shape) VALUES ('s', 'a', 'teamreach', 'feed');
         """
     )

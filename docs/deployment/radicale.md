@@ -49,7 +49,7 @@ Two, matching the default `collection_template = "{type}"`:
 ```
 
 Collection names come from calsync config, so if the template changes to
-`{child}` the collections become `james/`, `patrick/`, `millie/`. **Don't
+`{child}` the collections become `jesse/`, `parker/`, `mira/`. **Don't
 hard-code the two names anywhere in the infrastructure** — let calsync create
 them, or be ready to add more.
 

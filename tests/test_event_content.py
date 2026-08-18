@@ -34,13 +34,13 @@ def conn(tmp_path):
     connection.executescript(
         """
         INSERT INTO children (id, name, initial, birth_order)
-             VALUES ('james', 'James', 'J', 1);
+             VALUES ('jesse', 'Jesse', 'J', 1);
         INSERT INTO activities (id, child_id, name, sport_id, official_name,
                                 league, age_group, tz)
-             VALUES ('james-soccer-rush', 'james', 'Rush', 'soccer', 'U10DA',
-                     'TASL', 'U10', 'America/New_York');
+             VALUES ('jesse-soccer-vanguard', 'jesse', 'Vanguard', 'soccer', 'U10PL',
+                     'PSL', 'U10', 'America/New_York');
         INSERT INTO sources (id, activity_id, kind, shape)
-             VALUES ('p360-james-rush', 'james-soccer-rush', 'player360', 'feed');
+             VALUES ('p360-jesse-vanguard', 'jesse-soccer-vanguard', 'player360', 'feed');
         """
     )
     connection.commit()
@@ -63,7 +63,7 @@ def _sync(conn, source, target, **kwargs):
     return sync_source(conn, source, target, **kwargs)
 
 
-def _stored(conn, source_id="p360-james-rush"):
+def _stored(conn, source_id="p360-jesse-vanguard"):
     return repo.event_contents(conn, source_id)
 
 
@@ -78,10 +78,10 @@ def test_a_synced_event_can_be_described_without_the_feed(conn, source, target):
         content for content in _stored(conn).values() if content["opponent"]
     )
     # As the adapter normalized it — "U10" identifies the age group, not them.
-    assert fixture["opponent"] == "Beach FC"
+    assert fixture["opponent"] == "Harbour FC"
     assert fixture["is_game"] == 1
-    assert fixture["venue_name"] == "Wolf Trap Park"
-    assert fixture["venue_address"] == "1009 Wolf Trap Rd, Yorktown VA 23692"
+    assert fixture["venue_name"] == "Thistledown Park"
+    assert fixture["venue_address"] == "1009 Thistledown Rd, Marbury NX 40114"
     assert fixture["ends_at"].startswith("2026-")
     assert fixture["tz"] == "America/New_York"
 
@@ -204,10 +204,10 @@ def test_teaching_a_venue_reaches_the_calendar(conn, source, target, tmp_path):
     _sync(conn, source, target)
 
     venue_id = repo.upsert_venue(
-        conn, name="Wolf Trap Regional Park",
-        address="1009 Wolf Trap Rd, Yorktown, VA 23692",
+        conn, name="Thistledown Regional Park",
+        address="1009 Thistledown Rd, Marbury, NX 40114",
     )
-    repo.add_venue_alias(conn, venue_id, "Wolf Trap Park")
+    repo.add_venue_alias(conn, venue_id, "Thistledown Park")
 
     report = _sync(conn, source, target)
 
@@ -218,11 +218,11 @@ def test_teaching_a_venue_reaches_the_calendar(conn, source, target, tmp_path):
         for line in path.read_text().splitlines()
         if line.startswith("LOCATION:")
     }
-    assert any("Wolf Trap Regional Park" in text for text in locations)
+    assert any("Thistledown Regional Park" in text for text in locations)
     assert all(
-        content["venue_name"] != "Wolf Trap Park"
+        content["venue_name"] != "Thistledown Park"
         for content in _stored(conn).values()
-        if content["venue_raw"] and "Wolf Trap" in content["venue_raw"]
+        if content["venue_raw"] and "Thistledown" in content["venue_raw"]
     )
 
 
@@ -230,15 +230,15 @@ def test_editing_a_team_reaches_the_calendar(conn, source, target, tmp_path):
     """The console's team form is not cosmetic — it changes how the feed parses.
 
     `age_group` feeds `Activity.known_tokens`, which is what decides whether
-    "U10DA TASL Match vs Beach FC U10" yields an opponent or a mangled one. The
+    "U10PL PSL Match vs Harbour FC U10" yields an opponent or a mangled one. The
     hash is over the unchanged feed, so before content was compared this edit
     changed the parse and nothing else: the correction sat in the database and
     never reached the family's calendar.
     """
     def edit(age_group):
         repo.update_activity(
-            conn, "james-soccer-rush", name="Rush", emoji=None,
-            official_name="U10DA", short_name=None, league="TASL",
+            conn, "jesse-soccer-vanguard", name="Vanguard", emoji=None,
+            official_name="U10PL", short_name=None, league="PSL",
             age_group=age_group, home_venue_id=None,
             alarm_game_min=90, alarm_practice_min=30,
         )
@@ -252,8 +252,8 @@ def test_editing_a_team_reaches_the_calendar(conn, source, target, tmp_path):
     report = _sync(conn, source, target)
 
     assert report.refreshed == 1
-    assert before.endswith("Beach FC U10")
-    assert _summary(tmp_path, uid).endswith("Beach FC")
+    assert before.endswith("Harbour FC U10")
+    assert _summary(tmp_path, uid).endswith("Harbour FC")
 
 
 def _summary(tmp_path, uid):
@@ -335,6 +335,6 @@ def test_deleting_a_child_takes_the_content_with_it(conn, source, target):
     _sync(conn, source, target)
     assert _stored(conn)
 
-    repo.delete_child(conn, "james")
+    repo.delete_child(conn, "jesse")
 
     assert _stored(conn) == {}

@@ -54,7 +54,7 @@ Giving Hermes a read-only Radicale account looks equivalent and isn't:
 
 1. **The calendar holds renders, not data.** `SUMMARY` is generated from
    structured fields ([NAMING.md](NAMING.md)). An agent reading CalDAV would
-   parse `Nora 🏊 Distance Set` back into child and activity — reverse
+   parse `Nadia 🏊 Distance Set` back into child and activity — reverse
    -engineering a string we just generated, and re-breaking every time the
    convention changes.
 2. **The disambiguation context isn't in the VEVENT.** Activity IDs, venue
@@ -116,16 +116,16 @@ Idempotency-Key: sha256:9f2b...:e3
   "extractor": "hermes/1.4",
   "prompt_version": "sched-extract-v7",
   "event": {
-    "child_hint": "Nora",
-    "activity_hint": "U12 Soccer - Riverside FC",
+    "child_hint": "Nadia",
+    "activity_hint": "U12 Soccer - Brookvale FC",
     "title": "vs. Northside United",
     "kind": "game",
     "starts_at": "2026-09-13T14:00:00-04:00",
     "tz": "America/New_York",
     "ends_at": "2026-09-13T15:30:00-04:00",
     "all_day": false,
-    "venue_raw": "Riverside Park Field 4",
-    "venue_address": "1200 Riverside Dr, Springfield",
+    "venue_raw": "Brookvale Park Field 4",
+    "venue_address": "1200 Brookvale Dr, Springfield",
     "status": "confirmed",
     "notes": "Arrive 45 min early for warmups"
   },
@@ -147,7 +147,7 @@ Response:
   "proposal_id": "prop_01J8X...",
   "state": "accepted",
   "event_uid": "3f9c1a2e-...@calsync",
-  "collection": "nora/soccer-fall-2026",
+  "collection": "nadia/soccer-fall-2026",
   "action": "created"
 }
 ```
@@ -184,8 +184,8 @@ no-op. Replaying a key returns the original result with `"replayed": true`.
       "detail": "No UTC offset or tz. Send RFC3339 with offset plus IANA tz.",
       "got": "2026-09-13 14:00" },
     { "field": "child_hint", "code": "unresolved_entity",
-      "detail": "No child matches 'Nora R.'",
-      "candidates": ["Nora", "Noah"] }
+      "detail": "No child matches 'Nadia R.'",
+      "candidates": ["Nadia", "Noah"] }
   ]
 }
 ```
@@ -239,7 +239,7 @@ device that already synced it; that is what `cancelled: true` on a read means.
   "count": 1,
   "events": [ { "…": "as in `events/query` below" } ],
   "sources": [
-    { "id": "p360-james-rush", "enabled": true,
+    { "id": "p360-jesse-vanguard", "enabled": true,
       "last_success_at": "2026-08-18T02:08:25+00:00",
       "last_error": null, "stale": false }
   ]
@@ -321,7 +321,7 @@ otherwise creep in.
 
 ```json
 POST /v1/events/query
-{ "selector": { "activity": "swim-practice", "child": "nora",
+{ "selector": { "activity": "swim-practice", "child": "nadia",
                 "from": "2026-09-14", "to": "2026-09-20" } }
 ```
 
@@ -332,16 +332,16 @@ POST /v1/events/query
   "events": [
     {
       "uuid": "3f9c1a2e-…@calsync",
-      "child":    { "id": "nora", "name": "Nora" },
-      "activity": { "id": "swim-practice", "name": "Swim — Riverside Aquatics",
+      "child":    { "id": "nadia", "name": "Nadia" },
+      "activity": { "id": "swim-practice", "name": "Swim — Brookvale Aquatics",
                     "sport": "swim" },
       "kind": "practice",
       "is_game": false,
       "starts_at": "2026-09-14T17:30:00-04:00",
       "tz": "America/New_York",
-      "venue": { "id": 12, "canonical_name": "Riverside Aquatic Center",
+      "venue": { "id": 12, "canonical_name": "Brookvale Aquatic Center",
                  "raw": "Aquatic Ctr Main", "pin_confirmed": true },
-      "summary_rendered": "Nora 🏊",
+      "summary_rendered": "Nadia 🏊",
       "resolution": {
         "venue": { "source_id": "swim-fall-pdf", "tier": 4,
                    "observed_at": "2026-08-09T11:04:00-04:00" }
@@ -370,7 +370,7 @@ Selectors default to a 14-day window and are always bounded.
 
 ```json
 {
-  "selector": { "activity": "swim-practice", "child": "nora",
+  "selector": { "activity": "swim-practice", "child": "nadia",
                 "from": "2026-09-14", "to": "2026-09-20" },
   "patch":    { "venue_raw": "Aquatic Center East" },
   "rationale": "Coach message: main pool closed for maintenance",
@@ -402,7 +402,7 @@ POST /v1/sources/{id}/poll           # manual trigger
 
 - **Don't send a display title.** `SUMMARY` is rendered server-side from
   structured fields ([NAMING.md](NAMING.md)). Send `title` as the raw opponent
-  or description only; the API composes `Nora ⚽️ vs Northside`.
+  or description only; the API composes `Nadia ⚽️ vs Northside`.
   This is what lets the naming convention change without re-extracting anything.
 - **Send `kind`, but don't agonize over it.** Routing is binary: `game` /
   `scrimmage` / `tournament` → Games, everything else → Practices. If you can't

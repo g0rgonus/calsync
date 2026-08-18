@@ -45,7 +45,7 @@ USER = os.environ.get("CALSYNC_ACCEPTANCE_USER", "calsync")
 READER = os.environ.get("CALSYNC_ACCEPTANCE_READER", "calreader")
 SECRETS = Path(__file__).resolve().parent.parent / "secrets" / "secrets.json"
 
-FIXTURE = Path(__file__).parent / "fixtures" / "teamreach_comets_sample.ics"
+FIXTURE = Path(__file__).parent / "fixtures" / "teamreach_wrens_sample.ics"
 NOW = datetime(2026, 3, 1, 12, 0, tzinfo=timezone.utc)
 
 #: An upstream-shaped resource name: mixed case and hyphens (R6). UIDs come from
@@ -74,8 +74,8 @@ def _probe() -> str:
         # Exactly what `render()` composes: name, then address, in one line.
         # Building it by hand as the address alone made this probe test my
         # typing rather than what actually reaches a calendar.
-        location_text="Riverview Farm Park, 1 Riverview Rd, Newport News VA",
-        venue_name="Riverview Farm Park",
+        location_text="Kingsmere Meadow Park, 1 Kingsmere Rd, Halden VA",
+        venue_name="Kingsmere Meadow Park",
         is_game=True,
         provenance={"SOURCE": "acceptance", "HASH": "0123456789abcdef"},
     )
@@ -197,8 +197,8 @@ def test_r5_the_location_text_survives_a_round_trip(collection, password):
          headers={"Content-Type": "text/calendar; charset=utf-8"})
     got = _unfold(call("GET", collection + UID, password=password).body.decode())
 
-    assert "Riverview Farm Park" in got
-    assert "1 Riverview Rd" in got
+    assert "Kingsmere Meadow Park" in got
+    assert "1 Kingsmere Rd" in got
 
 
 def test_r6_an_upstream_resource_name_is_accepted(collection, password):
@@ -230,12 +230,12 @@ def configured(tmp_path, password):
     conn.executescript(
         """
         INSERT INTO children (id, name, initial, birth_order)
-             VALUES ('millie', 'Millie', 'M', 1);
+             VALUES ('mira', 'Mira', 'M', 1);
         INSERT INTO activities (id, child_id, name, sport_id, tz)
-             VALUES ('millie-soccer-comets', 'millie', 'Comets', 'soccer',
+             VALUES ('mira-soccer-wrens', 'mira', 'Wrens', 'soccer',
                      'America/New_York');
         INSERT INTO sources (id, activity_id, kind, shape, staging_collection)
-             VALUES ('tr-comets', 'millie-soccer-comets', 'teamreach', 'feed',
+             VALUES ('tr-wrens', 'mira-soccer-wrens', 'teamreach', 'feed',
                      ?);
         """.replace("?", f"'{RUN}-staging'")
     )
@@ -265,7 +265,7 @@ def test_a_feed_syncs_into_a_real_caldav_server(configured, password):
     on disk. This is the only one that proves calsync and Radicale actually
     agree — about collection creation, resource naming, and ETags.
     """
-    source = repo.get_source(configured, "tr-comets")
+    source = repo.get_source(configured, "tr-wrens")
     report = sync_source(configured, source, _target(password), now=NOW,
                          raw=FIXTURE.read_bytes())
 
@@ -273,7 +273,7 @@ def test_a_feed_syncs_into_a_real_caldav_server(configured, password):
     assert report.created > 0
     assert not report.errors
 
-    states = repo.event_states(configured, "tr-comets")
+    states = repo.event_states(configured, "tr-wrens")
     assert len(states) == report.created
     for state in states.values():
         assert state.remote_etag, "no ETag stored, so a later update cannot be safe"
@@ -290,7 +290,7 @@ def test_a_feed_syncs_into_a_real_caldav_server(configured, password):
 def test_a_second_sync_writes_nothing(configured, password):
     """The assertion that mattered for ics files matters more against a server."""
     target = _target(password)
-    source = repo.get_source(configured, "tr-comets")
+    source = repo.get_source(configured, "tr-wrens")
     first = sync_source(configured, source, target, now=NOW, raw=FIXTURE.read_bytes())
     second = sync_source(configured, source, target, now=NOW, raw=FIXTURE.read_bytes())
 
@@ -305,22 +305,22 @@ def test_promotion_relocates_rather_than_duplicating(configured, password):
     behind is exactly the duplicate-in-a-shared-calendar failure this project
     exists to prevent."""
     target = _target(password)
-    source = repo.get_source(configured, "tr-comets")
+    source = repo.get_source(configured, "tr-wrens")
     sync_source(configured, source, target, now=NOW, raw=FIXTURE.read_bytes())
 
-    before = repo.event_states(configured, "tr-comets")
+    before = repo.event_states(configured, "tr-wrens")
     sample = next(iter(before.values()))
     staged_url = f"{BASE}/{USER}/{RUN}-staging/{sample.remote_id}.ics"
     assert call("GET", staged_url, password=password).status == 200
 
-    repo.set_staging(configured, "tr-comets", None)
+    repo.set_staging(configured, "tr-wrens", None)
     promoted = sync_source(
-        configured, repo.get_source(configured, "tr-comets"), target,
+        configured, repo.get_source(configured, "tr-wrens"), target,
         now=NOW, raw=FIXTURE.read_bytes(),
     )
 
     assert promoted.moved > 0, "promotion moved nothing"
-    after = repo.event_states(configured, "tr-comets")
+    after = repo.event_states(configured, "tr-wrens")
     assert {s.collection for s in after.values()} <= {f"{RUN}-games", f"{RUN}-practices"}
 
     # The staged copy is gone, not orphaned alongside the promoted one.
@@ -370,7 +370,7 @@ def test_the_api_serves_what_the_calendar_actually_holds(configured, tmp_path, p
 
     from calsync.api import app as api_app
 
-    source = repo.get_source(configured, "tr-comets")
+    source = repo.get_source(configured, "tr-wrens")
     report = sync_source(configured, source, _target(password), now=NOW,
                          raw=FIXTURE.read_bytes())
     assert report.created > 0, report.line()
@@ -383,7 +383,7 @@ def test_the_api_serves_what_the_calendar_actually_holds(configured, tmp_path, p
     served = _api_get(app, "/v1/events?from=2026-03-01&to=2026-04-01")
     assert served["count"] > 0, "the API found nothing the sync had just written"
 
-    states = repo.event_states(configured, "tr-comets")
+    states = repo.event_states(configured, "tr-wrens")
     for event in served["events"]:
         state = states[event["uid"]]
         fetched = call(
@@ -405,7 +405,7 @@ def test_the_api_serves_what_the_calendar_actually_holds(configured, tmp_path, p
     # timestamp from the poll that just ran. Whether `stale` flips is decided by
     # the clock rather than by the server, so `tests/test_api.py` pins that.
     health = served["sources"][0]
-    assert health["id"] == "tr-comets"
+    assert health["id"] == "tr-wrens"
     assert health["last_success_at"] is not None
     assert health["last_error"] is None
 
@@ -484,9 +484,9 @@ def test_a_sync_through_the_configured_target_writes_to_the_real_server(
     conn.executescript(
         f"""
         INSERT INTO children (id, name, initial, birth_order)
-             VALUES ('millie', 'Millie', 'M', 1);
+             VALUES ('mira', 'Mira', 'M', 1);
         INSERT INTO activities (id, child_id, name, sport_id, tz)
-             VALUES ('a', 'millie', 'Comets', 'soccer', 'America/New_York');
+             VALUES ('a', 'mira', 'Wrens', 'soccer', 'America/New_York');
         INSERT INTO sources (id, activity_id, kind, shape, staging_collection)
              VALUES ('cfg', 'a', 'teamreach', 'feed', '{RUN}-configured');
         """

@@ -89,15 +89,15 @@ def db_path(tmp_path):
     conn.executescript(
         """
         INSERT INTO children (id, name, initial, birth_order)
-             VALUES ('james', 'James', 'J', 1);
+             VALUES ('jesse', 'Jesse', 'J', 1);
         INSERT INTO children (id, name, initial, birth_order)
-             VALUES ('nora', 'Nora', 'N', 2);
+             VALUES ('nadia', 'Nadia', 'N', 2);
         INSERT INTO activities (id, child_id, name, sport_id, official_name,
                                 league, age_group, tz)
-             VALUES ('james-soccer-rush', 'james', 'Rush', 'soccer', 'U10DA',
-                     'TASL', 'U10', 'America/New_York');
+             VALUES ('jesse-soccer-vanguard', 'jesse', 'Vanguard', 'soccer', 'U10PL',
+                     'PSL', 'U10', 'America/New_York');
         INSERT INTO sources (id, activity_id, kind, shape, tier)
-             VALUES ('p360-james-rush', 'james-soccer-rush', 'player360', 'feed', 2);
+             VALUES ('p360-jesse-vanguard', 'jesse-soccer-vanguard', 'player360', 'feed', 2);
         """
     )
     conn.commit()
@@ -155,8 +155,8 @@ def test_a_read_without_the_right_token_is_refused(client, token):
 def test_a_refusal_does_not_leak_the_schedule(client):
     reply = client.get("/v1/events", token="wrong-token")
 
-    assert "James" not in reply["body"]
-    assert "Wolf Trap" not in reply["body"]
+    assert "Jesse" not in reply["body"]
+    assert "Thistledown" not in reply["body"]
 
 
 # --- what an agent gets that a calendar read cannot give it -----------------
@@ -165,7 +165,7 @@ def test_a_refusal_does_not_leak_the_schedule(client):
 def test_identity_comes_out_as_fields_not_as_a_parsed_title(client):
     """The argument the whole API rests on (docs/API.md).
 
-    An agent handed a CalDAV account would have to pull "James ⚽️ vs Beach FC"
+    An agent handed a CalDAV account would have to pull "Jesse ⚽️ vs Harbour FC"
     back apart into a child and an opponent — reverse-engineering a string we
     generated, and re-breaking every time the convention changed.
     """
@@ -174,13 +174,13 @@ def test_identity_comes_out_as_fields_not_as_a_parsed_title(client):
     assert reply["headers"]["Content-Type"] == "application/json"
 
     fixture = next(e for e in reply["json"]["events"] if e["opponent"])
-    assert fixture["child"] == {"id": "james", "name": "James"}
-    assert fixture["activity"]["id"] == "james-soccer-rush"
+    assert fixture["child"] == {"id": "jesse", "name": "Jesse"}
+    assert fixture["activity"]["id"] == "jesse-soccer-vanguard"
     assert fixture["activity"]["sport"] == "soccer"
-    assert fixture["opponent"] == "Beach FC"
+    assert fixture["opponent"] == "Harbour FC"
     assert fixture["kind"] == "game"
-    assert fixture["venue"]["raw"].startswith("Wolf Trap Park")
-    assert fixture["venue"]["address"] == "1009 Wolf Trap Rd, Yorktown VA 23692"
+    assert fixture["venue"]["raw"].startswith("Thistledown Park")
+    assert fixture["venue"]["address"] == "1009 Thistledown Rd, Marbury NX 40114"
 
 
 def test_the_title_is_rendered_now_not_read_back(client, db_path):
@@ -227,15 +227,15 @@ def test_a_venue_pin_confirmed_later_shows_against_events_written_earlier(
     )
 
     conn = db.connect(db_path)
-    venue_id = repo.upsert_venue(conn, name="Wolf Trap Park", pin_confirmed=True)
-    repo.add_venue_alias(conn, venue_id, "Wolf Trap Park")
+    venue_id = repo.upsert_venue(conn, name="Thistledown Park", pin_confirmed=True)
+    repo.add_venue_alias(conn, venue_id, "Thistledown Park")
     conn.close()
 
     events = client.get(SEASON)["json"]["events"]
-    wolf_trap = [e for e in events if e["venue"] and "Wolf Trap" in e["venue"]["raw"]]
-    assert wolf_trap
-    assert all(e["venue"]["pin_confirmed"] for e in wolf_trap)
-    assert all(e["venue"]["id"] == venue_id for e in wolf_trap)
+    thistledown = [e for e in events if e["venue"] and "Thistledown" in e["venue"]["raw"]]
+    assert thistledown
+    assert all(e["venue"]["pin_confirmed"] for e in thistledown)
+    assert all(e["venue"]["id"] == venue_id for e in thistledown)
 
 
 def test_every_field_says_who_owns_it(client):
@@ -249,7 +249,7 @@ def test_every_field_says_who_owns_it(client):
 
     assert set(event["resolution"]) >= {"venue", "starts_at", "opponent"}
     venue = event["resolution"]["venue"]
-    assert venue["source_id"] == "p360-james-rush"
+    assert venue["source_id"] == "p360-jesse-vanguard"
     assert venue["tier"] == 2
     assert venue["observed_at"].startswith("2026-07-20")
 
@@ -265,7 +265,7 @@ def test_a_stale_source_is_named_rather_than_served_silently(client, db_path):
     copy introduces.
     """
     fresh = client.get("/v1/events")["json"]["sources"]
-    assert fresh[0]["id"] == "p360-james-rush"
+    assert fresh[0]["id"] == "p360-jesse-vanguard"
     assert fresh[0]["stale"] is False
 
     conn = db.connect(db_path)
@@ -279,7 +279,7 @@ def test_a_stale_source_is_named_rather_than_served_silently(client, db_path):
 
 def test_a_failing_source_reports_its_error(client, db_path):
     conn = db.connect(db_path)
-    repo.record_source_error(conn, "p360-james-rush", "feed returned 403")
+    repo.record_source_error(conn, "p360-jesse-vanguard", "feed returned 403")
     conn.commit()
     conn.close()
 
@@ -350,8 +350,8 @@ def test_a_backwards_window_is_refused(client):
 
 
 def test_filtering_by_a_child_with_no_events_returns_none(client):
-    assert client.get("/v1/events?child=nora")["json"]["count"] == 0
-    assert client.get("/v1/events?child=james")["json"]["count"] > 0
+    assert client.get("/v1/events?child=nadia")["json"]["count"] == 0
+    assert client.get("/v1/events?child=jesse")["json"]["count"] > 0
 
 
 def test_one_event_by_uid(client):
@@ -456,9 +456,9 @@ def asked(db_path):
     """One dispatched question, as if the poller had posted it."""
     conn = db.connect(db_path)
     repo.record_task(
-        conn, task_id="task_abc123", source_id="p360-james-rush",
+        conn, task_id="task_abc123", source_id="p360-jesse-vanguard",
         kind="unidentified", type="resolve_activity",
-        context=("Fury vs Hawks",), candidates=("Hawks", "Fury"),
+        context=("Ember vs Otters",), candidates=("Otters", "Ember"),
         dispatched_at="2026-07-20T12:00:00+00:00",
     )
     conn.commit()
@@ -468,8 +468,8 @@ def asked(db_path):
 
 def test_an_answer_is_stored_and_explicitly_not_applied(client, asked, db_path):
     reply = _post(client, f"/v1/tasks/{asked}/result",
-                  {"answer": {"alias": "Hawks"}, "answered_by": "hermes/1.4",
-                   "rationale": "Hawks appears on both sides"})
+                  {"answer": {"alias": "Otters"}, "answered_by": "hermes/1.4",
+                   "rationale": "Otters appears on both sides"})
 
     assert reply["status"] == 200
     assert reply["json"]["applied"] is False
@@ -520,7 +520,7 @@ def test_re_answering_a_decided_question_is_refused(client, asked, db_path):
     conn.close()
 
     reply = _post(client, f"/v1/tasks/{asked}/result",
-                  {"answer": {"alias": "Hawks"}, "answered_by": "hermes"})
+                  {"answer": {"alias": "Otters"}, "answered_by": "hermes"})
 
     assert reply["status"] == 409
     assert reply["json"]["error"]["code"] == "already_decided"
@@ -528,7 +528,7 @@ def test_re_answering_a_decided_question_is_refused(client, asked, db_path):
 
 def test_answering_without_the_token_is_refused(client, asked):
     reply = _post(client, f"/v1/tasks/{asked}/result",
-                  {"answer": {"alias": "Hawks"}, "answered_by": "hermes"},
+                  {"answer": {"alias": "Otters"}, "answered_by": "hermes"},
                   token="wrong")
 
     assert reply["status"] == 401
@@ -541,7 +541,7 @@ def test_there_is_no_way_to_approve_through_the_api(client, asked, db_path):
     queue whatever it claims about itself.
     """
     _post(client, f"/v1/tasks/{asked}/result",
-          {"answer": {"alias": "Hawks"}, "answered_by": "hermes",
+          {"answer": {"alias": "Otters"}, "answered_by": "hermes",
            "state": "approved", "approved": True, "apply": True})
 
     conn = db.connect(db_path)
@@ -590,7 +590,7 @@ def test_the_contract_carries_the_answer_shapes(client):
     shapes = client.get("/v1")["json"]["answer_shapes"]
 
     assert set(shapes) == {"resolve_activity", "classify_kind", "normalize_venue"}
-    assert shapes["resolve_activity"]["answer"] == {"alias": "Hawks"}
+    assert shapes["resolve_activity"]["answer"] == {"alias": "Otters"}
 
 
 def test_the_contract_says_what_is_not_built(client):

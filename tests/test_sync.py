@@ -36,13 +36,13 @@ def conn(tmp_path):
     connection.executescript(
         """
         INSERT INTO children (id, name, initial, birth_order)
-             VALUES ('james', 'James', 'J', 1);
+             VALUES ('jesse', 'Jesse', 'J', 1);
         INSERT INTO activities (id, child_id, name, sport_id, official_name,
                                 league, age_group, tz, alarm_game_min, alarm_practice_min)
-             VALUES ('james-soccer-rush', 'james', 'Rush', 'soccer', 'U10DA',
-                     'TASL', 'U10', 'America/New_York', 90, 30);
+             VALUES ('jesse-soccer-vanguard', 'jesse', 'Vanguard', 'soccer', 'U10PL',
+                     'PSL', 'U10', 'America/New_York', 90, 30);
         INSERT INTO sources (id, activity_id, kind, shape)
-             VALUES ('p360-james-rush', 'james-soccer-rush', 'player360', 'feed');
+             VALUES ('p360-jesse-vanguard', 'jesse-soccer-vanguard', 'player360', 'feed');
         """
     )
     connection.commit()
@@ -106,7 +106,7 @@ def test_poll_run_is_logged(conn, source, target):
     assert [r["status"] for r in runs] == ["ok"]
     assert runs[0]["raw_sha256"], "raw hash not recorded, so a repeat fetch is unprovable"
     assert conn.execute(
-        "SELECT last_success_at FROM sources WHERE id = 'p360-james-rush'"
+        "SELECT last_success_at FROM sources WHERE id = 'p360-jesse-vanguard'"
     ).fetchone()["last_success_at"]
 
 
@@ -123,7 +123,7 @@ def test_unparseable_feed_is_an_error_not_a_wipe(conn, source, target):
     assert report.cancelled == 0
     assert repo.event_states(conn, source.id) == before, "state changed on a failed poll"
     assert conn.execute(
-        "SELECT last_error FROM sources WHERE id = 'p360-james-rush'"
+        "SELECT last_error FROM sources WHERE id = 'p360-jesse-vanguard'"
     ).fetchone()["last_error"]
 
 
@@ -142,7 +142,7 @@ def test_empty_feed_is_an_error_not_a_wipe(conn, source, target):
 def test_missing_secret_is_an_error_not_a_wipe(conn, source, target):
     conn.execute(
         "UPDATE sources SET url_template = 'https://x/e.ics?token={{secret:nope}}' "
-        "WHERE id = 'p360-james-rush'"
+        "WHERE id = 'p360-jesse-vanguard'"
     )
     conn.commit()
 
@@ -234,10 +234,10 @@ def test_extract_raises_rather_than_falling_back_to_the_raw_uid():
 
 def test_synthesized_uid_is_stable_for_the_same_content():
     when = datetime(2026, 8, 1, 18, 0, tzinfo=timezone.utc)
-    a = synthesize(activity_id="x", starts_at=when, summary="U10DA  Practice")
-    b = synthesize(activity_id="x", starts_at=when, summary="U10DA Practice")
+    a = synthesize(activity_id="x", starts_at=when, summary="U10PL  Practice")
+    b = synthesize(activity_id="x", starts_at=when, summary="U10PL Practice")
     assert a == b
-    assert a != synthesize(activity_id="y", starts_at=when, summary="U10DA Practice")
+    assert a != synthesize(activity_id="y", starts_at=when, summary="U10PL Practice")
 
 
 # --- url assembly -----------------------------------------------------------
@@ -319,33 +319,33 @@ def test_alias_resolution_enriches_but_never_downgrades(conn, source, target):
     """A name-only venue row must not erase an address the feed supplied.
 
     Seeding an activity's home_venue creates exactly such a stub, and replacing
-    outright turned "Wolf Trap Park, 1009 Wolf Trap Rd" into a bare name.
+    outright turned "Thistledown Park, 1009 Thistledown Rd" into a bare name.
     """
-    conn.execute("INSERT INTO venues (canonical_name) VALUES ('Randy Custis Memorial Park')")
+    conn.execute("INSERT INTO venues (canonical_name) VALUES ('Alder Reach Memorial Park')")
     conn.execute(
         "INSERT INTO venue_aliases (venue_id, alias, source) "
-        "SELECT id, 'Randy Custis Memorial Park', 'test' FROM venues "
-        "WHERE canonical_name = 'Randy Custis Memorial Park'"
+        "SELECT id, 'Alder Reach Memorial Park', 'test' FROM venues "
+        "WHERE canonical_name = 'Alder Reach Memorial Park'"
     )
     conn.commit()
 
     _sync(conn, source, target)
 
     written = "\n".join(p.read_text() for p in target.directory.rglob("*.ics"))
-    assert "7160 Rescue Ln" in written, "alias lookup discarded the feed's address"
+    assert "7160 Kestrel Ln" in written, "alias lookup discarded the feed's address"
 
 
 def test_alias_resolution_supplies_what_the_feed_lacks(conn, source, target):
     """The other direction: the table fills in an address the feed never had."""
     conn.execute(
         "INSERT INTO venues (canonical_name, address, lat, lon, pin_confirmed) "
-        "VALUES ('Randy Custis Memorial Park', '7160 Rescue Ln, Exmore, VA 23350', "
+        "VALUES ('Alder Reach Memorial Park', '7160 Kestrel Ln, Fenwick, NX 40219', "
         "37.5, -75.8, 1)"
     )
     conn.execute(
         "INSERT INTO venue_aliases (venue_id, alias, source) "
-        "SELECT id, 'Randy Custis Memorial Park', 'test' FROM venues "
-        "WHERE canonical_name = 'Randy Custis Memorial Park'"
+        "SELECT id, 'Alder Reach Memorial Park', 'test' FROM venues "
+        "WHERE canonical_name = 'Alder Reach Memorial Park'"
     )
     conn.commit()
 
@@ -355,7 +355,7 @@ def test_alias_resolution_supplies_what_the_feed_lacks(conn, source, target):
     # The address, which is the whole point of the table filling one in — and
     # now the whole of what a maps app needs, since calsync stopped emitting a
     # coordinate pin.
-    assert "7160 Rescue Ln" in written, "the known address never reached the event"
+    assert "7160 Kestrel Ln" in written, "the known address never reached the event"
 
 
 # --- diagnostics reach the report -------------------------------------------
@@ -381,7 +381,7 @@ def test_unresolved_venues_are_reported(conn, source, target):
 
 
 def test_a_resolved_venue_clears_that_diagnostic(conn, source, target):
-    for name in ("Randy Custis Memorial Park", "Wolf Trap Park", "Kiln Creek Park"):
+    for name in ("Alder Reach Memorial Park", "Thistledown Park", "Kiln Creek Park"):
         conn.execute(
             "INSERT INTO venues (canonical_name, address) VALUES (?, '1 Somewhere Rd')",
             (name,),
@@ -407,7 +407,7 @@ def test_fixtures_seen_counts_games(conn, source, target):
 
 
 def _stage(conn, collection="onboarding"):
-    repo.set_staging(conn, "p360-james-rush", collection)
+    repo.set_staging(conn, "p360-jesse-vanguard", collection)
     return repo.list_sources(conn)[0]
 
 
@@ -429,7 +429,7 @@ def test_promotion_moves_events_rather_than_duplicating(conn, target, tmp_path):
     staged_count = len(list((tmp_path / "out" / "onboarding").rglob("*.ics")))
     assert staged_count > 0
 
-    repo.set_staging(conn, "p360-james-rush", None)
+    repo.set_staging(conn, "p360-jesse-vanguard", None)
     promoted = repo.list_sources(conn)[0]
     _sync(conn, promoted, target)
 
@@ -459,7 +459,7 @@ def test_promotable_requires_a_fixture_to_have_been_seen(conn, source, target):
 def test_events_ageing_out_of_the_window_are_not_a_mass_cancellation(conn, source, target):
     """The failure a live container surfaced: a finished season ages past the
     back window, every tracked event looks missing at once, and the
-    disappearance guard fires on what is really just the passage of time."""
+    disappearance guard fires on what is really just the windmere of time."""
     _sync(conn, source, target)
     assert repo.event_states(conn, source.id)
 

@@ -169,7 +169,7 @@ adoptions(uid, calendar, icloud_uid, matched_proposal_id, score, tier,
 
 ### Renaming on adopt
 
-An adopted event still has its hand-typed title (`Soccer game`, `NORA SOCCER!!`).
+An adopted event still has its hand-typed title (`Soccer game`, `NADIA SOCCER!!`).
 Decide per match whether to re-render it into the naming convention. Default to
 yes — normalizing is the point — but make it a per-row toggle, since a few
 hand-written titles carry detail the extraction didn't capture.
@@ -182,7 +182,7 @@ Adoption is the one moment calsync looks at hand-created events at all, so it's
 the one place an appointment could be mistaken for a practice — and a
 mis-adopted haircut becomes a haircut calsync can later cancel.
 
-The scoring mostly handles it already: "Nora haircut" at 5:00 against an
+The scoring mostly handles it already: "Nadia haircut" at 5:00 against an
 ingested 5:30 soccer practice scores ~0.41 (time 0.21 + child 0.20, nothing
 from sport, venue, or opponent), under the 0.50 floor. But "mostly" isn't a
 safety property, so gate it explicitly.

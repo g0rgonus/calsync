@@ -2,8 +2,8 @@
 
 Player360 glues them together with inconsistent punctuation:
 
-    Randy Custis Memorial Park 7160 Rescue Ln, Exmore, VA 23350
-    Wolf Trap Park 1009 Wolf Trap Rd, Yorktown VA 23692   <- no comma before VA
+    Alder Reach Memorial Park 7160 Kestrel Ln, Fenwick, NX 40219
+    Thistledown Park 1009 Thistledown Rd, Marbury NX 40114   <- no comma before VA
 
 Splitting on the first street-number run matches what Apple's own data
 detector does with these strings, which is a decent sign it's the right cut.
@@ -24,7 +24,7 @@ _WS = re.compile(r"\s+")
 #: A trailing field/court designator: "#2", "Field 3", "Court 1", "Gym".
 #:
 #: Anchored to the end and requiring a word boundary on the keyword, so
-#: "Riverview Farm Park Soccer Fields" keeps its name intact — "Fields" plural
+#: "Kingsmere Meadow Park Soccer Fields" keeps its name intact — "Fields" plural
 #: with no number is part of what the place is called, not which field you want.
 FIELD_TAIL = re.compile(
     r"\s+(?P<field>"
@@ -39,7 +39,7 @@ FIELD_TAIL = re.compile(
 def split_field(text: str) -> tuple[str, str | None]:
     """Separate the venue from the field within it.
 
-    ``"Riverview #2"`` -> ``("Riverview", "#2")``
+    ``"Kingsmere #2"`` -> ``("Kingsmere", "#2")``
 
     Venue identity is what carries an address and a pin, and every field at a
     park shares both. Folding the designator into the name would mint a separate

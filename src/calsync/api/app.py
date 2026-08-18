@@ -272,9 +272,9 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None) -> Bo
 #: What each task type's answer must look like, returned alongside a 422 so a
 #: client can correct itself rather than guess.
 _ANSWER_SHAPES = {
-    "resolve_activity": {"alias": "Hawks"},
+    "resolve_activity": {"alias": "Otters"},
     "classify_kind": {"label": "Skills Session", "is_game": False},
-    "normalize_venue": {"name": "Riverview Farm Park",
+    "normalize_venue": {"name": "Kingsmere Meadow Park",
                         "address": "optional",
                         "same_as": "or the name of a venue already known"},
 }

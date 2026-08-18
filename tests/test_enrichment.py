@@ -16,7 +16,7 @@ from calsync import db, enrichment, matrix, notify, repo
 from calsync.sync import sync_source
 from calsync.targets import build
 
-FIXTURE = Path(__file__).parent / "fixtures" / "teamreach_hawks_sample.ics"
+FIXTURE = Path(__file__).parent / "fixtures" / "teamreach_otters_sample.ics"
 NOW = datetime(2026, 3, 1, 12, tzinfo=timezone.utc)
 
 
@@ -50,9 +50,9 @@ def conn(tmp_path):
         """
         INSERT INTO children (id, name, initial, birth_order)
              VALUES ('k', 'Kid', 'K', 1);
-        -- Deliberately NOT "Hawks". The activity's own name feeds
-        -- `Activity.known_tokens`, so calling it Hawks would let the parser
-        -- recognise every fixture in the Hawks feed and this file would test a
+        -- Deliberately NOT "Otters". The activity's own name feeds
+        -- `Activity.known_tokens`, so calling it Otters would let the parser
+        -- recognise every fixture in the Otters feed and this file would test a
         -- queue that is always empty.
         INSERT INTO activities (id, child_id, name, sport_id, tz)
              VALUES ('a', 'k', 'Spring Squad', 'soccer', 'America/New_York');
@@ -108,7 +108,7 @@ def test_it_names_the_questions_but_does_not_paste_the_season_in(conn, target):
     _review(conn, target, push)
 
     body = push.sent[0]["message"]
-    assert "Hawks" in body
+    assert "Otters" in body
     assert body.count("·") <= 6, "unbounded list in a push notification"
     assert "more" in body, "truncated without saying it had truncated"
 
@@ -142,7 +142,7 @@ def test_a_genuinely_new_question_notifies_again(conn, target):
     assert len(push.sent) == 1
 
     # Same feed, one opponent renamed — a question that did not exist before.
-    next_week = FIXTURE.read_bytes().replace(b"Bruins", b"Kestrels")
+    next_week = FIXTURE.read_bytes().replace(b"Badgers", b"Kestrels")
     _review(conn, target, push, body=next_week)
 
     assert len(push.sent) == 2
@@ -166,12 +166,12 @@ def test_a_cleared_queue_resets_so_the_next_one_is_announced(conn, target):
     _review(conn, target, push)
     assert len(push.sent) == 1
 
-    repo.add_activity_alias(conn, "a", "Hawks")          # answer it
+    repo.add_activity_alias(conn, "a", "Otters")          # answer it
     cleared = _review(conn, target, push)
     assert cleared.held == 0
     assert len(push.sent) == 1
 
-    repo.remove_activity_alias(conn, "a", "Hawks")       # and it comes back
+    repo.remove_activity_alias(conn, "a", "Otters")       # and it comes back
     again = _review(conn, target, push)
 
     assert again.notified
@@ -184,7 +184,7 @@ def test_an_unresolved_venue_alone_never_pages_anybody(conn, target):
     Paging about it would train somebody to ignore the signal that does mean
     events are off the calendar.
     """
-    repo.add_activity_alias(conn, "a", "Hawks")
+    repo.add_activity_alias(conn, "a", "Otters")
     push = Pushover()
     outcome = _review(conn, target, push)
 
@@ -209,7 +209,7 @@ def test_a_new_venue_does_not_repage_a_queue_that_is_already_known(
     _review(conn, target, push)
     assert len(push.sent) == 1
 
-    at_a_new_ground = FIXTURE.read_bytes().replace(b"Stoney Run", b"Kingsmill")
+    at_a_new_ground = FIXTURE.read_bytes().replace(b"Copperfield", b"Kingsmill")
     outcome = _review(conn, target, push, body=at_a_new_ground)
 
     source, report = _poll(conn, target, at_a_new_ground)
@@ -303,7 +303,7 @@ def test_a_venue_is_asked_about_even_though_it_holds_nothing(conn, target):
     never pages a human — but resolving it is the best use of a model this
     project has, so it still gets asked.
     """
-    repo.add_activity_alias(conn, "a", "Hawks")     # nothing is held any more
+    repo.add_activity_alias(conn, "a", "Otters")     # nothing is held any more
     _configure_matrix(conn)
     room = Room()
     outcome = _dispatch(conn, target, room)
@@ -381,7 +381,7 @@ def test_the_push_and_the_room_are_tracked_separately(conn, target):
     _review(conn, target, push)
     _dispatch(conn, target, room)
 
-    assert len(push.sent) == 2, "the push did not re-fire"
+    assert len(push.sent) == 2, "the push did not re-blaze"
     assert len(room.posted) == 1, "the room re-posted because it shared a flag"
 
 
@@ -428,7 +428,7 @@ def test_answering_by_hand_closes_the_task(conn, target):
     identity = [t for t in repo.list_tasks(conn) if t.type == "resolve_activity"]
     assert identity
 
-    repo.add_activity_alias(conn, "a", "Hawks")
+    repo.add_activity_alias(conn, "a", "Otters")
     _dispatch(conn, target, room)
 
     assert repo.get_task(conn, identity[0].id).state == repo.RESOLVED
@@ -447,15 +447,15 @@ def test_answering_the_last_question_closes_its_task(conn, target):
     room = Room()
     # A feed whose only outstanding question is the fixture identity: no
     # unresolved venues left to keep the set non-empty.
-    repo.upsert_venue(conn, name="Riverview")
-    for alias in ("Riverview", "Riverview Farm Park",
-                  "Riverview Farm Park Soccer Fields", "Stoney Run Athletic Complex"):
+    repo.upsert_venue(conn, name="Kingsmere")
+    for alias in ("Kingsmere", "Kingsmere Meadow Park",
+                  "Kingsmere Meadow Park Soccer Fields", "Copperfield Athletic Complex"):
         repo.add_venue_alias(conn, 1, alias)
     _dispatch(conn, target, room)
     before = repo.list_tasks(conn)
     assert before and all(t.state == repo.OPEN for t in before)
 
-    repo.add_activity_alias(conn, "a", "Hawks")
+    repo.add_activity_alias(conn, "a", "Otters")
     _dispatch(conn, target, room)
 
     assert all(t.state == repo.RESOLVED for t in repo.list_tasks(conn)), (
@@ -474,7 +474,7 @@ def test_redispatching_never_discards_an_answer_already_given(conn, target):
     _dispatch(conn, target, room)
     task = next(t for t in repo.list_tasks(conn) if t.type == "resolve_activity")
 
-    repo.record_answer(conn, task_id=task.id, answer={"alias": "Hawks"},
+    repo.record_answer(conn, task_id=task.id, answer={"alias": "Otters"},
                        rationale=None, answered_by="hermes",
                        answered_at="2026-03-01T12:00:00+00:00")
     conn.execute("UPDATE sources SET review_dispatched = NULL WHERE id = 's'")
@@ -483,7 +483,7 @@ def test_redispatching_never_discards_an_answer_already_given(conn, target):
 
     kept = repo.get_task(conn, task.id)
     assert kept.state == repo.ANSWERED
-    assert kept.answer == {"alias": "Hawks"}
+    assert kept.answer == {"alias": "Otters"}
 
 
 def test_a_refused_post_is_not_recorded_so_it_is_retried(conn, target):
@@ -534,7 +534,7 @@ def test_the_collapsed_question_offers_the_same_answer_the_console_does(conn, ta
         t for t in _payload(room.posted[0])["tasks"]
         if t["type"] == "resolve_activity"
     )
-    assert identity["candidates"][0] == "Hawks"
+    assert identity["candidates"][0] == "Otters"
 
 
 def test_distinct_venues_stay_distinct_questions(conn, target):

@@ -6,9 +6,9 @@ Sample payloads, all Mar–May 2026:
 
 | Fixture | Team | Events |
 |---|---|---|
-| `teamreach_sample.ics` | 758329 Inter HURRICANES | 23 |
-| `teamreach_hawks_sample.ics` | 761305 Hawks | 20 |
-| `teamreach_comets_sample.ics` | 758489 Comets | 19 (names scrubbed — see trap 4) |
+| `teamreach_sample.ics` | 758329 Inter TEMPEST | 23 |
+| `teamreach_otters_sample.ics` | 761305 Otters | 20 |
+| `teamreach_wrens_sample.ics` | 758489 Wrens | 19 (names scrubbed — see trap 4) |
 
 ## Endpoint
 
@@ -33,13 +33,13 @@ SUMMARY means both vary per team**:
 
 | Team | `LOCATION` | `DESCRIPTION` | SUMMARY convention |
 |---|---|---|---|
-| 758329 Inter HURRICANES | ✗ | ✗ | `Game - Riverview #2` — type then **venue** |
-| 761305 Hawks | ✓ | ✗ | `Hawks vs Strikers` — **us vs them**, ordered |
-| 758489 Comets | ✓ | ✓ | `Game vs Jaguars` — type then **opponent** |
+| 758329 Inter TEMPEST | ✗ | ✗ | `Game - Kingsmere #2` — type then **venue** |
+| 761305 Otters | ✓ | ✗ | `Otters vs Chargers` — **us vs them**, ordered |
+| 758489 Wrens | ✓ | ✓ | `Game vs Cougars` — type then **opponent** |
 
 A parser built around any one of these silently mangles the others. Written
-against 758329 first, this adapter classified **all twelve** Hawks fixtures as
-practices, because "Hawks vs Strikers" contains neither "Game" nor "Practice".
+against 758329 first, this adapter classified **all twelve** Otters fixtures as
+practices, because "Otters vs Chargers" contains neither "Game" nor "Practice".
 
 So the adapter reads by *strategy*, not by format — try each known shape, take
 whichever fires, and report the misses rather than guessing. Assume the next
@@ -93,7 +93,7 @@ Playoff Game   Playoff Game2   Rescheduled Playoff Game
 Matching is on the *word* `game`, not an enumerated list, so "Friendly Game" or
 the typo "Playoff Game2" still route correctly.
 
-But the Hawks feed has **no type word at all** — `Hawks vs Strikers`. So a named
+But the Otters feed has **no type word at all** — `Otters vs Chargers`. So a named
 opponent is the second signal: a fixture implies a game. Type word wins where
 present; opponent decides otherwise. An event with neither falls to practices — a
 mis-filed practice is a smaller error than a missed game — and is reported in
@@ -101,14 +101,14 @@ mis-filed practice is a smaller error than a missed game — and is reported in
 
 ## Trap 2: home/away comes from word order, but only sometimes
 
-`Hawks vs Strikers` and `Siege vs Hawks` alternate through the Hawks season, so
+`Otters vs Chargers` and `Rampart vs Otters` alternate through the Otters season, so
 the ordering is real information: whichever side is *us* fixes both the opponent
 and home/away. That is resolved against `Activity.known_tokens()`, so it depends
 on the activity being named or aliased to match what the coach types.
 
 Two cases where it must **not** be claimed:
 
-- `Game vs Jaguars` (Comets) — the left side is a type label, not a team. The
+- `Game vs Cougars` (Wrens) — the left side is a type label, not a team. The
   summary says who, not where, so `home` stays `None`.
 - Neither side matches our tokens — the fixture is recorded in `unidentified`
   and **no opponent is claimed at all**. Picking one would be a coin flip that
@@ -124,19 +124,19 @@ Where `LOCATION` exists it wins — a coach filled it in deliberately, whereas t
 summary tail is whatever was left over after parsing. Only 758329 lacks it, and
 that is the one where the venue has to come out of the summary.
 
-`LOCATION` is not clean either. One team publishes `Riverview Farm Park`,
-`Riverview Farm Park ` and `Riverview Farm Park Soccer Fields` for what is
+`LOCATION` is not clean either. One team publishes `Kingsmere Meadow Park`,
+`Kingsmere Meadow Park ` and `Kingsmere Meadow Park Soccer Fields` for what is
 plainly one place. Whitespace collapse handles the first two; the third is a
 different string and belongs in `venue_aliases`, not in a regex.
 
 ## Trap 4: `DESCRIPTION` can carry other families' children
 
-The Comets feed uses it for a snack rota — "Ana has snacks" — naming ~18
+The Wrens feed uses it for a snack rota — "Ana has snacks" — naming ~18
 children. It is carried into the event body, because to a team parent that is
 the point of the field.
 
 It also means **feed payloads are not safe to commit unexamined**. The fixture
-in `tests/fixtures/teamreach_comets_sample.ics` has those first names replaced
+in `tests/fixtures/teamreach_wrens_sample.ics` has those first names replaced
 with placeholders; the structure is preserved, the real names are not in git.
 Scrub before adding any new sample.
 
@@ -145,12 +145,12 @@ Scrub before adding any new sample.
 All six of these appear in one 23-event feed:
 
 ```[text]
-'Practice - Passage '            trailing space
-'Practice  - Passage '           doubled space before the dash
-'Practice- Passage'              no space before the dash
-'Game - Riverview#2'             missing space before #
-'Playoff Game - Passage.  6pm'   trailing time the DTSTART already carries
-'Playoff Game2- Riverview #2'    typo
+'Practice - Windmere '            trailing space
+'Practice  - Windmere '           doubled space before the dash
+'Practice- Windmere'              no space before the dash
+'Game - Kingsmere#2'             missing space before #
+'Playoff Game - Windmere.  6pm'   trailing time the DTSTART already carries
+'Playoff Game2- Kingsmere #2'    typo
 ```
 
 Normalization is deliberately shallow: collapse whitespace, close up `#`, drop a
@@ -159,7 +159,7 @@ venue is the `venue_aliases` table's job — a regex that renames venues would b
 guessing.
 
 The trailing-time pattern requires a meridiem or a `:`. A bare trailing digit is
-not a time, and stripping one turns `Riverview #2` into `Riverview #`. That bug
+not a time, and stripping one turns `Kingsmere #2` into `Kingsmere #`. That bug
 was written, then caught by `test_summary_variants_normalize_to_the_same_fields`.
 
 ## Trap 6: one event has no DTEND
@@ -181,5 +181,5 @@ guard in `diff.py` is the only protection, and it applies unchanged.
   `content_hash` does not consult it.
 - Is the event id globally unique or per-team? It looks global, but a second
   team's feed would confirm it before relying on it across activities.
-- Whether the venue shorthands ("Passage", "Menchville", "Riverview #2") resolve
+- Whether the venue shorthands ("Windmere", "Ashgrove", "Kingsmere #2") resolve
   to schools that need `venue_aliases` rows with real addresses and pins.

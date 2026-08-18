@@ -4,7 +4,7 @@ Two implementations are wrong, for reasons the project has already written down:
 
 - **Read it back from the calendar.** `docs/API.md` refuses this for Hermes and
   the refusal applies here too — the calendar holds *renders*, not data. Pulling
-  "Patrick ⚽️ vs Strikers" back apart into a child and an opponent is
+  "Parker ⚽️ vs Chargers" back apart into a child and an opponent is
   reverse-engineering a string we generated ourselves, and it re-breaks every
   time the naming convention changes.
 - **Re-parse the feeds.** This is what the digest used to do, when `event_state`
@@ -173,7 +173,7 @@ def collect(conn, *, now: datetime, hours: int = 24) -> Digest:
         )
 
     # Named by team rather than by source id: this is a message to a person, and
-    # "tr-comets-2026" is not what they call it.
+    # "tr-wrens-2026" is not what they call it.
     freshness = repo.source_freshness(conn, now=now)
     stale = [
         repo.get_activity(conn, source.activity_id).name

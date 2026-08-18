@@ -16,13 +16,13 @@ expect frequent polls and are unlikely to throttle at sane intervals.
 
 ```
 UID:360Player-event-4716716
-SUMMARY:Super 8v8 Festival Rush Kickoff
+SUMMARY:Super 8v8 Festival Vanguard Kickoff
 DTSTAMP:20260721T145659Z
 DTSTART:20260801T140000Z
 DTEND:20260801T160000Z
-LOCATION:Randy Custis Memorial Park 7160 Rescue Ln\, Exmore\, VA 23350
+LOCATION:Alder Reach Memorial Park 7160 Kestrel Ln\, Fenwick\, NX 40219
 DESCRIPTION:8v8 Festival Club Kickoff (2 games)
-URL:https://app.360player.com/organization/41363/events/4716716
+URL:https://app.360player.com/organization/100200/events/4716716
 CATEGORIES:match
 LAST-MODIFIED:20260801T160002Z
 CREATED:20260721T145659Z
@@ -61,7 +61,7 @@ opponent.** The first sample was three preseason club events, which led me to
 record "no opponent" — wrong. A regular-season league match reads:
 
 ```
-U10DA TASL Match vs Beach FC U10
+U10PL PSL Match vs Harbour FC U10
 └─┬──┘ └─┬─┘ └─┬─┘    └────┬────┘
  team  league type      opponent
 ```
@@ -78,36 +78,36 @@ use what remains, collapsing whitespace. Deterministic, no LLM, no cleverness:
 
 | `SUMMARY` | strip | detail |
 |---|---|---|
-| `U10DA Practice` | `U10DA` | `Practice` |
-| `Super 8v8 Festival Rush Kickoff` | `Rush` | `Super 8v8 Festival Kickoff` |
+| `U10PL Practice` | `U10PL` | `Practice` |
+| `Super 8v8 Festival Vanguard Kickoff` | `Vanguard` | `Super 8v8 Festival Kickoff` |
 | `Club Minicamp Kickoff` | — | `Club Minicamp Kickoff` |
 
-Routine practices already say `Practice` upstream, so `James ⚽️ Practice` falls
-out of the same rule that produces `Patrick 🏊‍♂️ Practice` — no special case
+Routine practices already say `Practice` upstream, so `Jesse ⚽️ Practice` falls
+out of the same rule that produces `Parker 🏊‍♂️ Practice` — no special case
 needed, and upstream still wins whenever it says something more specific. That yields the ideal title form for league games and
 degrades gracefully for club events:
 
 ```
-James ⚽️ vs Beach FC        ← parsed league match
-James ⚽️ Super 8v8 Festival ← unparsed, SUMMARY fallback
-James ⚽️ Minicamp           ← unparsed, SUMMARY fallback
+Jesse ⚽️ vs Harbour FC        ← parsed league match
+Jesse ⚽️ Super 8v8 Festival ← unparsed, SUMMARY fallback
+Jesse ⚽️ Minicamp           ← unparsed, SUMMARY fallback
 ```
 
-**Strip a redundant age suffix from the opponent** — `Beach FC U10` becomes
-`Beach FC` when the suffix matches our own team's age group, which it will for
+**Strip a redundant age suffix from the opponent** — `Harbour FC U10` becomes
+`Harbour FC` when the suffix matches our own team's age group, which it will for
 league play. Keep it when it differs, since playing up or down an age band is
 information worth seeing.
 
-`TASL` is the league; record it on the activity so it can go in `DESCRIPTION`
+`PSL` is the league; record it on the activity so it can go in `DESCRIPTION`
 and help disambiguate opponents that appear in more than one league.
 
 **Home/away comes from the venue, not the string.** Every match reads `vs`
 regardless, so derive it: venue == the activity's home field → `vs`, otherwise
-`@`. Wolf Trap Park hosts both the minicamp practices and the Beach FC match,
+`@`. Thistledown Park hosts both the minicamp practices and the Harbour FC match,
 which makes it the likely home ground — set `home_venue` on the activity once
 and the `@` form starts working.
 
-**`DESCRIPTION` duplicates `SUMMARY` on league matches.** The Beach FC event
+**`DESCRIPTION` duplicates `SUMMARY` on league matches.** The Harbour FC event
 carries the identical string in both. Club events differ ("8v8 Festival Club
 Kickoff (2 games)" against a different title), so the rule is: **include the
 upstream `DESCRIPTION` only when it differs from `SUMMARY`.** Copying it
@@ -131,7 +131,7 @@ Every `LAST-MODIFIED` lands **2–3 seconds after that event's `DTEND`**. Player
 touches each event the moment it finishes — closing attendance, marking it
 complete, something like that.
 
-So upstream change signals fire on events that did not change:
+So upstream change signals blaze on events that did not change:
 
 - **Never use `SEQUENCE`, `LAST-MODIFIED`, or `DTSTAMP` for change detection.**
   Hash the fields we actually care about — `DTSTART`, `DTEND`, `SUMMARY`,
@@ -163,24 +163,24 @@ any diff is computed. An empty-but-valid feed is not evidence of cancellation.
 ## Trap 3: `LOCATION` is free text with the venue name glued to the street
 
 ```
-Randy Custis Memorial Park 7160 Rescue Ln\, Exmore\, VA 23350
-Wolf Trap Park 1009 Wolf Trap Rd\, Yorktown VA 23692
+Alder Reach Memorial Park 7160 Kestrel Ln\, Fenwick\, NX 40219
+Thistledown Park 1009 Thistledown Rd\, Marbury NX 40114
 ```
 
-Note the inconsistency: `Exmore\, VA` has a comma, `Yorktown VA` doesn't. This
+Note the inconsistency: `Fenwick\, VA` has a comma, `Marbury VA` doesn't. This
 is hand-entered per event, so normalize rather than trust it.
 
 Split on the first street-number run — `^(?<name>.*?)\s+(?<addr>\d+\s+.*)$`:
 
 | name | address |
 |---|---|
-| Randy Custis Memorial Park | 7160 Rescue Ln, Exmore, VA 23350 |
-| Wolf Trap Park | 1009 Wolf Trap Rd, Yorktown VA 23692 |
+| Alder Reach Memorial Park | 7160 Kestrel Ln, Fenwick, NX 40219 |
+| Thistledown Park | 1009 Thistledown Rd, Marbury NX 40114 |
 
 Good news: these are **real geocodable addresses**, not "Field 4". So for this
 source the venue pipeline is mostly rule-based — split, geocode, cache as an
 alias, confirm the pin once. The LLM path is only for strings the regex fails
-on. Still refine the pin by hand: `Randy Custis Memorial Park` is a park, and
+on. Still refine the pin by hand: `Alder Reach Memorial Park` is a park, and
 the street address is the entrance, not the field.
 
 ## Trap 4: you are already subscribed to this feed
@@ -203,7 +203,7 @@ alarm policy, or drop a pin on the right corner of the park.
 ## Trap 5: always state venue-local time in the body
 
 **The feed's UTC is correct — verified.** `DTSTART` 14:00Z is a 10:00 EDT
-kickoff at the Yorktown venue, confirmed against the real schedule. The
+kickoff at the Marbury venue, confirmed against the real schedule. The
 screenshot showed 08:00 only because the device was in Mountain time; Apple was
 correctly re-rendering the absolute instant. No systematic offset, nothing to
 fix in the adapter.
@@ -239,7 +239,7 @@ Same treatment as the iCloud app-specific password.
 
 ## Open questions
 
-1. **Resolved:** `group_ids=68362` is James's U10DA team, not the club. The
+1. **Resolved:** `group_ids=68362` is Jesse's U10PL team, not the club. The
    one-feed-per-(child, activity) binding holds, and the generic `SUMMARY`s
    ("Club Minicamp Kickoff") are club-level *event names* landing in a
    team-scoped feed — expected, not a scoping error. It does confirm the feed
@@ -255,7 +255,7 @@ Same treatment as the iCloud app-specific password.
 5. Does the token expire?
 6. Confirm cancellation behavior by watching a real one — this is the only
    trap above that's inferred rather than observed.
-7. **Resolved:** `U10DA TASL Match vs Beach FC U10` is the ICS `SUMMARY` —
+7. **Resolved:** `U10PL PSL Match vs Harbour FC U10` is the ICS `SUMMARY` —
    confirmed in Apple Calendar rendering the subscribed feed. Opponent parsing
    is free; no API or scrape needed.
 8. **Resolved:** the string always reads `vs`; there is no away marker. Derive

@@ -2,7 +2,7 @@
 
 Rec-league teams are recreated every season with new names and new feed ids, so
 onboarding is not one-time setup — it is the **recurring operational work** of
-this system, several times a year, once per kid per sport. James's Rush club team
+this system, several times a year, once per kid per sport. Jesse's Vanguard club team
 (Player360) is the exception: persistent across seasons, configured once.
 
 Everything here optimises for that. Setup screens you use once can be clumsy;
@@ -20,31 +20,31 @@ Everything else is read out of the feed.
 
 Measured across four real feeds:
 
-| | Player360 / Rush | Hurricanes | Hawks | Comets |
+| | Player360 / Vanguard | Tempest | Otters | Wrens |
 |---|---|---|---|---|
-| Team name (`X-WR-CALNAME`) | ✗ generic | `Inter HURRICANES` | `Hawks Spring 2026` | `Comets` |
+| Team name (`X-WR-CALNAME`) | ✗ generic | `Inter TEMPEST` | `Otters Spring 2026` | `Wrens` |
 | Season bounds (min/max `DTSTART`) | ✓ | ✓ | ✓ | ✓ |
-| Our own team token | n/a | n/a | `Hawks` | n/a |
+| Our own team token | n/a | n/a | `Otters` | n/a |
 | Venues | ✓ | ✓ | ✓ | ✓ |
 
 `X-WR-CALNAME` names the team on every TeamReach feed. Player360's is generic,
 which matters little — that feed is configured once.
 
 **The team token falls out of frequency.** In a "us vs them" feed our own name
-appears in every fixture while each opponent appears once or twice: the Hawks
-feed gives `Hawks` 12, `Strikers` 2, `Lightning` 2. Propose the top token, let
+appears in every fixture while each opponent appears once or twice: the Otters
+feed gives `Otters` 12, `Chargers` 2, `Bolts` 2. Propose the top token, let
 the operator correct it.
 
 That token is load-bearing. `Activity.known_tokens()` is what resolves
-`Hawks vs Strikers` into an opponent and a home/away flag, so a wrong team name
+`Otters vs Chargers` into an opponent and a home/away flag, so a wrong team name
 does not produce wrong data — it produces *no* opponent, reported through
 `PollResult.unidentified`. See [sources/teamreach.md](sources/teamreach.md).
 
 ## 3. Venues are stable even though teams are not
 
 Team names churn every season; the parks and schools do not. All three observed
-TeamReach teams share venues — Riverview Farm Park, Passage, Sanford, Menchville,
-Stoney Run.
+TeamReach teams share venues — Kingsmere Meadow Park, Windmere, Larkspur, Ashgrove,
+Copperfield.
 
 So venue mapping is a one-time cost per venue that amortises to zero. After a
 season or two the alias table covers the league and new seasons need no venue
@@ -128,7 +128,7 @@ different title on different polls with nothing to explain why; and because
 would not register as a change at all — silent, untraceable drift.
 
 The hard problem was never the naming convention. It is recovering
-`opponent="Strikers", home=true` from whatever a coach typed. That is worth a
+`opponent="Chargers", home=true` from whatever a coach typed. That is worth a
 model, its output is reviewable structured data, and once reviewed it becomes an
 alias or a venue row and the feed parses deterministically forever.
 

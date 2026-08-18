@@ -11,7 +11,7 @@ of it behind, most of it ahead.
 
     python3 demo/feeds.py --port 8000
 
-Then paste http://localhost:8000/hawks.ics into the console.
+Then paste http://localhost:8000/otters.ics into the console.
 """
 
 from __future__ import annotations
@@ -26,27 +26,27 @@ FIXTURES = Path(__file__).resolve().parent.parent / "tests" / "fixtures"
 
 #: path -> (fixture, what it demonstrates)
 FEEDS: dict[str, tuple[str, str]] = {
-    "/hawks.ics": (
-        "teamreach_hawks_sample.ics",
+    "/otters.ics": (
+        "teamreach_otters_sample.ics",
         "US vs THEM. The team name has to be read out of fixture frequency; "
         "get it wrong and 12 fixtures go unmatched.",
     ),
-    "/comets.ics": (
-        "teamreach_comets_sample.ics",
+    "/wrens.ics": (
+        "teamreach_wrens_sample.ics",
         "TYPE vs OPPONENT. Parses cleanly with no team name at all — only the "
         "venues need answering.",
     ),
-    "/hurricanes.ics": (
+    "/tempest.ics": (
         "teamreach_sample.ics",
         "TYPE - VENUE. No LOCATION field anywhere; the venue is the summary tail.",
     ),
-    "/rush.ics": (
+    "/vanguard.ics": (
         "player360_sample.ics",
         "A different platform: CATEGORIES, inline street addresses, a generic "
         "calendar name.",
     ),
     "/practices-only.ics": (
-        "teamreach_comets_sample.ics",
+        "teamreach_wrens_sample.ics",
         "The same feed in March, before the coach posted the schedule. The "
         "resting state the console is designed around.",
     ),

@@ -3,9 +3,9 @@
 Two jobs, in order:
 
 1. Parse a league match to recover the opponent. Player360 embeds it:
-   "U10DA TASL Match vs Beach FC U10".
+   "U10PL PSL Match vs Harbour FC U10".
 2. Otherwise strip tokens that identify *our own* team and use the remainder.
-   "U10DA Practice" -> "Practice".
+   "U10PL Practice" -> "Practice".
 
 Deterministic by design. No model is involved, so the same feed always renders
 the same title, and a title change is always traceable to a config change.
@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import re
 
-# "U10DA TASL Match vs Beach FC U10"
+# "U10PL PSL Match vs Harbour FC U10"
 #   team ─┘   league ┘ type ┘     └─ opponent
 LEAGUE_MATCH = re.compile(
     r"^(?P<team>\S+)\s+(?P<league>\S+)\s+Match\s+vs\.?\s+(?P<opponent>.+?)\s*$",
@@ -32,8 +32,8 @@ def _collapse(text: str) -> str:
 def strip_known_tokens(summary: str, tokens: tuple[str, ...]) -> str:
     """Remove strings that identify our own team.
 
-    Tokens must arrive longest-first so "Rush Academy" is consumed before
-    "Rush" can leave a dangling "Academy". Matching is whole-word and
+    Tokens must arrive longest-first so "Vanguard Academy" is consumed before
+    "Vanguard" can leave a dangling "Academy". Matching is whole-word and
     case-insensitive; a token that would empty the string is skipped, since a
     bare "" is worse than a redundant label.
     """
@@ -52,7 +52,7 @@ def strip_known_tokens(summary: str, tokens: tuple[str, ...]) -> str:
 def strip_age_suffix(opponent: str, age_group: str | None) -> str:
     """Drop a trailing age band only when it matches ours.
 
-    "Beach FC U10" -> "Beach FC" for a U10 side. A U11 opponent keeps its
+    "Harbour FC U10" -> "Harbour FC" for a U10 side. A U11 opponent keeps its
     suffix, because playing up or down a band is worth seeing.
     """
     if not age_group:

@@ -379,7 +379,7 @@ def cmd_digest(args) -> int:
 
     config = matrix.load(conn)
     try:
-        # Derived from the day, so a retry or a double cron fire updates rather
+        # Derived from the day, so a retry or a double cron blaze updates rather
         # than posting the family's schedule twice.
         event_id = matrix.send(
             config, secrets, result.text(),

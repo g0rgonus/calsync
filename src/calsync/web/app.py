@@ -340,7 +340,7 @@ def create_app(
 
         Most of this is not cosmetic. `Activity.known_tokens` is built from the
         official name, short name, league and age group, and that is what turns
-        "U10DA TASL Match vs Beach FC" into an opponent instead of nothing — so
+        "U10PL PSL Match vs Harbour FC" into an opponent instead of nothing — so
         these fields change how the feed parses on the next poll, not just how
         it reads.
         """
@@ -863,7 +863,7 @@ def create_app(
     def _checked_name(raw: str) -> str:
         """Refuse a field designator in a venue name.
 
-        "Riverview #2" is field #2 at Riverview, and folding the designator into
+        "Kingsmere #2" is field #2 at Kingsmere, and folding the designator into
         the name mints a separate venue — and a separate pin — for every field
         at one park. The parser already splits these apart; this stops a typed
         name from putting one back.
@@ -1159,17 +1159,17 @@ def _sample_title(settings) -> str:
     from ..normalize import title
 
     when = datetime(2026, 4, 11, 14, 0, tzinfo=timezone.utc)
-    child = Child(id="sample", name="Patrick", initial="P", birth_order=1)
+    child = Child(id="sample", name="Parker", initial="P", birth_order=1)
     activity = Activity(
-        id="sample", child_id="sample", name="Rockets", sport="soccer",
+        id="sample", child_id="sample", name="Meteors", sport="soccer",
         emoji="\u26bd\ufe0f", tz="UTC",
     )
     event = Event(
         uid="sample", activity_id="sample", starts_at=when, ends_at=when,
-        is_game=True, tz="UTC", opponent="Strikers", home=True,
+        is_game=True, tz="UTC", opponent="Chargers", home=True,
         # Every field the template offers is populated, so an unused one reads
         # as unused rather than as broken.
-        venue=Venue(raw="Riverview Farm Park", name="Riverview Farm Park"),
+        venue=Venue(raw="Kingsmere Meadow Park", name="Kingsmere Meadow Park"),
     )
     try:
         return title.render(event, activity, [child], settings)

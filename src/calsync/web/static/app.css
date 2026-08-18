@@ -7,8 +7,8 @@
  *
  * Two rules earn their keep:
  *
- *   1. Every string a coach typed is set in mono. "Riverview#2" and
- *      "Riverview #2" are the same field typed twice, and the operator has to
+ *   1. Every string a coach typed is set in mono. "Kingsmere#2" and
+ *      "Kingsmere #2" are the same field typed twice, and the operator has to
  *      be able to see that at a glance; proportional type hides it.
  *   2. The gate is four blocks, not a progress bar. The promotion conditions
  *      are discrete and unordered — three of them can pass while the fourth

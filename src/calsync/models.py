@@ -49,7 +49,7 @@ class Activity:
     def known_tokens(self) -> tuple[str, ...]:
         """Strings that identify *us*, and so carry no information in a title.
 
-        Longest first, so "Rush Academy" is consumed before "Rush" can chip
+        Longest first, so "Vanguard Academy" is consumed before "Vanguard" can chip
         a fragment off it and leave "Academy" behind.
         """
         raw = [self.name, self.official_name, self.short_name,
@@ -70,8 +70,8 @@ class Venue:
     lon: float | None = None
     pin_confirmed: bool = False
     #: Which field/court/gym *within* the venue — "#2", "Field 3", "Gym".
-    #: Deliberately not part of venue identity: "Riverview #2" and
-    #: "Riverview #4" are one place with one pin, and keeping the designator
+    #: Deliberately not part of venue identity: "Kingsmere #2" and
+    #: "Kingsmere #4" are one place with one pin, and keeping the designator
     #: out of the name is what lets a single alias row cover them all.
     field: str | None = None
 
