@@ -15,6 +15,7 @@ from .. import db, enrichment, repo
 from ..normalize import title as title_norm
 from ..secrets import SecretError, SecretStore
 from ..settings import Settings
+from . import contract
 
 #: docs/API.md: "Selectors default to a 14-day window and are always bounded."
 DEFAULT_WINDOW_DAYS = 14
@@ -101,6 +102,18 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None) -> Bo
         # Bottle defaults a str return to text/html, and a client that content
         # -sniffs its way to the right parser is a client that breaks silently.
         response.content_type = "application/json"
+
+    # --- the contract ------------------------------------------------------
+
+    @app.get("/v1")
+    def describe():
+        """What this API does, checkable before operating.
+
+        Generated from `contract.py`, which a test holds against the app's own
+        route table in both directions — so this cannot describe an endpoint
+        that does not exist, and an endpoint cannot exist undescribed.
+        """
+        return _dump(contract.document())
 
     # --- reads -------------------------------------------------------------
 
@@ -228,6 +241,30 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None) -> Bo
                 "detail": "stored for review; nothing changes until a human "
                           "approves it in the console",
             })
+
+    @app.route("/v1/<path:path>", method=["GET", "POST", "PUT", "PATCH", "DELETE"])
+    def unbuilt(path):
+        """Specified in docs/API.md, not built — said plainly.
+
+        A bare 404 reads as a typo, and an agent that concludes it has the URL
+        wrong will retry variations of it. 501 with the reason and a pointer at
+        the contract is the difference between "you asked wrongly" and "this
+        does not exist yet, here is why".
+
+        Registered after every real route, because Bottle matches in
+        definition order — declared earlier, this swallows them all.
+        """
+        for prefix, reason in contract.NOT_IMPLEMENTED.items():
+            if ("/v1/" + path).startswith(prefix):
+                raise ApiError(
+                    501, "not_implemented", reason,
+                    contract="GET /v1",
+                )
+        raise ApiError(
+            404, "no_such_endpoint",
+            "no endpoint at that path; GET /v1 lists what this service serves",
+            got="/v1/" + path,
+        )
 
     return app
 

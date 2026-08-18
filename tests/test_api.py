@@ -547,3 +547,89 @@ def test_there_is_no_way_to_approve_through_the_api(client, asked, db_path):
     conn = db.connect(db_path)
     assert repo.get_task(conn, asked).state == repo.ANSWERED
     assert conn.execute("SELECT COUNT(*) n FROM activity_aliases").fetchone()["n"] == 0
+
+
+# --- the contract -----------------------------------------------------------
+#
+# Hermes checks this before operating, so the one thing it must never do is
+# describe an API that is not there. It is generated from `contract.py` and held
+# against the app's own routes here.
+
+
+def test_the_contract_and_the_routes_describe_each_other(client):
+    """Both directions, which is the whole point.
+
+    A hand-maintained page describing an HTTP API drifts from the API on the
+    first busy afternoon, and a contract that lies is worse than no contract —
+    an agent that trusts it fails in ways nobody can reproduce.
+    """
+    from calsync.api import contract
+
+    served = {
+        (r.method, r.rule) for r in client.app.routes
+        # The catch-all is a fallback, not an endpoint anybody calls on purpose.
+        if r.rule != "/v1/<path:path>"
+    }
+    documented = set(contract.ENDPOINTS)
+
+    assert served - documented == set(), "routes the contract does not mention"
+    assert documented - served == set(), "contract describes routes that do not exist"
+
+
+def test_the_contract_is_served_and_names_what_it_serves(client):
+    reply = client.get("/v1")
+
+    assert reply["status"] == 200
+    paths = {e["path"] for e in reply["json"]["endpoints"]}
+    assert "/v1/events" in paths
+    assert reply["json"]["contract_version"]
+
+
+def test_the_contract_carries_the_answer_shapes(client):
+    """So a client corrects itself from the contract, not from a rejection."""
+    shapes = client.get("/v1")["json"]["answer_shapes"]
+
+    assert set(shapes) == {"resolve_activity", "classify_kind", "normalize_venue"}
+    assert shapes["resolve_activity"]["answer"] == {"alias": "Hawks"}
+
+
+def test_the_contract_says_what_is_not_built(client):
+    """Half of docs/API.md is design with no code behind it.
+
+    An agent that reads the document and not the contract would try to POST a
+    proposal; this is where it learns not to, and why.
+    """
+    missing = {n["path"]: n["reason"] for n in client.get("/v1")["json"]["not_implemented"]}
+
+    assert "/v1/proposals" in missing
+    assert "not built" in missing["/v1/proposals"].casefold()
+
+
+def test_a_specified_but_unbuilt_endpoint_says_so_rather_than_404ing(client):
+    """A bare 404 reads as a typo, and an agent will retry variations of it."""
+    reply = _post(client, "/v1/proposals", {"event": {}})
+
+    assert reply["status"] == 501
+    assert reply["json"]["error"]["code"] == "not_implemented"
+    assert reply["json"]["error"]["contract"] == "GET /v1"
+
+
+def test_an_endpoint_nobody_ever_specified_is_a_plain_404(client):
+    """Distinct from the above: "not yet" and "never" are different answers."""
+    reply = client.get("/v1/wat")
+
+    assert reply["status"] == 404
+    assert reply["json"]["error"]["code"] == "no_such_endpoint"
+
+
+def test_the_catch_all_does_not_shadow_a_real_route(client):
+    """Bottle matches in definition order, so this is an ordering bug waiting
+    to happen — it already happened once."""
+    assert client.get(SEASON)["status"] == 200
+    assert client.get("/v1/events/nope")["status"] == 404
+    assert client.get("/v1/events/nope")["json"]["error"]["code"] == "unknown_event"
+
+
+def test_reading_the_contract_still_needs_the_token(client):
+    """It describes a private system, and the auth hook covers every route."""
+    assert client.get("/v1", token=None)["status"] == 401

@@ -90,9 +90,14 @@ damage what the task already covered.
 ### Post the contract, don't teach it in chat
 
 Don't rely on Hermes inferring the API from scrollback — that's unbounded and
-unversioned. Serve `GET /v1/schema/*` as JSON Schema, pin a room message
-pointing at it, and let Hermes fetch the current contract. [API.md](API.md) is
-the human copy; the endpoint is the machine copy, and they version together.
+unversioned. **`GET /v1` is built** and is the machine copy: every endpoint that
+exists, the answer shape for each task type, and an explicit list of what is
+specified and *not* built, with reasons. Pin a room message pointing at it.
+
+It is generated from `api/contract.py`, and a test holds it against the app's
+own route table in both directions — so it cannot describe an endpoint that does
+not exist, and an endpoint cannot exist undescribed. [API.md](API.md) is the
+human copy and will drift; that one cannot.
 
 ### Keep the room readable
 
@@ -326,15 +331,32 @@ to remember issuing. `respond_via` is explicitly `null` until that endpoint
 exists, rather than absent, so an agent can tell "not answerable yet" from "this
 message forgot to say how" and the payload shape does not change when it lands.
 
-The **proposal** flow — Hermes extracting events from a pasted PDF — is the
-larger one and still needs everything above it:
+The **proposal** flow — Hermes extracting events from a PDF — does **not** need
+the room either, and an earlier draft of this section was wrong to imply it did.
+§5 bundles "drop a file in the room" together with "proposals" as though they
+were one thing. They are not: the room-drop is a *capture convenience*, and
+where Hermes gets a document is Hermes's problem. The flow that matters is the
+same shape as the one already built — submit over the API, a human approves in
+the console:
 
 | Step | Needs |
 |---|---|
-| Read messages from the room | A sync loop against `/sync`, and a decision about which messages are for calsync at all |
-| Turn a message into a proposal | The proposals table and API from [API.md](API.md) |
-| Show a proposal for approval | The identity model in §1 |
-| Apply an approved proposal | The amendment path in §3, and the blast-radius policy |
+| Store a document | `POST /v1/documents` and somewhere to put the bytes |
+| Submit extracted events | `POST /v1/proposals`, held as `pending_review` |
+| Show a proposal for approval | The console, extending `/review` |
+| Apply an approved proposal | Writing an event calsync did not get from a feed |
+
+None of that reads a message, so none of it needs §1's identity model: authority
+is the API token for *submitting* and the console for *deciding*, which are
+different acts by different parties.
+
+What genuinely does need inbound Matrix is only this:
+
+| Step | Needs |
+|---|---|
+| Drop a PDF in the room instead of posting it | A sync loop against `/sync`, and a decision about which messages are for calsync |
+| `!cal today` and friends | The same, plus the identity model in §1 |
+| Amendments from pasted prose (§3) | The above, plus the trust-rank overlay in §4 and the blast-radius policy |
 
 Until step 1, the room is somewhere calsync talks and nobody replies — which is
 a useful thing on its own, and honest about being only that.

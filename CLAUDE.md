@@ -17,9 +17,9 @@ table, pins and merges; `/household` edits kids and the sport catalog;
 `/settings` covers the `settings` table, and a team's own fields are on its
 source page. Nothing in the day-to-day path needs sqlite3 any more.
 
-**The HTTP API** (`calsync api`, `src/calsync/api/`) serves `GET /v1/events`,
-`GET /v1/events/{uid}` and `POST /v1/tasks/{id}/result`, behind a bearer token
-from the secret store. The write endpoint stores an answer and **applies
+**The HTTP API** (`calsync api`, `src/calsync/api/`) serves `GET /v1` (the
+machine-readable contract), `GET /v1/events`, `GET /v1/events/{uid}` and
+`POST /v1/tasks/{id}/result`, behind a bearer token from the secret store. The write endpoint stores an answer and **applies
 nothing** — approving happens in the console, by a person. It rests on `event_content`, which records what each event was
 alongside `event_state`'s record of where it went (`docs/API.md`, "What calsync
 remembers"). The write half — documents, proposals, approvals, task tokens,
@@ -69,7 +69,7 @@ so a fresh clone needs:
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/pytest                                    # 467 tests, ~2.7s
+.venv/bin/pytest                                    # 475 tests, ~2.9s
 .venv/bin/pytest tests/test_player360.py -k content_hash    # single test
 ```
 
@@ -292,6 +292,17 @@ Decisions that span several files and are easy to undo by accident:
   answers all of them. Everything else stays per-item — whether "Skills Session"
   is a game says nothing about "Playoff Game2". A human clicking the suggested
   button and an agent taking the first candidate must be choosing from one list.
+- **`GET /v1` is the contract, and it is generated rather than written.**
+  `api/contract.py` is the single source, and a test holds it against the app's
+  own route table in *both* directions — an undocumented route fails, and a
+  documented route that does not exist fails. A hand-maintained page describing
+  an HTTP API drifts on the first busy afternoon, and a contract that lies is
+  worse than none: an agent that trusts it fails in ways nobody can reproduce.
+  It also lists what is specified in `docs/API.md` and not built, and those
+  paths answer **501 with the reason**, not 404 — "not yet" and "you have the
+  URL wrong" are different answers, and an agent given the second retries
+  variations of it. The catch-all serving that must stay registered last;
+  Bottle matches in definition order and it swallowed every real route once.
 - **The review gate is structural, not conventional.** `POST
   /v1/tasks/{id}/result` stores an answer as `answered` and there is no
   parameter on it that approves — applying happens in `enrichment.apply`,

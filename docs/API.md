@@ -273,10 +273,20 @@ as tasks posted to the Matrix room ([MATRIX.md](MATRIX.md)). Hermes answers on
 the API, not in chat.
 
 ```http
+GET  /v1                         # built — the machine copy of this document
 GET  /v1/tasks?state=open
 POST /v1/tasks/{id}/result       # built
-GET  /v1/schema/{name}           # JSON Schema, machine copy of this doc
 ```
+
+**`GET /v1` is the contract an agent should read before operating.** It is
+generated from `api/contract.py` and held against the running app's route table
+by a test, in both directions, so it cannot describe an endpoint that does not
+exist and an endpoint cannot exist undescribed. This document is the human copy
+and will drift from the code; that endpoint cannot. It also lists what is
+specified here and not built, and anything on that list answers **501 with the
+reason** rather than a bare 404 — "not yet, and here is why" is a different
+answer from "you have the URL wrong", and an agent given the second will retry
+variations of it.
 
 `POST /v1/tasks/{id}/result` exists. It takes `{"answer": {...},
 "answered_by": "...", "rationale": "..."}` and **stores it without applying
