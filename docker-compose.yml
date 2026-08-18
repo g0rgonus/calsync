@@ -90,6 +90,54 @@ services:
       retries: 3
       start_period: 5s
 
+  # The read API (docs/API.md). Opt-in rather than always on:
+  #
+  #   docker compose --profile api up -d api
+  #
+  # Its only intended consumer is an agent that does not exist yet, and this
+  # serves children's names, times and the physical locations they will be at.
+  # An authenticated listener that nothing is talking to is surface without a
+  # purpose, so it is a profile until something needs it — at which point drop
+  # the two `profiles` lines and it joins the stack.
+  #
+  # It refuses to start without a bearer token (`api_token_ref` names the
+  # secret, the console's Settings page stores the value). A missing token
+  # therefore shows up as a restart loop with the reason on the first log line,
+  # which is the intended failure: an unusable read API that came up quietly
+  # would be one nobody noticed was unusable.
+  api:
+    profiles: ["api"]
+    build: .
+    command: ["api", "--host", "0.0.0.0", "--port", "8731"]
+    restart: unless-stopped
+    # Same reasoning as `web`: 0.0.0.0 inside the container is what lets the
+    # published port reach it, and the publish is pinned to loopback. The token
+    # is a real control, unlike the console's absent login, but it is one
+    # control in front of a family's schedule — keep the VPN in front too.
+    ports:
+      - "127.0.0.1:8731:8731"
+    volumes:
+      # Read-write despite this being a read-only API: SQLite in WAL mode needs
+      # to create -wal and -shm alongside the database, and `open_db` migrates
+      # on startup. A read-only mount fails at the first request, not at boot.
+      - calsync-data:/data
+      # Read-only, unlike `web`: this only ever reads the bearer token. Nothing
+      # in the API path stores a credential.
+      - ./secrets:/run/secrets/calsync:ro
+    environment:
+      CALSYNC_DB: /data/calsync.db
+      CALSYNC_SECRETS: /run/secrets/calsync/secrets.json
+    healthcheck:
+      # 401 is the healthy answer: it proves the app is serving *and* that the
+      # auth hook is in front of it. `http.client` is used rather than urllib
+      # because it does not raise on a 4xx, so this stays a one-liner.
+      test: ["CMD", "python", "-c",
+             "import http.client as h; c=h.HTTPConnection('localhost',8731,timeout=3); c.request('GET','/v1/events'); raise SystemExit(0 if c.getresponse().status==401 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
   # Not part of the stack. `docker compose --profile demo up` adds a server that
   # replays the recorded fixtures with their dates shifted onto this week, so
   # the console can be exercised without a real team's feed URL.

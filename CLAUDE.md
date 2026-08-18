@@ -95,8 +95,16 @@ calsync --db drive.db stage tr-hawks          # routes to the `onboarding` colle
 calsync --db drive.db promote tr-hawks        # gated on a clean parse + a seen fixture
 ```
 
-Docker: `docker compose up -d` runs Radicale plus the poller; one-off commands go
-through `docker compose run --rm calsync <cmd>`.
+Docker: `docker compose up -d` runs Radicale, the poller and the console;
+one-off commands go through `docker compose run --rm calsync <cmd>`. The read
+API is opt-in — `docker compose --profile api up -d api` — because its only
+intended consumer does not exist yet and an authenticated listener nothing talks
+to is surface without a purpose.
+
+Backups: `scripts/backup.sh [DEST]`, daily from cron on the host. It takes a
+live-safe SQLite snapshot, tars Radicale's data and the credentials, verifies
+what it produced and exits non-zero if anything is missing. Each backup carries
+its own `RESTORE.md`.
 
 `--from-file` replays a saved payload without a credential (needs `--source`),
 and `--now <iso>` pins the clock for reproducible runs. Exit codes are
@@ -295,6 +303,13 @@ family calendar, so treat them as contracts, not defaults:
   The old string is one a feed genuinely used, and dropping it makes every past
   event at that place unresolvable again. Merging (`repo.merge_venues`) keeps
   both sides' aliases for the same reason.
+- **Radicale holds the only copy of every past season, not the database.**
+  `event_content` is pruned to `sync_window_back_days`, and a team feed drops a
+  season within months of it ending — so a game played last spring exists in
+  exactly one place, the calendar server. `scripts/backup.sh` backs that up
+  first and says why. `retire.py` goes out of its way not to delete those
+  events; a backup that skipped the `radicale-data` volume would delete them
+  anyway, just more slowly.
 - **Deleting a venue is safe; deleting a child is not.** No `event_state` row
   references a venue — events carry theirs by value, resolved at sync time — so
   a deleted venue costs a pin and reappears in diagnostics. Do not generalise
