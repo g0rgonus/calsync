@@ -193,8 +193,12 @@ jobs:
           # Both architectures are published; this runner exercises the one it
           # can run. `docker buildx imagetools` is what checks the other is
           # actually there, rather than assuming the platforms line worked.
-          docker buildx imagetools inspect "$IMAGE" --format '{{ json .Manifest }}' \
-            | grep -q '"architecture":"arm64"'
+          # The plain output rather than a JSON template: `{{ json . }}` is
+          # pretty-printed, so a grep for '"architecture":"arm64"' matches
+          # nothing and fails a build that in fact published both.
+          docker buildx imagetools inspect "$IMAGE" | tee /tmp/manifest.txt
+          grep -q 'linux/amd64' /tmp/manifest.txt
+          grep -q 'linux/arm64' /tmp/manifest.txt
           docker run --rm "$IMAGE" --help
           docker run --rm "$IMAGE" init-db
           # It has to be able to lay out a deployment, or the whole point of
