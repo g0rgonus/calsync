@@ -1,0 +1,142 @@
+"""Resolve a source's ``secret_ref`` to an actual credential.
+
+Secrets are deliberately absent from the database. ``sources.url_template``
+stores ``{{secret:p360_token}}``, never the token itself, so a source row can be
+read, exported, backed up and pasted into a bug report without leaking a bearer
+credential.
+
+Lookup order is environment first (``CALSYNC_SECRET_P360_TOKEN``), then a JSON
+file. Environment wins so one value can be overridden for a single run without
+editing the file.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import stat
+from pathlib import Path
+
+ENV_PREFIX = "CALSYNC_SECRET_"
+#: Overrides the default file location. The container sets this so every
+#: subcommand finds the mounted store, not just the one the CMD spells out.
+PATH_ENV = "CALSYNC_SECRETS"
+DEFAULT_FILE = Path.home() / ".config" / "calsync" / "secrets.json"
+
+
+class SecretError(RuntimeError):
+    """A referenced secret could not be resolved.
+
+    Never carries the secret value — this message ends up in logs and in the
+    ``sources.last_error`` column.
+    """
+
+
+def env_name(ref: str) -> str:
+    """``p360_token`` -> ``CALSYNC_SECRET_P360_TOKEN``."""
+    return ENV_PREFIX + ref.upper().replace("-", "_")
+
+
+class SecretStore:
+    def __init__(self, *, path: str | Path | None = None, environ: dict | None = None):
+        self._environ = os.environ if environ is None else environ
+        if path is None:
+            path = self._environ.get(PATH_ENV) or DEFAULT_FILE
+        self.path = Path(path)
+        self._cache: dict[str, str] | None = None
+
+    def _from_file(self) -> dict[str, str]:
+        if self._cache is not None:
+            return self._cache
+        if not self.path.exists():
+            self._cache = {}
+            return self._cache
+
+        # A file of bearer tokens that other local accounts can read is a
+        # credential leak, and the fix is one command — so refuse rather than
+        # warn and carry on.
+        mode = self.path.stat().st_mode
+        if mode & (stat.S_IRGRP | stat.S_IROTH):
+            raise SecretError(
+                f"{self.path} is readable by group or others; run: chmod 600 {self.path}"
+            )
+
+        try:
+            data = json.loads(self.path.read_text())
+        except (OSError, ValueError) as exc:
+            raise SecretError(f"could not read secrets from {self.path}: {exc}") from exc
+        if not isinstance(data, dict):
+            raise SecretError(f"{self.path} must contain a JSON object of ref -> secret")
+
+        self._cache = {str(k): str(v) for k, v in data.items()}
+        return self._cache
+
+    def get(self, ref: str) -> str:
+        value = self._environ.get(env_name(ref))
+        if value:
+            return value
+        value = self._from_file().get(ref)
+        if value:
+            return value
+        raise SecretError(
+            f"no secret for {ref!r}; set {env_name(ref)} or add it to {self.path}"
+        )
+
+    def has(self, ref: str) -> bool:
+        """Is this ref resolvable? Never returns the value.
+
+        The web UI uses this to say "stored" without ever putting a credential
+        on a page.
+        """
+        try:
+            self.get(ref)
+        except SecretError:
+            return False
+        return True
+
+    def put(self, ref: str, value: str) -> None:
+        """Store a credential, so onboarding never has to write one to the DB.
+
+        A feed URL handed over by an app is a bearer capability: whoever holds
+        it can read a child's schedule and locations. The onboarding flow has to
+        put it *somewhere*, and the only acceptable somewhere is here — a source
+        row must stay safe to read, export and paste into a bug report.
+
+        Written whole-file with the mode set before any content lands, because
+        the window between creating a world-readable file and chmod-ing it is
+        exactly long enough to lose a token. The temp file sits in the same
+        directory so the replace is atomic.
+        """
+        if not ref or not value:
+            raise SecretError("a secret needs both a name and a value")
+
+        current = dict(self._from_file())
+        current[ref] = value
+
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_name(f".{self.path.name}.tmp")
+        try:
+            # O_EXCL so a stale temp file is an error rather than a silent
+            # overwrite of somebody else's in-flight write.
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            try:
+                with os.fdopen(fd, "w") as handle:
+                    json.dump(current, handle, indent=2, sort_keys=True)
+                    handle.write("\n")
+            except BaseException:
+                tmp.unlink(missing_ok=True)
+                raise
+            os.replace(tmp, self.path)
+        except OSError as exc:
+            # The container mounts this read-only for the poller on purpose, so
+            # this is a configuration answer rather than a bug — say which.
+            raise SecretError(
+                f"could not write to {self.path}: {exc}. Add {ref!r} by hand, or "
+                f"set {env_name(ref)}"
+            ) from exc
+
+        self._cache = current
+
+    def refs(self) -> list[str]:
+        """Names only. Used to offer an existing credential for reuse."""
+        return sorted(self._from_file())

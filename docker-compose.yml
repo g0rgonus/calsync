@@ -1,0 +1,188 @@
+# calsync + Radicale.
+#
+# Requirements and acceptance checks: docs/deployment/radicale.md. The parts
+# that matter here:
+#
+#   R4/R5  file-backed storage, so unknown X- properties and Apple's structured
+#          location survive a round-trip by construction
+#   R8     two principals, one read-write (calsync) and one read-only (devices)
+#   §5     no public ingress — bound to loopback, exposed via Tailscale
+#
+# Before first run:
+#   cp -r deploy/radicale/. ./config/radicale/     # then edit users/rights
+#   htpasswd -B -c config/radicale/users calsync
+#   htpasswd -B    config/radicale/users calreader
+#   mkdir -p secrets && printf '{"radicale_password":"..."}' > secrets/secrets.json
+#   chmod 600 secrets/secrets.json
+#   sudo chown -R 10001:10001 secrets              # Linux only; see the mount below
+#   docker compose up -d radicale
+#   docker compose run --rm calsync set radicale_url http://radicale:5232
+#   docker compose run --rm calsync check          # must pass before going further
+#   docker compose up -d
+#
+# The last three lines are not optional. `radicale_url` defaults to
+# http://localhost:5232, which is correct when calsync runs on the host and
+# wrong inside a container, where localhost is the container itself — a stack
+# left that way comes up healthy, writes nothing, and reports it once per event
+# before backing off to hours. `check` is what turns that into a question you
+# get answered in a second. The CI job "deploy (linux first run)" follows these
+# exact steps on Linux.
+
+services:
+  radicale:
+    image: tomsquest/docker-radicale:latest
+    restart: unless-stopped
+    # Loopback only. This holds children's names, schedules and physical
+    # locations with timestamps; it does not belong on a public interface.
+    # Reach it over Tailscale (`tailscale serve`) rather than by changing this.
+    ports:
+      - "127.0.0.1:5232:5232"
+    volumes:
+      - radicale-data:/data
+      - ./config/radicale/config:/config/config:ro
+      - ./config/radicale/rights:/config/rights:ro
+      - ./config/radicale/users:/config/users:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:5232/", "-o", "/dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  calsync:
+    # Both, on purpose. A homelab runs `docker compose pull` and never needs the
+    # build context; a checkout runs `docker compose build`. Compose only builds
+    # when the image is absent locally, so one file serves both and there is no
+    # second compose file to drift.
+    image: ghcr.io/g0rgonus/calsync:${CALSYNC_TAG:-latest}
+    build: .
+    restart: unless-stopped
+    depends_on:
+      radicale:
+        condition: service_healthy
+    volumes:
+      - calsync-data:/data
+      # Read-only, and the store refuses a file that is group- or
+      # world-readable. Keep it 600 on the host.
+      #
+      # **On Linux, it also has to be owned by uid 10001** — the account this
+      # image runs as. A bind mount preserves host ownership there, so a file
+      # written by your own user is 600 and unreadable inside the container:
+      #
+      #     sudo chown -R 10001:10001 secrets
+      #
+      # macOS hides this: Docker Desktop presents the mount as the container
+      # user, so a stack that works on a laptop can fail on the box it deploys
+      # to. The alternative is passing each secret as CALSYNC_SECRET_<NAME>,
+      # which the store checks before the file.
+      - ./secrets:/run/secrets/calsync:ro
+      # Config lives in the database; this is only for `calsync import`.
+      - ./config/calsync:/config:ro
+    environment:
+      CALSYNC_DB: /data/calsync.db
+      CALSYNC_SECRETS: /run/secrets/calsync/secrets.json
+    # Onboarding and inspection run through the same image:
+    #   docker compose run --rm calsync import /config/calsync.yaml
+    #   docker compose run --rm calsync stage tr-otters
+    #   docker compose run --rm calsync status
+    #   docker compose run --rm calsync promote tr-otters
+
+  # The onboarding console. Same image, same database file, same process model
+  # as any other calsync subcommand — configuration is edited directly in SQLite
+  # rather than through an API (docs/API.md), so this and the poller are two
+  # writers on one file and `db.connect` sets the busy timeout that makes that
+  # safe.
+  web:
+    image: ghcr.io/g0rgonus/calsync:${CALSYNC_TAG:-latest}
+    build: .
+    command: ["web", "--host", "0.0.0.0", "--port", "8730"]
+    restart: unless-stopped
+    # 0.0.0.0 *inside* the container is what lets the published port reach it;
+    # the publish itself is pinned to loopback, so nothing is exposed off this
+    # box. Put a VPN or an authenticating proxy in front to reach it from a
+    # phone — the console has no login, so never widen this publish.
+    ports:
+      - "127.0.0.1:8730:8730"
+    volumes:
+      - calsync-data:/data
+      # Read-write, unlike the poller's mount: onboarding takes the token out of
+      # a pasted feed URL and puts it here, so that it never reaches the
+      # database. Keep the directory 700 and the file 600 on the host.
+      - ./secrets:/run/secrets/calsync
+    environment:
+      CALSYNC_DB: /data/calsync.db
+      CALSYNC_SECRETS: /run/secrets/calsync/secrets.json
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request;urllib.request.urlopen('http://localhost:8730/')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  # The read API (docs/API.md). Opt-in rather than always on:
+  #
+  #   docker compose --profile api up -d api
+  #
+  # Its only intended consumer is an agent that does not exist yet, and this
+  # serves children's names, times and the physical locations they will be at.
+  # An authenticated listener that nothing is talking to is surface without a
+  # purpose, so it is a profile until something needs it — at which point drop
+  # the two `profiles` lines and it joins the stack.
+  #
+  # It refuses to start without a bearer token (`api_token_ref` names the
+  # secret, the console's Settings page stores the value). A missing token
+  # therefore shows up as a restart loop with the reason on the first log line,
+  # which is the intended failure: an unusable read API that came up quietly
+  # would be one nobody noticed was unusable.
+  api:
+    profiles: ["api"]
+    image: ghcr.io/g0rgonus/calsync:${CALSYNC_TAG:-latest}
+    build: .
+    command: ["api", "--host", "0.0.0.0", "--port", "8731"]
+    restart: unless-stopped
+    # Same reasoning as `web`: 0.0.0.0 inside the container is what lets the
+    # published port reach it, and the publish is pinned to loopback. The token
+    # is a real control, unlike the console's absent login, but it is one
+    # control in front of a family's schedule — keep the VPN in front too.
+    ports:
+      - "127.0.0.1:8731:8731"
+    volumes:
+      # Read-write despite this being a read-only API: SQLite in WAL mode needs
+      # to create -wal and -shm alongside the database, and `open_db` migrates
+      # on startup. A read-only mount fails at the first request, not at boot.
+      - calsync-data:/data
+      # Read-only, unlike `web`: this only ever reads the bearer token. Nothing
+      # in the API path stores a credential.
+      - ./secrets:/run/secrets/calsync:ro
+    environment:
+      CALSYNC_DB: /data/calsync.db
+      CALSYNC_SECRETS: /run/secrets/calsync/secrets.json
+    healthcheck:
+      # 401 is the healthy answer: it proves the app is serving *and* that the
+      # auth hook is in front of it. `http.client` is used rather than urllib
+      # because it does not raise on a 4xx, so this stays a one-liner.
+      test: ["CMD", "python", "-c",
+             "import http.client as h; c=h.HTTPConnection('localhost',8731,timeout=3); c.request('GET','/v1/events'); raise SystemExit(0 if c.getresponse().status==401 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  # Not part of the stack. `docker compose --profile demo up` adds a server that
+  # replays the recorded fixtures with their dates shifted onto this week, so
+  # the console can be exercised without a real team's feed URL.
+  feeds:
+    profiles: ["demo"]
+    image: python:3.12-slim
+    restart: unless-stopped
+    command: ["python", "/demo/feeds.py", "--port", "8000"]
+    volumes:
+      - ./demo:/demo:ro
+      - ./tests/fixtures:/tests/fixtures:ro
+    ports:
+      - "127.0.0.1:8000:8000"
+
+volumes:
+  radicale-data:
+  calsync-data:

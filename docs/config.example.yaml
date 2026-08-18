@@ -1,0 +1,150 @@
+# calsync configuration — worked example
+#
+# Filled in from the one verified source so far: Jesse's U10PL Player360 feed
+# (docs/sources/player360.md). Values marked TODO still need answers.
+
+# color is web-UI only — the iCloud calendars are split by event type, not by
+# child, so Apple Calendar colors events by calendar rather than by kid.
+children:
+  - id: jesse
+    name: Jesse
+    initial: J                   # used in 2-kid titles ("P+J"); must be
+                                 # unique across children
+    nicknames: [Jamie, J]        # TODO: confirm — used to spot him in
+                                 # hand-created titles during adoption
+    birth_order: TODO            # fixes ordering in multi-kid titles
+                                 # ("P+J" must never render as "J+P")
+    color: "#2f6fdb"
+
+  - id: parker
+    name: Parker
+    initial: P
+    nicknames: [TODO]
+    birth_order: TODO
+    color: "#d9663d"
+
+  - id: mira
+    name: Mira
+    initial: M
+    nicknames: [TODO]
+    birth_order: TODO
+    color: "#3da36b"
+
+activities:
+  - id: jesse-soccer-vanguard
+    child: jesse
+    name: Vanguard                   # human-readable; what shows up in titles
+    official_name: U10PL         # league designation
+    short_name: Vanguard             # only appears in titles if Jesse picks up a
+                                 # second team; omitted while this is his only one
+    aliases:                     # strings that must resolve to this activity
+      - U10PL                    # when they turn up in a PDF, email, or coach
+      - U10 DA                   # message — official names are exactly what
+      - Vanguard                     # those sources use
+      - Vanguard Academy             # observed in the feed DESCRIPTION
+    sport: soccer
+    emoji: "⚽️"
+    league: PSL                 # appears in league-match SUMMARY strings
+    age_group: U10               # used to strip the redundant suffix from
+                                 # opponents ("Harbour FC U10" -> "Harbour FC")
+    tz: America/New_York         # inferred from Fenwick + Marbury VA venues
+    season: { start: 2026-07-01, end: TODO }
+    alarm_policy:
+      game: 90m                  # away games need travel time
+      practice: 30m
+
+  - id: parker-swim
+    child: parker
+    name: TODO                   # team/squad name, human-readable
+    official_name: TODO
+    short_name: TODO
+    aliases: [TODO]
+    sport: swimming
+    emoji: "🏊‍♂️"
+    tz: America/New_York
+    season: { start: TODO, end: TODO }
+    alarm_policy:
+      game: 90m                  # meets
+      practice: 30m
+    # shape: document + relay. Season arrives as a PDF via Hermes; changes come
+    # by email or text and land through the amendment path (MATRIX.md §3).
+    # No poller, so health monitoring is coverage-based, not staleness (PLAN §D1).
+
+sources:
+  - id: p360-jesse-vanguard
+    activity: jesse-soccer-vanguard
+    kind: player360
+    shape: feed
+    tier: 2                      # ICS export
+    trust_rank: 2                # human relay is 1 and outranks this
+    poll_interval: 20m           # publisher advertises PT5M; 20m is plenty
+
+    # Never store the assembled URL — the token is a bearer credential in the
+    # query string, and `from` goes stale if frozen.
+    url_template: "https://api.360player.com/v1/ics/events.ics\
+      ?token={{secret:p360_token}}\
+      &from={{now-30d|unix}}\
+      &group_ids=68362"
+    secret_ref: p360_token
+
+    sync_window: { back: 7d, forward: 365d }   # don't backfill history into a
+                                               # calendar the family reads
+
+    mapping:
+      uid: passthrough                  # 360Player-event-<id>, stable
+      is_game:
+        match: true
+        practice: false
+        _default: false                 # unseen category → Practices + alarm
+      # SUMMARY has at least two formats. League matches embed the opponent:
+      #   "U10PL PSL Match vs Harbour FC U10"
+      # Club events don't: "Super 8v8 Festival Vanguard Kickoff"
+      summary_parse:
+        - name: league_match
+          pattern: '^(?<team>\S+)\s+(?<league>\S+)\s+Match\s+vs\.?\s+(?<opponent>.+)$'
+          sets: [opponent]
+          strip_opponent_age_suffix: true   # only when it matches age_group
+      # detail: parsed opponent, else SUMMARY with known tokens stripped.
+      # "U10PL Practice" -> "Practice"; upstream always wins.
+      detail_from: [parsed_opponent, stripped_summary]
+      strip_tokens_from: [name, official_name, aliases, age_group, league]
+      venue_from: location
+      home_venue: Thistledown Park        # venue == home -> "vs", else "@";
+                                        # the SUMMARY always says "vs"
+      description_from: description
+      description_skip_if_equals_summary: true   # league matches duplicate it
+      # feed carries no kit/uniform or arrival-time field; those come from the
+      # relay path or manual entry only
+      url_from: url
+
+      # Player360 sets SEQUENCE = unix(LAST-MODIFIED) and touches every event
+      # 2-3s after DTEND, so these churn on events that did not change.
+      change_detection: content_hash
+      hash_fields: [DTSTART, DTEND, SUMMARY, LOCATION, CATEGORIES, DESCRIPTION]
+      ignore_fields: [SEQUENCE, LAST-MODIFIED, DTSTAMP]
+      propagate_upstream_sequence: false
+
+    guards:
+      require_valid_vcalendar: true     # empty-but-valid ≠ cancelled
+      require_min_events: 1
+      max_disappearance_pct: 20         # cancellation is signalled only by
+      max_disappearance_count: 3        # disappearance — never mass-process it
+
+    venue_parse:
+      # "Alder Reach Memorial Park 7160 Kestrel Ln, Fenwick, NX 40219"
+      # -> name="Alder Reach Memorial Park", addr="7160 Kestrel Ln, Fenwick, NX 40219"
+      split_on_street_number: '^(?<name>.*?)\s+(?<addr>\d+\s+.*)$'
+      on_parse_failure: llm_disambiguate
+
+targets:
+  icloud:
+    account: TODO                # app-specific password in the secret store
+    calendars:
+      games: Games               # TODO: confirm exact calendar names
+      practices: Practices
+      owner: TODO                # you own both, or one is shared *to* you?
+                                 # CalDAV write access depends on it
+
+secrets:
+  backend: sops-age              # or 1password-cli
+  # p360_token, icloud_app_password, geocoder_key
