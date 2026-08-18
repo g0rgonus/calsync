@@ -125,9 +125,17 @@ intended consumer does not exist yet and an authenticated listener nothing talks
 to is surface without a purpose.
 
 The image is published to `ghcr.io/g0rgonus/calsync` by CI and carries its own
-deployment assets: `docker run --rm -v "$PWD:/out" <image> init-deploy /out`
-writes the compose file and Radicale config, so a homelab never needs a
-checkout. Compose declares both `image:` and `build:` — it only builds when the
+deployment assets: `docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/out"
+<image> init-deploy /out` writes the compose file and Radicale config, so a
+homelab never needs a checkout.
+
+**The image runs as uid 10001, and on Linux that is a recurring friction
+point** — it has bitten the secrets mount, the dev-stack script and
+`init-deploy`, three times for the same reason. A Linux bind mount preserves
+host ownership; macOS presents mounts as the container user and hides every one
+of these. Anything writing to a bind mount needs `--user`, and anything reading
+a 600 file from one needs that file owned by 10001. Test deployment changes on
+Linux, or CI will find it for you. Compose declares both `image:` and `build:` — it only builds when the
 image is absent locally, so one file serves a pull-based deployment and a
 checkout without a second compose file to drift.
 

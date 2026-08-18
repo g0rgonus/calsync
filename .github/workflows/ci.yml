@@ -157,7 +157,11 @@ jobs:
           # It has to be able to lay out a deployment, or the whole point of
           # publishing it is lost — you would still need the repo.
           mkdir -p /tmp/deploy
-          docker run --rm -v /tmp/deploy:/out "$IMAGE" init-deploy /out
+          # `--user`, exactly as the README says to run it: the image is uid
+          # 10001 and a Linux bind mount keeps host ownership, so without this
+          # it cannot write into a directory the invoking user owns.
+          docker run --rm --user "$(id -u):$(id -g)" \
+            -v /tmp/deploy:/out "$IMAGE" init-deploy /out
           test -f /tmp/deploy/docker-compose.yml
           test -f /tmp/deploy/config/radicale/config
           test -f /tmp/deploy/config/radicale/rights

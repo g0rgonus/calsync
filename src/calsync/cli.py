@@ -446,13 +446,27 @@ def cmd_init_deploy(args) -> int:
     ]
 
     written, kept = [], []
-    for src, out in wanted:
-        if out.exists():
-            kept.append(out)
-            continue
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_bytes(src.read_bytes())
-        written.append(out)
+    try:
+        for src, out in wanted:
+            if out.exists():
+                kept.append(out)
+                continue
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(src.read_bytes())
+            written.append(out)
+    except PermissionError as exc:
+        # The usual cause, and a bare EACCES sends people looking in the wrong
+        # place. This image runs as uid 10001 and a Linux bind mount keeps host
+        # ownership, so writing into a directory you own needs the container to
+        # be you.
+        print(f"error: cannot write to {dest}: {exc}", file=sys.stderr)
+        print("", file=sys.stderr)
+        print("If this is `docker run`, the container is uid 10001 and the "
+              "directory is yours.", file=sys.stderr)
+        print("Run it as yourself:", file=sys.stderr)
+        print('  docker run --rm --user "$(id -u):$(id -g)" \\', file=sys.stderr)
+        print('    -v "$PWD:/out" <image> init-deploy /out', file=sys.stderr)
+        return 1
 
     for path in written:
         print(f"  wrote {path}")

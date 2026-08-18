@@ -59,7 +59,8 @@ this repo** — the image carries its own compose file and server config:
 ```bash
 docker login ghcr.io                       # while this repo is private
 mkdir calsync && cd calsync
-docker run --rm -v "$PWD:/out" ghcr.io/g0rgonus/calsync:latest init-deploy /out
+docker run --rm --user "$(id -u):$(id -g)" \
+  -v "$PWD:/out" ghcr.io/g0rgonus/calsync:latest init-deploy /out
 ```
 
 That writes `docker-compose.yml` and `config/radicale/{config,rights}`, then
