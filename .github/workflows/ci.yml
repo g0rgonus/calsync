@@ -16,6 +16,10 @@ name: CI
 on:
   push:
     branches: ["**"]
+    # Without this a tag push fires nothing, so the semver image tags the
+    # metadata step is configured to produce are never actually produced —
+    # `latest` and `sha-` get published and there is no version to pin to.
+    tags: ["v*"]
   pull_request:
   workflow_dispatch:
 
