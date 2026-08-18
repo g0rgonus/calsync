@@ -14,12 +14,14 @@ Two ways to run a sync:
 from __future__ import annotations
 
 import argparse
+import os
 import signal
 import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import bootstrap as bootstrap_mod
 from . import config as config_mod
 from . import db, repo
 from .secrets import SecretError, SecretStore
@@ -126,6 +128,48 @@ def cmd_sync(args) -> int:
     return exit_code
 
 
+def _startup_check(conn, args, secrets) -> bool:
+    """Ask once, at boot, whether the configured calendar is really there.
+
+    A first run that cannot reach its target must not start. The failure this
+    guards against is not a crash — it is a stack that comes up healthy, writes
+    nothing, and reports it once per event before backing off to three-hourly,
+    which is how a real deployment went unnoticed for days. Refusing to start
+    turns that into a container that will not come up, with the reason on the
+    first line of its log.
+
+    A deployment that has polled before only gets a warning. By then the
+    address is known to have worked, so a failure here is far more likely to be
+    Radicale still starting or briefly down than a misconfiguration — and
+    exiting would take the poller off the air for an outage the sync loop
+    already handles with backoff.
+    """
+    # `--out` and `--target ics_file` write files, so there is no server to
+    # ask and the configured `target_kind` is not what this run will use.
+    if getattr(args, "out", None) or getattr(args, "target", None) == "ics_file":
+        return True
+
+    check = targeting.verify(conn, secrets)
+    if check.ok:
+        return True
+
+    polled_before = conn.execute(
+        "SELECT 1 FROM poll_runs WHERE status = 'ok' LIMIT 1"
+    ).fetchone() is not None
+    for finding in check.findings:
+        print(f"  {'ok ' if finding.ok else 'NO '} {finding.label}: {finding.detail}",
+              file=sys.stderr, flush=True)
+    if polled_before:
+        print("calendar unreachable at startup; polling anyway, since this "
+              "deployment has synced before", file=sys.stderr, flush=True)
+        return True
+    print("refusing to start: this database has never synced and the calendar "
+          "cannot be reached. Fix the settings above (`calsync check` asks the "
+          "same question) — a poller left running like this writes nothing and "
+          "says so only in passing.", file=sys.stderr, flush=True)
+    return False
+
+
 def cmd_poll(args) -> int:
     """Long-running loop for the container.
 
@@ -135,6 +179,8 @@ def cmd_poll(args) -> int:
     """
     conn = db.open_db(args.db)
     secrets = _secrets(args)
+    if not _startup_check(conn, args, secrets):
+        return 1
     stopping = {"now": False}
 
     def stop(signum, _frame):
@@ -412,12 +458,8 @@ def cmd_web(args) -> int:
     return 0
 
 
-#: Where the deployment assets live inside the image, and the same files in a
-#: checkout. Both, so this works whether you pulled the image or cloned.
-DEPLOY_ASSETS = (
-    Path("/app/deploy-assets"),
-    Path(__file__).resolve().parent.parent.parent,
-)
+#: Where the deployment assets live. Defined once, in `bootstrap`.
+DEPLOY_ASSETS = bootstrap_mod.DEPLOY_ASSETS
 
 
 def cmd_init_deploy(args) -> int:
@@ -441,6 +483,11 @@ def cmd_init_deploy(args) -> int:
     dest = Path(args.directory)
     wanted = [
         (source / "docker-compose.yml", dest / "docker-compose.yml"),
+        # Not `.env`: this writes files nobody has edited yet, and a `.env`
+        # holding real credentials is exactly the file a later `init-deploy`
+        # must not be able to touch. The example is copied, and copying it is
+        # the deployment's job.
+        (source / ".env.example", dest / ".env.example"),
         (source / "deploy" / "radicale" / "config", dest / "config" / "radicale" / "config"),
         (source / "deploy" / "radicale" / "rights", dest / "config" / "radicale" / "rights"),
     ]
@@ -475,16 +522,59 @@ def cmd_init_deploy(args) -> int:
 
     print()
     print("Next, in that directory:")
-    print("  htpasswd -B -c config/radicale/users calsync")
-    print("  htpasswd -B    config/radicale/users calreader")
-    print("  mkdir -p secrets && printf '{\"radicale_password\":\"...\"}' "
-          "> secrets/secrets.json")
-    print("  chmod 600 secrets/secrets.json")
-    print("  sudo chown -R 10001:10001 secrets      # Linux: the image runs as that uid")
-    print("  docker compose up -d radicale")
-    print("  docker compose run --rm calsync set radicale_url http://radicale:5232")
-    print("  docker compose run --rm calsync check  # stop here if this fails")
     print("  docker compose up -d")
+    print()
+    print("That is the whole first run. The stack's `bootstrap` service writes")
+    print("the users file and generates both passwords — it prints the")
+    print("read-only one for subscribing a phone, so keep that first log:")
+    print("  docker compose logs bootstrap")
+    print()
+    print("To choose the passwords yourself instead, or to configure Matrix,")
+    print("Pushover or the read API before the first start:")
+    print("  cp .env.example .env      # then edit, then up -d")
+    print()
+    print("`radicale_url` is seeded from CALSYNC_SETTING_RADICALE_URL in the")
+    print("compose file, and the poller verifies it before it will start, so a")
+    print("stack that cannot reach its calendar fails visibly instead of coming")
+    print("up healthy and writing nothing. `docker compose run --rm calsync")
+    print("check` asks the same question at any time.")
+    return 0
+
+
+def cmd_bootstrap(args) -> int:
+    """Generate the credentials a first run needs, instead of asking for them.
+
+    Run by a one-shot compose service as root, before anything else starts —
+    which is the only moment the secrets file can be handed to uid 10001
+    without somebody remembering `sudo chown` on a Linux host.
+
+    Safe to run on every `up`: the users file existing means auth is already
+    established, and rotating a password every subscribed device still uses
+    would be worse than the friction this removes.
+    """
+    try:
+        result = bootstrap_mod.run(
+            Path(args.directory),
+            store=_secrets(args) if getattr(args, "secrets", None) else None,
+            # 0 means "leave the ownership alone", per the flag's help.
+            owner_uid=args.owner_uid or None,
+        )
+    except bootstrap_mod.BootstrapError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    for line in result.lines:
+        print(f"  {line}", flush=True)
+    if result.reader_password:
+        # Once, and only on the run that created it. It is in the secret store
+        # too — this is here so subscribing a phone does not start with reading
+        # a JSON file as root.
+        print(flush=True)
+        print("  A read-only account for the family's devices:", flush=True)
+        print(f"    user     {bootstrap_mod.READER_USER}", flush=True)
+        print(f"    password {result.reader_password}", flush=True)
+        print("  Stored as "
+              f"{bootstrap_mod.READER_REF} if you need it again.", flush=True)
     return 0
 
 
@@ -664,6 +754,25 @@ def build_parser() -> argparse.ArgumentParser:
         "init-deploy", help="write out compose + server config for a deployment")
     p_init_deploy.add_argument("directory", nargs="?", default=".")
     p_init_deploy.set_defaults(fn=cmd_init_deploy)
+
+    p_bootstrap = sub.add_parser(
+        "bootstrap",
+        help="generate the server config and credentials a first run needs",
+    )
+    p_bootstrap.add_argument("directory", nargs="?", default="/deploy",
+                             help="deployment directory (default: /deploy)")
+    p_bootstrap.add_argument("--secrets", help="path to a secrets JSON file")
+    p_bootstrap.add_argument(
+        "--owner-uid", type=int,
+        # From the environment so compose can set it without a second command
+        # line. `scripts/dev-stack.sh` uses 0: there, the host reads the same
+        # secrets file the container does, and handing it to uid 10001 would
+        # lock this account out of its own development stack.
+        default=int(os.environ.get("CALSYNC_BOOTSTRAP_OWNER_UID")
+                    or bootstrap_mod.CALSYNC_UID),
+        help="hand the secrets file to this uid (0 to leave it alone)",
+    )
+    p_bootstrap.set_defaults(fn=cmd_bootstrap)
 
     p_set = sub.add_parser("set", help="set one setting")
     p_set.add_argument("key")

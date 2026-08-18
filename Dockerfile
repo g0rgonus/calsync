@@ -15,10 +15,10 @@ COPY src/ ./src/
 # lay out a stack without cloning anything — `calsync init-deploy DIR` writes
 # these out, and they are the versions that match the image you pulled rather
 # than whatever is on a branch somewhere.
-COPY docker-compose.yml ./deploy-assets/docker-compose.yml
+COPY docker-compose.yml .env.example ./deploy-assets/
 COPY deploy/ ./deploy-assets/deploy/
 
-RUN pip install --no-cache-dir . \
+RUN pip install --no-cache-dir '.[deploy]' \
  && mkdir -p /data && chown calsync:calsync /data
 
 USER calsync

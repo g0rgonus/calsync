@@ -38,6 +38,12 @@ if not data.get("radicale_password"):
     alphabet = string.ascii_letters + string.digits
     data["radicale_password"] = "".join(secrets.choice(alphabet) for _ in range(32))
     print("  generated a Radicale password into secrets/secrets.json")
+# Both refs, with one value, because the htpasswd calls below give both
+# accounts the same password. The stack's `bootstrap` service derives the users
+# file from what the store holds: leave the reader's out and it finds a missing
+# credential, mints one, and rewrites the file this script just built — which
+# invalidates the calreader entry the R8 acceptance checks authenticate with.
+data.setdefault("radicale_reader_password", data["radicale_password"])
 # Mode before content: the gap between creating a world-readable file and
 # chmod-ing it is exactly long enough to lose a credential.
 fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -55,14 +61,22 @@ htpasswd -bBc config/radicale/users "$RADICALE_USER" "$password" 2>/dev/null
 htpasswd -bB  config/radicale/users "$READER_USER"  "$password" 2>/dev/null
 echo "  wrote config/radicale/{config,rights,users}"
 
+# Keep the credentials owned by whoever ran this. `bootstrap` hands the secrets
+# file to uid 10001 on a real deployment, because a Linux bind mount preserves
+# host ownership and the poller could not read it otherwise — but here the
+# acceptance tests read that same file from the host, as this user, and a 600
+# file owned by 10001 is one they cannot open.
+export CALSYNC_BOOTSTRAP_OWNER_UID=0
+
 docker compose --profile demo up -d radicale web feeds
 
-# The one value the defaults cannot know. `radicale_url` ships as
-# http://localhost:5232, which is right when calsync runs on this machine and
-# wrong inside every container, where localhost is the container itself. Left
-# unset, the stack comes up looking healthy and never writes a single event —
-# the poller reports it per event, then backs off to hours, which is how it went
-# unnoticed for days.
+# Compose seeds this on a fresh database (CALSYNC_SETTING_RADICALE_URL), so on
+# a clean run the line below changes nothing. It stays because this script is
+# the one caller that deliberately reuses an existing volume: seeding is
+# first-run only, and a dev database created before that existed still says
+# http://localhost:5232 — right when calsync runs on this machine and wrong
+# inside every container, where localhost is the container itself. Setting it
+# explicitly makes the script correct from either starting point.
 docker compose run --rm --no-deps calsync set radicale_url http://radicale:5232 \
   >/dev/null
 

@@ -137,6 +137,19 @@ class SecretStore:
 
         self._cache = current
 
+    def stored(self, ref: str) -> str:
+        """What the *file* holds, ignoring the environment. "" if nothing.
+
+        `get` deliberately prefers the environment, which makes it the wrong
+        question when what you need to know is whether the file disagrees —
+        a variable set today shadows a value written months ago, and unsetting
+        it silently brings the old one back.
+        """
+        try:
+            return self._from_file().get(ref, "")
+        except SecretError:
+            return ""
+
     def refs(self) -> list[str]:
         """Names only. Used to offer an existing credential for reuse."""
         return sorted(self._from_file())

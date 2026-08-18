@@ -3,19 +3,26 @@ name = "calsync"
 version = "0.1.0"
 description = "Normalize kids' schedules from feeds, PDFs and messages into one calendar"
 requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
 # Bottle is a single pure-Python module with no dependencies of its own, which
 # is why it wins over Flask (five packages for the same job) and over the
 # stdlib (which would leave routing and HTML escaping to be hand-rolled here).
 dependencies = ["icalendar>=6.0", "pyyaml>=6.0", "bottle>=0.13"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+# Not a runtime dependency: nothing in the sync path hashes anything. `calsync
+# bootstrap` needs it to write a bcrypt htpasswd line on a first run, the
+# published image carries it for that one command, and without it bootstrap
+# says so and points at `htpasswd`, which writes the same file.
+deploy = ["bcrypt>=4.0"]
+dev = ["pytest>=8.0", "bcrypt>=4.0"]
 
 [project.scripts]
 calsync = "calsync.cli:main"
 
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
