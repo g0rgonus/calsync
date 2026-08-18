@@ -325,6 +325,10 @@ def create_app(
                 health=repo.source_row(conn, source_id),
                 dormant=dormancy.for_source(conn, source_id, now=clock()),
                 tracked=repo.tracked_events(conn, source_id),
+                # What retiring would actually take off, as opposed to what this
+                # source has on the calendar in total. The two are usually very
+                # different by the time anybody retires anything.
+                upcoming=retire.live_events(conn, source_id, now=clock()),
                 polls=repo.recent_polls(conn, source_id),
                 flash=_flash(),
             )
@@ -458,11 +462,15 @@ def create_app(
 
     @app.post("/sources/<source_id>/retire")
     def retire_source_route(source_id):
-        """The end of a season: clear the calendar, then stop polling.
+        """Clear what a source still has coming, then stop polling.
 
         Needs a real target, unlike everything else on this page — it is the one
         console action that writes to the family's calendars, because removing
         an event is a write. A preview cannot do it.
+
+        Events that have already happened stay put (`retire.py`), so retiring a
+        season a month after it ended normally removes nothing and the message
+        below says as much rather than claiming a success it did not have.
         """
         with connect() as conn:
             source = _require_source(conn, source_id)
@@ -470,7 +478,7 @@ def create_app(
                 target = retire_target or targeting.build_target(
                     conn, secrets=secrets
                 )
-                report = retire.retire_source(conn, source, target)
+                report = retire.retire_source(conn, source, target, now=clock())
             except (SecretError, TargetError) as exc:
                 raise Refused(f"could not reach the calendar: {exc}") from exc
 
@@ -480,9 +488,13 @@ def create_app(
                 "is still on and a later run will retry them: "
                 + "; ".join(report.errors[:3])
             )
-        redirect(f"/sources/{source_id}?ok=" + _q(
-            f"Retired. {report.cancelled} events removed from the calendar and "
-            "polling stopped."))
+        if report.cancelled:
+            done = f"{report.cancelled} upcoming event(s) removed from the calendar"
+        else:
+            done = "nothing was upcoming, so nothing came off the calendar"
+        if report.kept:
+            done += f"; {report.kept} past event(s) left in place"
+        redirect(f"/sources/{source_id}?ok=" + _q(f"Polling stopped — {done}."))
 
     @app.post("/sources/<source_id>/persists")
     def set_persists(source_id):

@@ -56,7 +56,7 @@ so a fresh clone needs:
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/pytest                                    # 409 tests, ~2.0s
+.venv/bin/pytest                                    # 416 tests, ~2.2s
 .venv/bin/pytest tests/test_player360.py -k content_hash    # single test
 ```
 
@@ -177,13 +177,24 @@ Decisions that span several files and are easy to undo by accident:
   is the dates: nothing upcoming, and the newest event months in the past
   (`dormancy.py`). `polling.py`'s backoff is for feeds that stopped answering,
   which is a different and rarer problem — do not conflate them.
-- **A finished season is switched off, never erased.** `seasonend.py` nudges at
-  a month past the last event and stops polling at two. It does not cancel
-  anything: by then *every* event of that season is in the past, so removing
-  them would delete the record of a season the kids played. Retiring is a
-  separate, manual decision. A source with `persists_across_seasons` in its
-  config is never switched off — a club team kept across years goes quiet each
-  summer, and disabling it in July means noticing in September.
+- **A finished season is switched off, never erased — and that applies to
+  retiring too.** `seasonend.py` nudges at a month past the last event and stops
+  polling at two, cancelling nothing. `retire.py` cancels **only events that
+  have not started yet**, so retiring a finished season removes nothing and just
+  stops the polling, which is all anybody ever wanted from it. A schedule and a
+  history are not the same thing: by the time anything suggests retiring, every
+  event is in the past, and taking them off would delete the record of a season
+  the kids played. This used to cancel everything, which meant the timer
+  carefully refused to do something the button then did unconditionally. A
+  source with `persists_across_seasons` in its config is never switched off — a
+  club team kept across years goes quiet each summer, and disabling it in July
+  means noticing in September.
+- **`retire.live_events` is upcoming-only, and `repo.tracked_events` is not.**
+  They answer different questions. "What is on the calendar from this source"
+  counts everything uncancelled; "is there anything left that calsync might
+  still need to act on", which is what gates `forget_source`, counts only what
+  has not happened. A game played in April cannot be stranded by dropping the
+  row — nothing will ever poll that feed again — where an upcoming one would be.
 - **Matrix is outbound only.** `matrix.py` + `digest.py` let calsync talk to a
   room; nothing reads from it, and `docs/MATRIX.md` §7 records exactly which
   arrow is built and what the inbound half is blocked on (no API, no identity
@@ -202,8 +213,10 @@ Decisions that span several files and are easy to undo by accident:
 - **The digest includes paused sources and excludes cancelled events.** Pausing
   stops polling; it does not take an event off the calendar, so omitting it is
   the same silent under-report the `stale` list exists to prevent. Retiring is
-  what removes events, and `retire.py` cancels every one before disabling
-  anything — so those stay out by being cancelled, which is the honest test.
+  what removes events, and it cancels everything still to come before disabling
+  anything — so a phantom stays out by being cancelled, which is the honest
+  test. A retired season's *past* events are still on the calendar and still in
+  the digest's window if you point it at one, which is correct: they happened.
 - **One definition of stale, in `repo.source_freshness`.** The digest and the
   API both use it. A digest saying "all fine" while the API says "stale" would
   be its own wrong answer, and two thresholds drift apart the moment one is

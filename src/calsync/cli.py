@@ -294,11 +294,16 @@ def cmd_promote(args) -> int:
 
 
 def cmd_retire(args) -> int:
-    """Take a finished season off the calendars and stop polling it.
+    """Stop polling a source and clear what it still has coming.
 
-    Not a delete: the source row and its tombstones stay, because they are the
-    record that these events were ours. `--forget` drops the row afterwards,
-    and refuses while anything is still live.
+    Events that have already happened stay on the calendar — a finished season
+    is a record of games that were played, not clutter (see `retire.py`). So a
+    season retired a month after it ended usually removes nothing at all, and
+    says so.
+
+    Not a delete either: the source row and its state rows stay, because they are
+    the record that these events were ours. `--forget` drops the row afterwards,
+    and refuses while anything is still to come.
     """
     conn = db.open_db(args.db)
     source = repo.get_source(conn, args.source)
@@ -307,7 +312,8 @@ def cmd_retire(args) -> int:
         return 2
 
     secrets = _secrets(args)
-    report = retire.retire_source(conn, source, _target(conn, args, secrets))
+    now = _now(getattr(args, "now", None))
+    report = retire.retire_source(conn, source, _target(conn, args, secrets), now=now)
     print(report.line())
     if not report.ok:
         print("\nnothing was disabled: some events could not be removed, so the",
@@ -316,7 +322,7 @@ def cmd_retire(args) -> int:
         return 1
 
     if args.forget:
-        retire.forget_source(conn, args.source)
+        retire.forget_source(conn, args.source, now=now)
         print(f"forgot {args.source}; its row is gone")
     return 0
 
@@ -474,6 +480,9 @@ def build_parser() -> argparse.ArgumentParser:
         "retire", help="cancel a finished season's events and stop polling it")
     target_args(p_retire)
     p_retire.add_argument("source")
+    # Which events count as "still to come" now depends on the clock, so this
+    # is not just for reproducible tests.
+    p_retire.add_argument("--now", help="ISO timestamp to treat as now")
     p_retire.add_argument("--forget", action="store_true",
                           help="also drop the source row, once nothing is left live")
     p_retire.set_defaults(fn=cmd_retire)
