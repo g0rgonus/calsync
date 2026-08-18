@@ -278,3 +278,32 @@ def test_nothing_is_said_when_the_variable_and_the_store_agree(root, monkeypatch
     result = _run(root)
 
     assert not any("no longer works" in line for line in result.lines)
+
+
+def test_a_users_file_somebody_else_built_is_left_alone(root):
+    """What `scripts/dev-stack.sh` does, and what CI caught when it did not.
+
+    That script writes both accounts with one password via `htpasswd` and
+    stores it. Bootstrap has to recognise that as already correct — finding one
+    of the two refs missing made it mint a reader password and rewrite the file
+    the script had just built, invalidating the account the R8 acceptance
+    checks authenticate with.
+    """
+    import bcrypt
+
+    shared = "one-password-for-both"
+    target = root / "config" / "radicale"
+    target.mkdir(parents=True)
+    entries = "".join(
+        f"{user}:{bcrypt.hashpw(shared.encode(), bcrypt.gensalt()).decode()}\n"
+        for user in ("calsync", "calreader")
+    )
+    (target / "users").write_text(entries)
+    store = _store(root)
+    store.put("radicale_password", shared)
+    store.put("radicale_reader_password", shared)
+
+    result = bootstrap.run(root, store=store, owner_uid=None)
+
+    assert (target / "users").read_text() == entries
+    assert result.reader_password == ""

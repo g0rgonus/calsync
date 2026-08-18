@@ -14,6 +14,7 @@ Two ways to run a sync:
 from __future__ import annotations
 
 import argparse
+import os
 import signal
 import sys
 import time
@@ -762,7 +763,13 @@ def build_parser() -> argparse.ArgumentParser:
                              help="deployment directory (default: /deploy)")
     p_bootstrap.add_argument("--secrets", help="path to a secrets JSON file")
     p_bootstrap.add_argument(
-        "--owner-uid", type=int, default=bootstrap_mod.CALSYNC_UID,
+        "--owner-uid", type=int,
+        # From the environment so compose can set it without a second command
+        # line. `scripts/dev-stack.sh` uses 0: there, the host reads the same
+        # secrets file the container does, and handing it to uid 10001 would
+        # lock this account out of its own development stack.
+        default=int(os.environ.get("CALSYNC_BOOTSTRAP_OWNER_UID")
+                    or bootstrap_mod.CALSYNC_UID),
         help="hand the secrets file to this uid (0 to leave it alone)",
     )
     p_bootstrap.set_defaults(fn=cmd_bootstrap)

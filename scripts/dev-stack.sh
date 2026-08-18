@@ -38,6 +38,12 @@ if not data.get("radicale_password"):
     alphabet = string.ascii_letters + string.digits
     data["radicale_password"] = "".join(secrets.choice(alphabet) for _ in range(32))
     print("  generated a Radicale password into secrets/secrets.json")
+# Both refs, with one value, because the htpasswd calls below give both
+# accounts the same password. The stack's `bootstrap` service derives the users
+# file from what the store holds: leave the reader's out and it finds a missing
+# credential, mints one, and rewrites the file this script just built — which
+# invalidates the calreader entry the R8 acceptance checks authenticate with.
+data.setdefault("radicale_reader_password", data["radicale_password"])
 # Mode before content: the gap between creating a world-readable file and
 # chmod-ing it is exactly long enough to lose a credential.
 fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -54,6 +60,13 @@ password="$(python3 -c 'import json;print(json.load(open("secrets/secrets.json")
 htpasswd -bBc config/radicale/users "$RADICALE_USER" "$password" 2>/dev/null
 htpasswd -bB  config/radicale/users "$READER_USER"  "$password" 2>/dev/null
 echo "  wrote config/radicale/{config,rights,users}"
+
+# Keep the credentials owned by whoever ran this. `bootstrap` hands the secrets
+# file to uid 10001 on a real deployment, because a Linux bind mount preserves
+# host ownership and the poller could not read it otherwise — but here the
+# acceptance tests read that same file from the host, as this user, and a 600
+# file owned by 10001 is one they cannot open.
+export CALSYNC_BOOTSTRAP_OWNER_UID=0
 
 docker compose --profile demo up -d radicale web feeds
 

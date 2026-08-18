@@ -70,6 +70,12 @@ x-calsync-env: &calsync-env
   # and `bootstrap` generates them, hashes them into Radicale's users file and
   # stores them. A value set here is never copied into the secrets file, and
   # changing it re-derives the users file on the next start.
+  # Who owns the secrets file afterwards. 10001 is the account the image runs
+  # as, and on Linux a bind mount preserves host ownership, so without this the
+  # poller cannot read what bootstrap just wrote. Set 0 when the host reads the
+  # same file — `scripts/dev-stack.sh` does.
+  CALSYNC_BOOTSTRAP_OWNER_UID: ${CALSYNC_BOOTSTRAP_OWNER_UID:-10001}
+
   CALSYNC_SECRET_RADICALE_PASSWORD: ${CALSYNC_SECRET_RADICALE_PASSWORD:-}
   CALSYNC_SECRET_RADICALE_READER_PASSWORD: ${CALSYNC_SECRET_RADICALE_READER_PASSWORD:-}
 
