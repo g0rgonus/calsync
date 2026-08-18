@@ -51,6 +51,10 @@ class SyncReport:
     #: `event_content` entirely. Counted apart from `updated` because `updated`
     #: means the feed changed and these are precisely the ones where it did not.
     refreshed: int = 0
+    #: Events held off the real calendar because calsync could not tell which
+    #: one they belong in. Not an error and not a guard trip — a question
+    #: waiting for an answer, counted so the poller says so out loud.
+    awaiting_review: int = 0
     held: str | None = None
     held_kind: str | None = None
     errors: list[str] = field(default_factory=list)
@@ -94,6 +98,8 @@ class SyncReport:
             parts.append(f"{self.moved} moved")
         if self.refreshed:
             parts.append(f"{self.refreshed} refreshed")
+        if self.awaiting_review:
+            parts.append(f"{self.awaiting_review} awaiting review")
         if self.skipped_window:
             parts.append(f"{self.skipped_window} outside window")
         if self.staged_to:
@@ -242,6 +248,13 @@ def sync_source(
             unresolved_venues.add(event.venue.name or event.venue.raw)
         if event.is_game:
             report.fixtures_seen += 1
+        # Matching `routing.collection_for`'s precedence, staging included: a
+        # source still being onboarded is already held somewhere, so counting
+        # its events as "awaiting review" would report a hold that is not
+        # happening and send somebody to a page with nothing on it.
+        if (event.needs_enrichment and settings.enrichment_collection
+                and not source.staging_collection):
+            report.awaiting_review += 1
         events.append(event)
 
     if unresolved_venues:

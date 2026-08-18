@@ -49,6 +49,18 @@ def collection_for(
     if override:
         return slugify(override)
 
+    # Before the type split, because an event we cannot classify has no honest
+    # answer to "game or practice" — that is the whole question. Held here it is
+    # visible, tracked in `event_state`, and reachable in a calendar client,
+    # rather than filed under a guess. Releasing it is a collection change,
+    # which the sync loop already treats as a move.
+    #
+    # Deliberately *after* the staging override: a source still being onboarded
+    # is already held somewhere, and splitting its events across two holding
+    # calendars would make the promotion gate harder to read, not safer.
+    if event.needs_enrichment and settings.enrichment_collection:
+        return slugify(settings.enrichment_collection)
+
     type_label = (
         settings.collection_game_label if event.is_game else settings.collection_practice_label
     )

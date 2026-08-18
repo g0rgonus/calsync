@@ -20,6 +20,7 @@ class Settings:
     collection_template: str
     collection_game_label: str
     collection_practice_label: str
+    enrichment_collection: str
     title_template: str
     multi_kid_style: str
     all_kids_label: str
@@ -51,6 +52,7 @@ class Settings:
             collection_template=raw["collection_template"],
             collection_game_label=raw["collection_game_label"],
             collection_practice_label=raw["collection_practice_label"],
+            enrichment_collection=raw["enrichment_collection"],
             title_template=raw["title_template"],
             multi_kid_style=raw["multi_kid_style"],
             all_kids_label=raw["all_kids_label"],

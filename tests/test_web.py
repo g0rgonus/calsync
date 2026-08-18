@@ -1697,3 +1697,131 @@ def test_an_older_database_collapses_its_version_history(tmp_path):
 
     rows = [r[0] for r in conn.execute("SELECT version FROM schema_version")]
     assert rows == [db.SCHEMA_VERSION]
+
+
+# --- the review queue -------------------------------------------------------
+#
+# The half of the Hermes design that works without Hermes: an event calsync
+# cannot classify waits in the enrichment calendar, and this is where a human
+# answers the question that releases it.
+
+
+def _sync_once(tmp_path, feed_body=HAWKS, *, promoted=True):
+    """A real sync into a real target, so there is something actually held.
+
+    Promoted by default. A staged source routes everything to the onboarding
+    calendar, which correctly takes precedence over the enrichment hold — so a
+    test that skipped this would assert against a source where the feature
+    deliberately does not apply, and pass without exercising it.
+    """
+    from calsync.sync import sync_source
+    from calsync.targets import build
+
+    conn = db.connect(tmp_path / "calsync.db")
+    source = repo.list_sources(conn, enabled_only=False)[0]
+    if promoted and source.staging_collection:
+        repo.set_staging(conn, source.id, None)
+        source = repo.get_source(conn, source.id)
+    report = sync_source(conn, source, build("ics_file", directory=tmp_path / "out"),
+                         now=NOW, raw=feed_body)
+    conn.commit()
+    conn.close()
+    return report
+
+
+def test_an_unplaceable_event_waits_instead_of_being_filed_as_a_practice(
+    client, tmp_path
+):
+    """The whole point, measured on a real feed.
+
+    The Hawks fixture names both sides of every match and neither is
+    recognisably ours, so there is no fixture signal and no type word — which
+    used to file most of the season under practices. A guess in the wrong
+    direction costs a *move* to correct, on events already on other phones.
+    """
+    onboard(client, token="")            # no alias, so nothing is recognised
+    report = _sync_once(tmp_path)
+
+    assert report.awaiting_review > 0, "nothing was held; the fixture proves nothing"
+    assert (tmp_path / "out" / "enrichment").is_dir()
+    assert not (tmp_path / "out" / "games").exists(), (
+        "a fixture we could not identify was filed as a game"
+    )
+
+
+def test_the_review_page_asks_the_question_that_releases_them(client, tmp_path):
+    onboard(client, token="")
+    _sync_once(tmp_path)
+
+    page = client.get("/review")["body"]
+
+    assert "Hawks Spring 2026" in page
+    assert "which of these is your team" in page.casefold()
+    assert "/alias" in page, "the page states the problem but offers no answer"
+
+
+def test_answering_on_the_review_page_releases_the_events(client, tmp_path):
+    """End to end: the answer moves them onto the real calendar."""
+    onboard(client, token="")
+    first = _sync_once(tmp_path)
+    assert first.awaiting_review > 0
+
+    source_id = repo.list_sources(db.connect(tmp_path / "calsync.db"),
+                                  enabled_only=False)[0].id
+    client.post(f"/sources/{source_id}/alias", {"alias": "Hawks"})
+
+    second = _sync_once(tmp_path)
+
+    assert second.awaiting_review == 0, "the answer did not release anything"
+    assert second.moved > 0, "released events should move, not be recreated"
+    assert (tmp_path / "out" / "games").is_dir()
+
+
+def test_the_review_page_is_empty_when_nothing_is_waiting(client, tmp_path):
+    onboard(client)                       # token="Hawks" — everything resolves
+    report = _sync_once(tmp_path)
+    assert report.awaiting_review == 0, "setup held events, so this proves nothing"
+
+    page = client.get("/review")["body"]
+
+    assert "Nothing waiting" in page
+
+
+def test_a_staged_source_is_not_double_held(client, tmp_path):
+    """Onboarding already holds everything; enrichment must not shadow it.
+
+    Splitting a source's events across two holding calendars would make the
+    promotion gate harder to read rather than safer, so staging wins — and the
+    report must not claim a hold that is not happening.
+    """
+    onboard(client, token="")
+    report = _sync_once(tmp_path, promoted=False)
+
+    assert report.staged_to == "onboarding"
+    assert report.awaiting_review == 0
+    assert not (tmp_path / "out" / "enrichment").exists()
+    assert "Nothing waiting" in client.get("/review")["body"]
+
+
+def test_the_review_page_says_so_when_the_hold_is_switched_off(client, tmp_path):
+    """A page that silently does nothing is worse than one that says it is off."""
+    onboard(client, token="")
+    _sync_once(tmp_path)
+    client.post("/settings/calendar", {"enrichment_collection": ""})
+
+    page = client.get("/review")["body"]
+
+    assert "hold is off" in page.casefold()
+
+
+def test_clearing_the_enrichment_collection_actually_clears_it(client, tmp_path):
+    """Blank is a meaningful value here, and the calendar form skips blanks.
+
+    Documented as the way to switch the hold off, so it has to survive the save
+    rather than being silently ignored with everything else that was left empty.
+    """
+    onboard(client)
+    client.post("/settings/calendar", {"enrichment_collection": ""})
+
+    conn = db.connect(tmp_path / "calsync.db")
+    assert Settings.load(conn).enrichment_collection == ""

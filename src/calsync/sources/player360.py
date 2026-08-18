@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 
 from icalendar import Calendar
 
+from .. import models
 from ..models import Activity, Event, PollResult, Venue
 from ..normalize import summary as summary_norm
 from ..normalize import venue as venue_norm
@@ -139,11 +140,19 @@ def parse_feed(
 
         cats = _categories(component)
         is_game = any(c in GAME_CATEGORIES or c in extra_games for c in cats)
+        unresolved: list[str] = []
         if cats and not is_game:
-            unknown_categories.update(
+            unrecognised = {
                 c for c in cats
                 if c not in ("practice", "training") and c not in extra_practices
-            )
+            }
+            unknown_categories.update(unrecognised)
+            # Carried on the event as well as reported for the source: an
+            # unrecognised category falls to practices, and if it was a
+            # tournament that is the wrong calendar, which costs a move to
+            # correct rather than an update.
+            if unrecognised:
+                unresolved.append(models.UNKNOWN_CATEGORY)
 
         raw_summary = _text(component, "SUMMARY") or ""
         opponent, detail = summary_norm.parse(
@@ -176,6 +185,7 @@ def parse_feed(
                 source_id=source_id,
                 source_category=cats[0] if cats else None,
                 content_hash=content_hash(component),
+                unresolved=tuple(unresolved),
             )
         )
 

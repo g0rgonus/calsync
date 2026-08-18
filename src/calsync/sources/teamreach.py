@@ -28,6 +28,7 @@ from datetime import datetime, timedelta, timezone
 
 from icalendar import Calendar
 
+from .. import models
 from ..models import Activity, Event, PollResult, Venue
 from ..normalize import venue as venue_norm
 from . import register
@@ -299,10 +300,21 @@ def parse_feed(
         raw_summary = _text(component, "SUMMARY") or ""
         parsed = parse_summary(raw_summary, tokens)
 
+        # Both of these were previously recorded per *source*, as a bag of
+        # unrecognised strings, and dropped per event. That is the right shape
+        # for "what does this feed still need" and the wrong one for "may this
+        # event go on the real calendar" — so the same findings are now carried
+        # on the event too (`Event.unresolved`).
+        unresolved: list[str] = []
+
         if parsed.unidentified:
             # A fixture we could not place ourselves in. Recorded so the
             # operator can add an activity alias; no opponent is claimed.
             unidentified.add(raw_summary.strip())
+            # And held: with no opponent recognised there is no fixture signal
+            # either, so this lands in practices. On the Hawks feed that was 12
+            # of 20 events in the wrong calendar until one alias was taught.
+            unresolved.append(models.UNIDENTIFIED)
 
         is_game = classify(
             parsed.event_type,
@@ -313,6 +325,11 @@ def parse_feed(
         if is_game is None:
             if parsed.event_type:
                 unknown_types.add(parsed.event_type)
+                # Only when there is a label to ask about. No label and no
+                # opponent is not a question anybody can answer — it is a feed
+                # that says nothing, and holding it would strand the event with
+                # no way to release it.
+                unresolved.append(models.UNKNOWN_TYPE)
             is_game = False
 
         # LOCATION wins when the feed has one: it is a field the coach filled in
@@ -352,6 +369,7 @@ def parse_feed(
                 source_id=source_id,
                 source_category=parsed.event_type,
                 content_hash=content_hash(component),
+                unresolved=tuple(unresolved),
             )
         )
 

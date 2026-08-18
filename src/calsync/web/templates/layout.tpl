@@ -19,6 +19,7 @@
     <nav class="rail-nav">
       <a href="/">Teams</a>
       <a href="/onboard">Add a team</a>
+      <a href="/review">Review</a>
       <a href="/venues">Venues</a>
       <a href="/household">Household</a>
       <a href="/settings">Settings</a>

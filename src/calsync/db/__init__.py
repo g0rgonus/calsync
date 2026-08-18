@@ -85,6 +85,11 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "collection_template": "{type}",
     "collection_game_label": "games",
     "collection_practice_label": "practices",
+    # Where an event goes when calsync cannot tell which calendar it belongs in.
+    # Empty disables the hold entirely and restores the older behaviour, where
+    # an unplaceable event silently joined the practices — kept reachable
+    # because it is the honest escape hatch if this ever gets in the way.
+    "enrichment_collection": "enrichment",
     # Title rendering. Empty fields collapse, so no dangling separators.
     "title_template": "{kids} {emoji} {detail}",
     "multi_kid_style": "initials",   # initials | names

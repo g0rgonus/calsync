@@ -577,6 +577,57 @@ def create_app(
             flash=_flash(),
         )
 
+    @app.get("/review")
+    def review():
+        """Everything waiting on a human, across every source.
+
+        The questions come from a live dry run, exactly as the source page's
+        gate does — a verdict from last week says nothing about a feed that has
+        since been corrected. The *count* of what is actually held comes from
+        `event_state`, because that is what is really sitting in the enrichment
+        calendar rather than what a fresh parse thinks would be.
+
+        Those two can disagree, and the disagreement is the useful part: events
+        still held while the feed now parses cleanly are ones the next poll will
+        release, and the page says so instead of showing an empty question list
+        and leaving you wondering.
+        """
+        with connect() as conn:
+            settings = Settings.load(conn)
+            enrichment = slugify(settings.enrichment_collection) if \
+                settings.enrichment_collection else ""
+            sources_ = repo.list_sources(conn, enabled_only=True)
+            held = {
+                s.id: repo.events_in_collection(conn, s.id, enrichment)
+                for s in sources_
+            } if enrichment else {}
+
+        # Only the sources with something waiting, so the page is empty when
+        # there is nothing to do rather than a list of everything that is fine.
+        wanted = [s for s in sources_ if held.get(s.id)]
+        reports = _check_all(db_path, secrets, fetcher, clock, wanted)
+
+        queues = []
+        with connect() as conn:
+            for source in wanted:
+                activity = repo.get_activity(conn, source.activity_id)
+                report = reports.get(source.id)
+                conditions = gate.conditions(report, activity) if report else ()
+                queues.append({
+                    "source": source,
+                    "activity": activity,
+                    "held": held.get(source.id, 0),
+                    "report": report,
+                    "asking": [c for c in conditions if c.state == gate.ASKING],
+                })
+            return render(
+                "review.tpl",
+                queues=queues,
+                enrichment=enrichment,
+                venues=repo.list_venues(conn),
+                flash=_flash(),
+            )
+
     @app.get("/settings")
     def settings_page():
         with connect() as conn:
@@ -592,6 +643,13 @@ def create_app(
                 value = _field(key).strip()
                 if value:
                     set_setting(conn, key, value)
+            # Blank is a meaningful value here and nowhere else in this form:
+            # it switches the hold off. The loop above deliberately ignores
+            # empty fields so a half-filled form cannot wipe the CalDAV URL,
+            # which would make this un-clearable if it went through the same
+            # path — the setting would be documented as switchable and not be.
+            set_setting(conn, "enrichment_collection",
+                        _field("enrichment_collection").strip())
             password = _field("radicale_password")
             if password:
                 secrets.put(_field("radicale_secret_ref").strip() or "radicale_password",

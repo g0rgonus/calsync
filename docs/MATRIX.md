@@ -268,9 +268,25 @@ in it is built.
   because the calendar holds renders and `event_state` holds no content (§1 of
   [API.md](API.md) refuses this to Hermes for the same reason).
 
+**Also built, and it changes the plan below.** Events calsync cannot *place* —
+an unrecognised event type, a fixture where neither side is recognisably ours —
+now wait in an `enrichment` collection rather than being filed under a guess,
+and `/review` is where a human answers the question that releases them
+(`Event.unresolved`, `routing.collection_for`). That is the human-in-the-loop
+half of everything below, and it works with no agent at all.
+
+It matters for the ordering because **the task-dispatch flow does not need the
+inbound direction.** calsync posts a question; Hermes answers *on the API*; the
+answer sits pending until a human approves it on `/review`. Nothing reads the
+room. So of the three blockers below, only the first applies to that flow, and
+the identity model is not needed for it either: authority comes from the API
+token, and a bounded answer to a question calsync itself asked is not a proposal
+needing an approval gate — it is a task resolution, and the human approval is
+the gate.
+
 **Not built, and why.** The rest of this document is the *inbound* direction —
-Hermes proposing, you approving, amendments landing — and it is blocked on
-things code cannot decide:
+Hermes proposing from pasted text, you approving, amendments landing — and it is
+blocked on things code cannot decide:
 
 1. **There is no API.** §2 and §3 both assume proposals go through one, with
    capability-scoped task tokens. Configuration was moved out of that API
@@ -285,6 +301,19 @@ things code cannot decide:
    a household's risk appetite.
 
 **What would come next, in order, if it does get built:**
+
+Two orderings, because they are different sizes. The **task-dispatch** flow —
+calsync asks, Hermes answers, you approve — needs no inbound Matrix at all:
+
+| Step | Needs | State |
+|---|---|---|
+| Hold what cannot be placed | An enrichment collection and a review queue | **built** |
+| Notify that something is waiting | A Pushover trigger, once per batch | |
+| Post the question to the room | Outbound only; `matrix.send` already exists | |
+| Accept an answer | `POST /v1/tasks/{id}/result`, stored pending, never applied | |
+
+The **proposal** flow — Hermes extracting events from a pasted PDF — is the
+larger one and still needs everything above it:
 
 | Step | Needs |
 |---|---|

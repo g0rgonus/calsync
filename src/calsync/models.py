@@ -80,6 +80,22 @@ class Venue:
         return self.lat is not None and self.lon is not None
 
 
+#: Per-event questions that only judgment can answer, and that change *where
+#: the event goes* rather than merely how it reads. Kept distinct from
+#: `PollResult.diagnostics`, which aggregates the same findings per source as a
+#: bag of unrecognised strings: that is the right shape for "what does this feed
+#: still need", and useless for "may this particular event go on the calendar".
+#:
+#: Only placement-affecting questions belong here. An unresolved *venue* does
+#: not: it costs a map pin, the event still carries its location as text, and
+#: holding a fixture back over it would make a game the family needs to know
+#: about invisible. Measured on the fixtures, venues go unresolved constantly
+#: and have never once changed a collection.
+UNKNOWN_TYPE = "unknown_type"          # is this label a game or a practice?
+UNKNOWN_CATEGORY = "unknown_category"  # same question, Player360's vocabulary
+UNIDENTIFIED = "unidentified"          # which side of this fixture is us?
+
+
 @dataclass
 class Event:
     """A normalized event, before it becomes a VEVENT.
@@ -105,6 +121,26 @@ class Event:
     content_hash: str | None = None
     kit: str | None = None
     arrive_at: datetime | None = None
+
+    #: Questions blocking this event's placement (UNKNOWN_TYPE and friends).
+    #:
+    #: The adapters have always known this per event and thrown it away: an
+    #: unclassifiable event had `is_game` coerced to False and joined the
+    #: practices, so nothing downstream could tell a known practice from one we
+    #: could not place. On one real feed that put 12 of 20 events — most of a
+    #: season — in the wrong calendar, and correcting it later is a *move*,
+    #: which is the delete-then-create this project treats as the dangerous
+    #: operation.
+    #:
+    #: `is_game` still carries its safe default, so nothing downstream has to
+    #: handle a third state and the behaviour degrades to what it was if
+    #: enrichment is switched off.
+    unresolved: tuple[str, ...] = ()
+
+    @property
+    def needs_enrichment(self) -> bool:
+        """Should this be held off the real calendar until somebody answers?"""
+        return bool(self.unresolved)
 
     def __post_init__(self) -> None:
         # Absolute instants only. A naive datetime here means an adapter lost

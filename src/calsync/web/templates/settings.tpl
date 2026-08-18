@@ -76,11 +76,27 @@
                value="{{ settings.collection_practice_label }}" autocomplete="off">
       </label>
       <label class="field" style="margin-bottom:0.8rem">
+        <span class="label">Events we cannot place go to</span>
+        <input type="text" name="enrichment_collection" class="mono"
+               value="{{ settings.enrichment_collection }}" autocomplete="off">
+      </label>
+      <label class="field" style="margin-bottom:0.8rem">
         <span class="label">Default timezone</span>
         <input type="text" name="default_tz" class="mono"
                value="{{ settings.default_tz }}" autocomplete="off">
       </label>
     </div>
+
+    <p class="note" style="margin-top:-0.4rem">
+      When a coach invents a label calsync has not seen, or a fixture names two
+      teams and neither is recognisably yours, there is no honest answer to
+      "game or practice" — so the event waits here instead of being filed under
+      a guess. On one real feed that guess put 12 of 20 events in the wrong
+      calendar, and moving them afterwards is a delete-and-recreate on events
+      already sitting on other people's phones. Answer the questions on
+      <a href="/review">Review</a> and they move to the right calendar on the
+      next poll. Leave this blank to switch the hold off.
+    </p>
 
     <button class="btn" type="submit">Save calendar settings</button>
   </form>

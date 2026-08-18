@@ -25,7 +25,13 @@ remembers"). The write half — documents, proposals, approvals, task tokens,
 `PATCH` and its amendment overlay — is deliberately unbuilt, because none of its
 consumers exist and a review gate with nothing to review cannot be shown to work.
 
-`docs/MATRIX.md`, `docs/MATCHING.md` and everything in `docs/API.md` past the
+Events calsync **cannot place** are held in an `enrichment` collection instead
+of being filed under a guess, and `/review` is where a human answers the
+question that releases them. That is the human half of the Hermes design
+(`docs/MATRIX.md`) and it works with no agent involved; Hermes becomes a second
+answerer of the same three questions later.
+
+`docs/MATCHING.md` and everything in `docs/API.md` past the
 two read endpoints specify components that do not exist — read those as the
 design contract, not as a description of the code.
 
@@ -62,7 +68,7 @@ so a fresh clone needs:
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/pytest                                    # 420 tests, ~2.2s
+.venv/bin/pytest                                    # 427 tests, ~2.2s
 .venv/bin/pytest tests/test_player360.py -k content_hash    # single test
 ```
 
@@ -250,6 +256,24 @@ Decisions that span several files and are easy to undo by accident:
   event renders to while leaving its hash identical. Without the check the
   correction never reaches anyone's phone. Reported as `refreshed`, not
   `updated`: `updated` means the feed moved something.
+- **An event we cannot classify waits; an event missing a pin does not.**
+  `Event.unresolved` carries the questions that decide *where an event goes* —
+  which calendar, not how it reads — and `routing.collection_for` sends those to
+  the `enrichment` collection. Measured on the Hawks feed, guessing put 12 of 20
+  events in the wrong calendar, and correcting that later is a **move**, the
+  delete-then-create this project treats as the dangerous operation. An
+  unresolved *venue* is deliberately not on that list: it costs a map pin, the
+  event still carries its location as text, and holding a fixture over it would
+  make a game the family needs to know about invisible. Venues go unresolved on
+  every fixture in the test set and have never once changed a collection.
+- **Staging beats enrichment.** A source still being onboarded is already held
+  somewhere; splitting its events across two holding calendars would make the
+  promotion gate harder to read, not safer. `SyncReport.awaiting_review` matches
+  that precedence, so it never reports a hold that is not happening.
+- **The gate's answer forms live in one partial** (`web/templates/_answers.tpl`),
+  shared by the source page and `/review`. An answer given in one place has to
+  write the same row as the same answer given in the other, and one form is the
+  only way to guarantee that.
 - **The guard thresholds are bounded in the UI.** `web/app.py:LIMITS` refuses to
   widen `max_disappearance_pct` past 0.5 or the count past 25. Narrowing is free.
   A guard that a web form can switch off in two clicks is not a guard, and the

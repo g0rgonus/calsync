@@ -902,6 +902,26 @@ def tracked_events(conn: sqlite3.Connection, source_id: str) -> int:
     )
 
 
+def events_in_collection(conn: sqlite3.Connection, source_id: str, collection: str) -> int:
+    """How many live events this source has in one collection.
+
+    Read from `event_state` rather than re-derived, because the question is what
+    is actually sitting in that calendar right now — a fresh parse answers a
+    different question, and the two disagree in exactly the interesting case:
+    right after somebody answers, when the feed parses cleanly but the events
+    have not been moved yet.
+    """
+    if not collection:
+        return 0
+    return int(
+        conn.execute(
+            "SELECT COUNT(*) AS n FROM event_state "
+            "WHERE source_id = ? AND collection = ? AND cancelled = 0",
+            (source_id, collection),
+        ).fetchone()["n"]
+    )
+
+
 def recent_polls(
     conn: sqlite3.Connection, source_id: str, *, limit: int = 5
 ) -> list[sqlite3.Row]:
