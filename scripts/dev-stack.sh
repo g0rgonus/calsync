@@ -63,6 +63,19 @@ docker compose --profile demo up -d radicale web feeds
 # unset, the stack comes up looking healthy and never writes a single event —
 # the poller reports it per event, then backs off to hours, which is how it went
 # unnoticed for days.
+# The container runs as uid 10001 and `SecretStore` refuses a file any other
+# account can read, so the file must be 600 *and* owned by that uid. On Linux a
+# bind mount preserves host ownership, so a file written by this script belongs
+# to whoever ran it and the container gets EACCES; on macOS the mount presents
+# it as the container user and this is a no-op. Best effort: without it the
+# check below fails with a message saying exactly this, which is a fine second
+# best.
+if [ "$(uname -s)" = "Linux" ]; then
+  sudo -n chown -R 10001:10001 secrets 2>/dev/null \
+    || echo "  note: could not chown secrets/ to the container's uid (10001);" \
+            "if the check below fails on permissions, that is why" >&2
+fi
+
 docker compose run --rm --no-deps calsync set radicale_url http://radicale:5232 \
   >/dev/null
 docker compose run --rm --no-deps calsync check || {
