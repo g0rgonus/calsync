@@ -412,6 +412,68 @@ def cmd_web(args) -> int:
     return 0
 
 
+#: Where the deployment assets live inside the image, and the same files in a
+#: checkout. Both, so this works whether you pulled the image or cloned.
+DEPLOY_ASSETS = (
+    Path("/app/deploy-assets"),
+    Path(__file__).resolve().parent.parent.parent,
+)
+
+
+def cmd_init_deploy(args) -> int:
+    """Write out everything a deployment needs besides the image.
+
+    A published image is only half of "you do not need the repo": compose still
+    has to come from somewhere, and so does Radicale's configuration. Baking
+    them into the image means one `docker run` lays out a stack, and the files
+    match the image that produced them rather than whatever a branch has moved
+    on to.
+
+    Never overwrites. These are files somebody edits — the rights file in
+    particular — and silently replacing an edited one during a routine upgrade
+    is how a deployment loses a change nobody remembers making.
+    """
+    source = next((p for p in DEPLOY_ASSETS if (p / "docker-compose.yml").exists()), None)
+    if source is None:
+        print("error: this build carries no deployment assets", file=sys.stderr)
+        return 1
+
+    dest = Path(args.directory)
+    wanted = [
+        (source / "docker-compose.yml", dest / "docker-compose.yml"),
+        (source / "deploy" / "radicale" / "config", dest / "config" / "radicale" / "config"),
+        (source / "deploy" / "radicale" / "rights", dest / "config" / "radicale" / "rights"),
+    ]
+
+    written, kept = [], []
+    for src, out in wanted:
+        if out.exists():
+            kept.append(out)
+            continue
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(src.read_bytes())
+        written.append(out)
+
+    for path in written:
+        print(f"  wrote {path}")
+    for path in kept:
+        print(f"  kept  {path} (already there, not overwritten)")
+
+    print()
+    print("Next, in that directory:")
+    print("  htpasswd -B -c config/radicale/users calsync")
+    print("  htpasswd -B    config/radicale/users calreader")
+    print("  mkdir -p secrets && printf '{\"radicale_password\":\"...\"}' "
+          "> secrets/secrets.json")
+    print("  chmod 600 secrets/secrets.json")
+    print("  sudo chown -R 10001:10001 secrets      # Linux: the image runs as that uid")
+    print("  docker compose up -d radicale")
+    print("  docker compose run --rm calsync set radicale_url http://radicale:5232")
+    print("  docker compose run --rm calsync check  # stop here if this fails")
+    print("  docker compose up -d")
+    return 0
+
+
 def cmd_set(args) -> int:
     """Set one setting, for scripting what the console does by hand.
 
@@ -583,6 +645,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_api.add_argument("--port", type=int, default=8731)
     p_api.add_argument("--secrets", help="path to a secrets JSON file")
     p_api.set_defaults(fn=cmd_api)
+
+    p_init_deploy = sub.add_parser(
+        "init-deploy", help="write out compose + server config for a deployment")
+    p_init_deploy.add_argument("directory", nargs="?", default=".")
+    p_init_deploy.set_defaults(fn=cmd_init_deploy)
 
     p_set = sub.add_parser("set", help="set one setting")
     p_set.add_argument("key")

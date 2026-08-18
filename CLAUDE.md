@@ -69,7 +69,7 @@ so a fresh clone needs:
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/pytest                                    # 486 tests, ~3.0s
+.venv/bin/pytest                                    # 488 tests, ~3.2s
 .venv/bin/pytest tests/test_player360.py -k content_hash    # single test
 ```
 
@@ -123,6 +123,13 @@ one-off commands go through `docker compose run --rm calsync <cmd>`. The read
 API is opt-in — `docker compose --profile api up -d api` — because its only
 intended consumer does not exist yet and an authenticated listener nothing talks
 to is surface without a purpose.
+
+The image is published to `ghcr.io/g0rgonus/calsync` by CI and carries its own
+deployment assets: `docker run --rm -v "$PWD:/out" <image> init-deploy /out`
+writes the compose file and Radicale config, so a homelab never needs a
+checkout. Compose declares both `image:` and `build:` — it only builds when the
+image is absent locally, so one file serves a pull-based deployment and a
+checkout without a second compose file to drift.
 
 Backups: `scripts/backup.sh [DEST]`, daily from cron on the host. It takes a
 live-safe SQLite snapshot, tars Radicale's data and the credentials, verifies

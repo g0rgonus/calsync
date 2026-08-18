@@ -53,6 +53,20 @@ settings.
 
 ## Docker
 
+Published to `ghcr.io/g0rgonus/calsync`. To stand up a stack **without cloning
+this repo** — the image carries its own compose file and server config:
+
+```bash
+docker login ghcr.io                       # while this repo is private
+mkdir calsync && cd calsync
+docker run --rm -v "$PWD:/out" ghcr.io/g0rgonus/calsync:latest init-deploy /out
+```
+
+That writes `docker-compose.yml` and `config/radicale/{config,rights}`, then
+prints the remaining steps. It never overwrites a file you have edited.
+
+From a checkout instead:
+
 ```bash
 cp -r deploy/radicale/. config/radicale/     # then edit users + rights
 htpasswd -B -c config/radicale/users calsync

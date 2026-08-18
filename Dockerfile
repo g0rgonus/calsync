@@ -11,6 +11,12 @@ RUN useradd --create-home --uid 10001 calsync
 WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY src/ ./src/
+# What a deployment needs besides the image. Carried inside it so a homelab can
+# lay out a stack without cloning anything — `calsync init-deploy DIR` writes
+# these out, and they are the versions that match the image you pulled rather
+# than whatever is on a branch somewhere.
+COPY docker-compose.yml ./deploy-assets/docker-compose.yml
+COPY deploy/ ./deploy-assets/deploy/
 
 RUN pip install --no-cache-dir . \
  && mkdir -p /data && chown calsync:calsync /data

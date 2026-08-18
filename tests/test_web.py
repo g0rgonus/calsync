@@ -1999,3 +1999,24 @@ def test_the_calendar_check_names_the_likely_cause_of_a_refused_connection(
     assert "did not answer" in result
     assert "radicale:5232" in result, "did not suggest the compose service name"
     assert "hunter2" not in result, "the password reached a page"
+
+
+def test_init_deploy_writes_a_stack_and_never_clobbers_one(tmp_path):
+    """A published image is only half of "you do not need the repo".
+
+    Compose and Radicale's config have to come from somewhere too, so the image
+    carries them. Overwriting is refused because these are files somebody edits —
+    the rights file especially — and a routine upgrade silently replacing an
+    edited one loses a change nobody remembers making.
+    """
+    from calsync.cli import main
+
+    out = tmp_path / "stack"
+    assert main(["init-deploy", str(out)]) == 0
+    assert (out / "docker-compose.yml").is_file()
+    assert (out / "config" / "radicale" / "config").is_file()
+    assert (out / "config" / "radicale" / "rights").is_file()
+
+    (out / "config" / "radicale" / "rights").write_text("# edited by hand\n")
+    assert main(["init-deploy", str(out)]) == 0
+    assert (out / "config" / "radicale" / "rights").read_text() == "# edited by hand\n"
