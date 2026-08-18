@@ -369,36 +369,82 @@ POST /v1/sources/{id}/poll           # manual trigger
 
 ---
 
-## Before any of this can be built
+## What calsync remembers
 
 `GET /v1/events` and `GET /v1/events/{uid}` are the half of this API that
 motivates it — §"Hermes reads through the API, not CalDAV" argues at length that
 an agent must not reverse-engineer event data out of rendered calendar entries.
+For a long time it could not be built, because **calsync stored no event data**:
+`event_state` held placement and a hash and nothing else, which is why
+`digest.py` re-parses every feed to answer "what's on tomorrow".
 
-**calsync does not store event data.** `event_state` holds `uid`, `source_id`,
-`collection`, `remote_id`, `content_hash`, `remote_etag`, `starts_at` and
-`cancelled`. There is no title, no venue, no opponent, no end time — the title
-because it is a render and never stored, and the rest because the feed has
-always been the source of truth and nothing has needed a second copy. The digest
-re-parses the feeds for exactly this reason (`digest.py`).
+`event_content` is the answer, and the shape of it is four decisions rather than
+a schema chore.
 
-So the read API cannot be implemented as specified without first deciding to
-persist event content, and that decision is not a schema chore:
+### 1. It is a receipt, not a cache
 
-1. **It is a second copy of the truth.** Today a feed change shows up everywhere
-   at once because nothing caches it. A stored copy needs its own staleness
-   story, and "the API said 7pm, the calendar says 8pm" is a new failure mode.
-2. **It is children's names, locations and start times at rest** in one more
-   place, on a box whose whole security posture is "it is only ever reached
-   through a VPN". More copies, more to lose.
-3. **`PATCH /v1/events/{uid}` needs the precedence model**, not just a column.
-   An amendment that overrides a feed has to survive the next poll without being
-   silently reverted, which is [MATRIX.md](MATRIX.md) §4's trust ranks — and
-   nothing implements those either.
-4. **The title stays a render regardless.** Storing structured fields is
-   compatible with that; storing a `summary` column is not, and would undo the
-   thing that lets naming conventions change without a re-fetch.
+The obvious failure of a second copy is "the API says 7pm, the calendar says
+8pm". That failure is entirely a consequence of *when* the copy is written.
+Write it at parse time and it is a cache of the feed, free to disagree with what
+was actually published. Write it in the same call that records placement — after
+the target has accepted the write, behind `sync.py`'s existing ordering barrier —
+and disagreement is structurally impossible. One `Event`, one code path, one
+successful write, two rows.
 
-None of that argues against the API. It says the first commit is a design
-decision about what calsync remembers, taken deliberately — and that building
-the endpoints first would produce a read surface with nothing behind it.
+What remains is that the row lags the *feed* by up to one poll interval. That is
+not a new failure mode: the calendar has always had exactly the same lag. The
+read API inherits the staleness that already exists instead of inventing a
+second one. A refused write leaves neither row, so an event that never reached
+the calendar is never described as though it had.
+
+### 2. It stores what the source said, not what was rendered
+
+This is what makes [MATRIX.md §4](MATRIX.md) implementable later without
+migrating anything written now.
+
+```
+calendar content = source layer  ⊕  amendment overlay
+API response     = source layer  ⊕  amendment overlay
+```
+
+A poll writes only the source layer. It therefore *cannot* revert an amendment,
+because it never touches the layer amendments live in — no trust-rank resolver,
+no `superseded_by`, no expiry. Precedence falls out of which layer each writer
+owns. Store rendered values here instead and every poll fights every amendment,
+which is the silent revert §4 exists to prevent.
+
+The overlay table is deliberately **not built**. Its only writer would be
+`PATCH /v1/events/{uid}`, and an override layer with nothing writing to it is
+unverifiable in the same way a review gate with nothing to review is. What is
+built is the half whose semantics the other half depends on.
+
+### 3. The title stays a render, and there are no coordinates
+
+No `summary` column, ever. The display title is composed from these fields at
+write time and re-composed at read time, which is what lets a naming convention
+change re-render every event without re-fetching a feed. `summary_rendered` in a
+read response is computed per request through the same `normalize/title.py` the
+calendar goes through — which is why it must never be parsed.
+
+No `lat`/`lon` either. `venues` already holds pins and is the only table that
+should; a read response resolves `venue.id` and `pin_confirmed` from it live.
+
+### 4. It is bounded to the window the calendar already keeps
+
+This is children's names, locations and start times at rest in one more place,
+on a box whose security posture is "it is only ever reached through a VPN". So
+content ages out with `sync_window_back_days` — the same bound both sides of the
+diff are already compared across, which is why a prune can never look like a
+change. The `event_state` row survives: it is what recognises the event if it
+ever comes back, and it holds nothing but a uid, a hash and a timestamp.
+
+### The consequence for the sync loop
+
+The diff's `content_hash` is taken over the **raw feed component**, before the
+venue table is consulted. So stored content is compared independently of it,
+exactly as placement already is — otherwise teaching an alias or confirming an
+address would change what an event renders to while leaving its hash identical,
+and the correction would never reach anyone's phone. Reported as `refreshed`
+rather than `updated`, because `updated` means the feed changed and these are
+precisely the cases where it did not. Rows written before the table existed are
+just one more difference, so a stable season backfills itself on the next poll.

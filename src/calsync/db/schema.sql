@@ -132,6 +132,59 @@ CREATE TABLE IF NOT EXISTS event_state (
 CREATE INDEX IF NOT EXISTS event_state_source ON event_state(source_id);
 CREATE INDEX IF NOT EXISTS event_state_starts ON event_state(starts_at);
 
+-- What the event *was*, as opposed to where we put it.
+--
+-- Three things about this table are load-bearing, and undoing any of them
+-- reintroduces a failure the design exists to avoid:
+--
+-- 1. **These columns are what the SOURCE said, not what is on the calendar.**
+--    The distinction is invisible today, because the feed is the only thing
+--    that contributes to an event. It stops being invisible the moment
+--    amendments land (docs/MATRIX.md §4): the calendar will then be this layer
+--    plus a higher-trust overlay, and a poll must be able to rewrite this layer
+--    freely *without* reverting the overlay. That only works because a poll
+--    never writes anything but this. Storing rendered values here instead would
+--    make every poll fight every amendment, which is the exact silent revert
+--    §4 is about.
+--
+-- 2. **There is no summary column, and there never will be.** The display title
+--    is composed from these fields at write time and re-composed at read time,
+--    so a naming-convention change re-renders everything without re-fetching.
+--    A stored title is a fourth copy that goes stale on a config edit.
+--
+-- 3. **No coordinates.** Events carry LOCATION as "name, address" and nothing
+--    else. `venues` already holds pins and is the only place that should; this
+--    table must not become a second one.
+--
+-- Rows are written in the same call that records placement — after the target
+-- accepted the write — so this can never disagree with the calendar. It is a
+-- receipt, not a cache. Rows age out with the sync window (`prune_event_content`)
+-- because this is children's names, venues and times at rest, and the smallest
+-- honest retention is the one the calendar itself keeps.
+CREATE TABLE IF NOT EXISTS event_content (
+    uid             TEXT PRIMARY KEY REFERENCES event_state(uid) ON DELETE CASCADE,
+    ends_at         TEXT NOT NULL,
+    tz              TEXT NOT NULL,
+    is_game         INTEGER NOT NULL,
+    opponent        TEXT,
+    -- Tri-state on purpose: NULL is "not known", which is different from "home".
+    -- Some feeds phrase every fixture as "vs", so away is only ever marked when
+    -- positively known, and two states would force a guess.
+    home            INTEGER,
+    detail          TEXT,
+    body            TEXT,
+    url             TEXT,
+    kit             TEXT,
+    arrive_at       TEXT,
+    source_category TEXT,
+    venue_raw       TEXT,
+    venue_name      TEXT,
+    venue_address   TEXT,
+    venue_field     TEXT,
+    -- The poll this came from. What tells a reader how stale the answer is.
+    observed_at     TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS poll_runs (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     source_id   TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,

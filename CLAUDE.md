@@ -17,10 +17,11 @@ table, pins and merges; `/household` edits kids and the sport catalog;
 `/settings` covers the `settings` table, and a team's own fields are on its
 source page. Nothing in the day-to-day path needs sqlite3 any more.
 
-**There is still no HTTP API, and it has a prerequisite.** Its read endpoints
-need event *content*, which `event_state` does not hold — see "Before any of
-this can be built" at the end of `docs/API.md`. The first step is deciding what
-calsync remembers, not writing endpoints.
+**There is still no HTTP API.** Its prerequisite is met: `event_content` now
+records what each event was, alongside `event_state`'s record of where it went
+(`docs/API.md`, "What calsync remembers"). The write half — proposals,
+approvals, task tokens, `PATCH` and its amendment overlay — is deliberately
+unbuilt, because none of its consumers exist.
 
  `docs/API.md`, `docs/MATRIX.md` and
 `docs/MATCHING.md` specify components that do not exist — read them as the design
@@ -51,7 +52,7 @@ so a fresh clone needs:
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/pytest                                    # 210 tests, ~0.7s
+.venv/bin/pytest                                    # 377 tests, ~1.8s
 .venv/bin/pytest tests/test_player360.py -k content_hash    # single test
 ```
 
@@ -181,10 +182,27 @@ Decisions that span several files and are easy to undo by accident:
   arrow is built and what the inbound half is blocked on (no API, no identity
   model, no blast-radius policy). Do not let the settings page or the docs imply
   proposals or approvals exist.
-- **A digest re-derives, it does not read back.** The calendar holds renders and
-  `event_state` holds no content, so anything that needs event *data* parses the
-  feeds again — the same refusal `docs/API.md` gives Hermes. `digest.collect`
+- **A digest re-derives, it does not read back.** The calendar holds renders, so
+  anything that needs event *data* parses the feeds again rather than pulling a
+  title apart — the same refusal `docs/API.md` gives Hermes. `digest.collect`
   writes nothing at all, and a test diffs the database file to keep it that way.
+  (`event_content` now holds what it would need, and reading from it would agree
+  with the calendar where a re-derive can lead it. That is a deliberate follow-on,
+  not an oversight.)
+- **`event_content` is a receipt, not a cache, and it holds what the *source*
+  said.** Written in the same call as the placement record, after the target
+  accepted the write, so it cannot disagree with the calendar. Its columns are
+  the feed's view — never the rendered one — because the calendar will later be
+  that layer plus a higher-trust amendment overlay, and a poll must be able to
+  rewrite its own layer without reverting one it does not own (`docs/MATRIX.md`
+  §4). No `summary` column, no coordinates, and rows age out with
+  `sync_window_back_days`.
+- **Stored content is checked independently of the feed's hash**, the same way
+  placement is. `content_hash` covers the raw feed component, before venue
+  enrichment — so teaching an alias or confirming an address changes what an
+  event renders to while leaving its hash identical. Without the check the
+  correction never reaches anyone's phone. Reported as `refreshed`, not
+  `updated`: `updated` means the feed moved something.
 - **The guard thresholds are bounded in the UI.** `web/app.py:LIMITS` refuses to
   widen `max_disappearance_pct` past 0.5 or the count past 25. Narrowing is free.
   A guard that a web form can switch off in two clicks is not a guard, and the

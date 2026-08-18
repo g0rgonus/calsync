@@ -254,6 +254,120 @@ def mark_event_cancelled(conn: sqlite3.Connection, uid: str) -> None:
     )
 
 
+# --- what the event was, as opposed to where we put it ----------------------
+#
+# `event_state` answers "did this change, and where did it go". It cannot answer
+# "what is on at 5pm on Thursday", which is why `digest.py` re-parses every feed
+# and why docs/API.md's read endpoints could not be written. These functions are
+# the second half: the content of each event as its *source* reported it.
+#
+# The ordering rule from `sync.py` extends here unchanged — content is recorded
+# in the same call that records placement, after the target accepted the write.
+# That is what makes this a receipt rather than a cache, and it is why the API
+# and the calendar cannot disagree.
+
+
+#: Columns that describe the event, in the order they are read and written.
+#: `observed_at` is deliberately excluded: it says when we last looked, not what
+#: we saw, and including it would make every poll look like a change.
+CONTENT_COLUMNS: tuple[str, ...] = (
+    "ends_at", "tz", "is_game", "opponent", "home", "detail", "body", "url",
+    "kit", "arrive_at", "source_category",
+    "venue_raw", "venue_name", "venue_address", "venue_field",
+)
+
+
+def content_of(event) -> dict:
+    """The stored form of an ``Event``, ready to compare or write.
+
+    Note what is absent. There is no title, because the title is a render
+    composed from these fields (`normalize/title.py`) — storing it would undo
+    the thing that lets a naming convention change without re-fetching a feed.
+    There are no coordinates, because no coordinates are emitted at all and
+    `venues` is the only table that should hold a pin.
+
+    ``home`` stays tri-state through the round trip. Collapsing NULL to 0 would
+    turn "we do not know which side is at home" into a claim that it is a home
+    fixture, and some feeds phrase every fixture as "vs".
+    """
+    venue = event.venue
+    return {
+        "ends_at": event.ends_at.isoformat(),
+        "tz": event.tz,
+        "is_game": int(event.is_game),
+        "opponent": event.opponent,
+        "home": None if event.home is None else int(event.home),
+        "detail": event.detail,
+        "body": event.body,
+        "url": event.url,
+        "kit": event.kit,
+        "arrive_at": event.arrive_at.isoformat() if event.arrive_at else None,
+        "source_category": event.source_category,
+        "venue_raw": venue.raw if venue else None,
+        "venue_name": venue.name if venue else None,
+        "venue_address": venue.address if venue else None,
+        "venue_field": venue.field if venue else None,
+    }
+
+
+def event_contents(conn: sqlite3.Connection, source_id: str) -> dict[str, dict]:
+    """``{uid: content}`` for a source, in the same shape :func:`content_of` returns.
+
+    The sync loop compares these two to decide whether a stored event has drifted
+    from what the feed now derives to. A uid absent from this mapping — an event
+    written before this table existed — therefore reads as a difference and heals
+    itself on the next poll.
+    """
+    rows = conn.execute(
+        f"SELECT c.uid, {', '.join('c.' + col for col in CONTENT_COLUMNS)} "
+        "FROM event_content c JOIN event_state s ON s.uid = c.uid "
+        "WHERE s.source_id = ?",
+        (source_id,),
+    )
+    return {r["uid"]: {col: r[col] for col in CONTENT_COLUMNS} for r in rows}
+
+
+def record_event_content(
+    conn: sqlite3.Connection, *, uid: str, content: dict, observed_at: str
+) -> None:
+    """Record what was written. Call this only *after* the target accepted it.
+
+    Same rule as :func:`record_event_state`, for the same reason: content
+    recorded ahead of a write that then fails is a second copy that disagrees
+    with the calendar, which is the one failure mode a stored copy introduces.
+    """
+    columns = ("uid", *CONTENT_COLUMNS, "observed_at")
+    values = (uid, *(content[col] for col in CONTENT_COLUMNS), observed_at)
+    updates = ", ".join(f"{col} = excluded.{col}" for col in (*CONTENT_COLUMNS, "observed_at"))
+    conn.execute(
+        f"INSERT INTO event_content ({', '.join(columns)}) "
+        f"VALUES ({', '.join('?' * len(columns))}) "
+        f"ON CONFLICT(uid) DO UPDATE SET {updates}",
+        values,
+    )
+
+
+def prune_event_content(conn: sqlite3.Connection, *, before: str) -> int:
+    """Drop content for events that have aged out of the sync window.
+
+    This is children's names, venues and start times at rest in one more place,
+    so it is kept for exactly as long as it is useful and no longer. The window's
+    own lower bound is the right boundary and not merely a convenient one: events
+    below it are already filtered out of both sides of the diff, so pruning there
+    cannot make a live event look like it drifted.
+
+    The ``event_state`` row survives. It is the record that calsync put this
+    event on somebody's calendar, it holds no content beyond a uid, and losing it
+    would let the event be adopted from scratch if it ever reappeared.
+    """
+    cursor = conn.execute(
+        "DELETE FROM event_content WHERE uid IN ("
+        "  SELECT uid FROM event_state WHERE starts_at < ?)",
+        (before,),
+    )
+    return cursor.rowcount
+
+
 def record_poll_run(
     conn: sqlite3.Connection,
     *,

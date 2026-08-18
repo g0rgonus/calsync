@@ -45,6 +45,12 @@ class SyncReport:
     #: Events relocated because their collection changed, not their content —
     #: promotion off the onboarding calendar, or a routing template change.
     moved: int = 0
+    #: Events re-written because what we had stored for them no longer matched
+    #: what the feed derives to, though the feed itself had not changed — a venue
+    #: gaining an address, an alias being taught, or a row predating
+    #: `event_content` entirely. Counted apart from `updated` because `updated`
+    #: means the feed changed and these are precisely the ones where it did not.
+    refreshed: int = 0
     held: str | None = None
     held_kind: str | None = None
     errors: list[str] = field(default_factory=list)
@@ -86,6 +92,8 @@ class SyncReport:
         ]
         if self.moved:
             parts.append(f"{self.moved} moved")
+        if self.refreshed:
+            parts.append(f"{self.refreshed} refreshed")
         if self.skipped_window:
             parts.append(f"{self.skipped_window} outside window")
         if self.staged_to:
@@ -273,6 +281,7 @@ def sync_source(
 
     # --- write, then record ------------------------------------------------
     states = repo.event_states(conn, source.id)
+    contents = repo.event_contents(conn, source.id)
 
     fresh = {e.uid for e in delta.created}
     pending = delta.created + delta.updated
@@ -282,7 +291,17 @@ def sync_source(
     # changing at all — and the diff only ever sees content, so those events come
     # back "unchanged" and would silently stay where they were. Re-writing them
     # is what makes promotion actually relocate anything.
+    #
+    # Stored content is checked the same way and for the same reason. The diff's
+    # hash is taken over the *raw feed component*, before this module enriches a
+    # venue from the venue table — so teaching an alias or confirming an address
+    # changes what an event renders to while leaving its hash untouched, and the
+    # event comes back "unchanged" with the correction never reaching anyone's
+    # phone. Comparing what we stored against what the feed now derives to is
+    # what closes that gap, and it is also what backfills rows written before
+    # `event_content` existed: no content stored is a difference like any other.
     moved_uids: set[str] = set()
+    refreshed_uids: set[str] = set()
     primary_child = min(children, key=lambda c: (c.birth_order, c.name))
     for event in delta.unchanged:
         state = states.get(event.uid)
@@ -295,6 +314,9 @@ def sync_source(
         if belongs != state.collection:
             pending.append(event)
             moved_uids.add(event.uid)
+        elif contents.get(event.uid) != repo.content_of(event):
+            pending.append(event)
+            refreshed_uids.add(event.uid)
 
     for event in pending:
         previous_state = states.get(event.uid)
@@ -328,10 +350,26 @@ def sync_source(
             remote_etag=ref.etag,
             starts_at=event.starts_at.isoformat(),
         )
+        # Placement and content are recorded together, behind the same barrier:
+        # both describe a write the target has just accepted, and a copy of the
+        # event that could outrun the calendar would be the one new failure mode
+        # storing content introduces (docs/API.md, "Before any of this can be
+        # built"). What is stored is what the *source* said — never what was
+        # rendered — so that a later amendment layered on top survives the next
+        # poll rather than being reverted by it (docs/MATRIX.md §4).
+        repo.record_event_content(
+            conn,
+            uid=event.uid,
+            content=repo.content_of(event),
+            observed_at=now.isoformat(),
+        )
         # Counted by how the diff classified it, not by whether a row existed:
         # a resurrected event has a (cancelled) row but is genuinely new again.
         if event.uid in fresh:
             report.created += 1
+        elif event.uid in refreshed_uids:
+            report.refreshed += 1
+            report.unchanged -= 1
         else:
             report.updated += 1
             if moved_uids and event.uid in moved_uids:
@@ -356,6 +394,15 @@ def sync_source(
             continue
         repo.mark_event_cancelled(conn, uid)
         report.cancelled += 1
+
+    # Stored content is kept only for as long as the calendar keeps the event.
+    # Same bound the diff already compares across, which is what stops a prune
+    # from ever looking like a change: an event below it is filtered out of both
+    # sides before it reaches this loop.
+    repo.prune_event_content(
+        conn,
+        before=(now - timedelta(days=settings.sync_window_back_days)).isoformat(),
+    )
 
     # --- record the run ----------------------------------------------------
     if report.status == "error":
