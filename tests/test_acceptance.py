@@ -325,3 +325,86 @@ def test_promotion_relocates_rather_than_duplicating(configured, password):
 
     # The staged copy is gone, not orphaned alongside the promoted one.
     assert call("GET", staged_url, password=password).status in (404, 410)
+
+
+# --- the API and the calendar are one answer, not two -----------------------
+
+API_TOKEN = "acceptance-bearer-token"
+
+
+def _api_get(app, path):
+    """One WSGI call, so the auth hook and the JSON body are both exercised."""
+    from io import BytesIO, StringIO
+
+    path, _, query = path.partition("?")
+    captured = {}
+
+    def start_response(status, headers, exc_info=None):
+        captured["status"] = int(status.split()[0])
+
+    body = b"".join(
+        app(
+            {
+                "REQUEST_METHOD": "GET", "PATH_INFO": path, "QUERY_STRING": query,
+                "SERVER_NAME": "localhost", "SERVER_PORT": "8731",
+                "SERVER_PROTOCOL": "HTTP/1.1", "wsgi.input": BytesIO(b""),
+                "wsgi.errors": StringIO(), "wsgi.url_scheme": "http",
+                "HTTP_AUTHORIZATION": f"Bearer {API_TOKEN}",
+            },
+            start_response,
+        )
+    )
+    assert captured["status"] == 200, body
+    return json.loads(body)
+
+
+def test_the_api_serves_what_the_calendar_actually_holds(configured, tmp_path, password):
+    """The one failure mode storing event content introduces, ruled out for real.
+
+    "The API says 7pm, the calendar says 8pm" is what a second copy of the truth
+    risks, and every other test of it compares against `.ics` files this process
+    just wrote. This compares against what a real CalDAV server will hand a real
+    calendar client — the same bytes a phone would sync.
+    """
+    from icalendar import Calendar
+
+    from calsync.api import app as api_app
+
+    source = repo.get_source(configured, "tr-comets")
+    report = sync_source(configured, source, _target(password), now=NOW,
+                         raw=FIXTURE.read_bytes())
+    assert report.created > 0, report.line()
+
+    app = api_app.create_app(
+        tmp_path / "calsync.db",
+        secrets=SecretStore(environ={"CALSYNC_SECRET_API_TOKEN": API_TOKEN}),
+        clock=lambda: NOW,
+    )
+    served = _api_get(app, "/v1/events?from=2026-03-01&to=2026-04-01")
+    assert served["count"] > 0, "the API found nothing the sync had just written"
+
+    states = repo.event_states(configured, "tr-comets")
+    for event in served["events"]:
+        state = states[event["uid"]]
+        fetched = call(
+            "GET", f"{BASE}/{USER}/{state.collection}/{state.remote_id}.ics",
+            password=password,
+        )
+        assert fetched.status == 200
+        vevent = Calendar.from_ical(fetched.body.decode()).walk("VEVENT")[0]
+
+        assert str(vevent["SUMMARY"]) == event["summary_rendered"]
+        assert vevent.decoded("DTSTART") == datetime.fromisoformat(event["starts_at"])
+        assert vevent.decoded("DTEND") == datetime.fromisoformat(event["ends_at"])
+        if event["venue"]:
+            assert str(vevent["LOCATION"]).startswith(
+                event["venue"]["canonical_name"]
+            )
+
+    # And it says which source stands behind the answer, with a real success
+    # timestamp from the poll that just ran. Whether `stale` flips is decided by
+    # the clock rather than by the server, so `tests/test_api.py` pins that.
+    health = served["sources"][0]
+    assert health["id"] == "tr-comets"
+    assert health["last_success_at"] is not None
+    assert health["last_error"] is None

@@ -285,7 +285,10 @@ family calendar, so treat them as contracts, not defaults:
 **if a golden test fails after a feed-format change, read the source doc before
 changing the assertion.** `docs/NAMING.md` covers title and location conventions
 (including why multi-kid titles use initials), `docs/deployment/radicale.md` holds
-the CalDAV server requirements and acceptance checks.
+the CalDAV server requirements and acceptance checks — which now include one
+comparing what `GET /v1/events` serves against the VEVENTs a real Radicale hands
+a real phone, since "the API said 7pm, the calendar says 8pm" is only worth
+testing against a calendar this process did not just write itself.
 
 ## Conventions
 
