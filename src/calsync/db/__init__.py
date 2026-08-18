@@ -9,7 +9,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 
 #: Additive column migrations, applied when absent. `schema.sql` uses
@@ -23,6 +23,9 @@ ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # v4: which dormancy notification has already gone out, so a finished
     # season is mentioned once rather than at every poll for the rest of time.
     ("sources", "dormancy_notified", "TEXT"),
+    # v6: which set of review questions has already been pushed, so a queue
+    # nobody has got to yet is announced once rather than every twenty minutes.
+    ("sources", "review_notified", "TEXT"),
     # v5 adds `event_content`, which is a new table rather than new columns, so
     # `schema.sql`'s CREATE TABLE IF NOT EXISTS covers it and nothing belongs
     # here. Existing rows backfill themselves: the sync loop treats missing

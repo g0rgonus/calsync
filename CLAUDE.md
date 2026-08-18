@@ -68,7 +68,7 @@ so a fresh clone needs:
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/pytest                                    # 427 tests, ~2.2s
+.venv/bin/pytest                                    # 438 tests, ~2.4s
 .venv/bin/pytest tests/test_player360.py -k content_hash    # single test
 ```
 
@@ -266,6 +266,16 @@ Decisions that span several files and are easy to undo by accident:
   event still carries its location as text, and holding a fixture over it would
   make a game the family needs to know about invisible. Venues go unresolved on
   every fixture in the test set and have never once changed a collection.
+- **The review queue notifies once per question, not once per poll.**
+  `enrichment.review` fingerprints the *questions* holding events back and
+  records it on `sources.review_notified` — so more events arriving against an
+  already-announced question is silent, a genuinely new question is not, and
+  clearing the queue resets the flag so the next occurrence is news again. Same
+  shape as `dormancy_notified`, for the same reason: the poller runs every
+  twenty minutes and a per-poll push is muted by lunchtime, which is worse than
+  no push at all. `BLOCKING_DIAGNOSTICS` is what keeps unresolved venues out of
+  that fingerprint — they hold nothing back, so paging about them would train
+  somebody to ignore the signal that does mean events are off the calendar.
 - **Staging beats enrichment.** A source still being onboarded is already held
   somewhere; splitting its events across two holding calendars would make the
   promotion gate harder to read, not safer. `SyncReport.awaiting_review` matches

@@ -24,7 +24,7 @@ from . import config as config_mod
 from . import db, repo
 from .secrets import SecretError, SecretStore
 from .settings import Settings
-from . import digest, matrix, polling, retire, seasonend, targeting
+from . import digest, enrichment, matrix, polling, retire, seasonend, targeting
 from .sync import sync_source
 from .targets import build
 from .targets.http import HttpTransport
@@ -190,6 +190,24 @@ def cmd_poll(args) -> int:
                     print(f"    could not notify: {problem}", flush=True)
             except Exception as exc:  # noqa: BLE001 — never take the poller down
                 print(f"    season check failed: {exc}", flush=True)
+
+            # Also after the sync, and for the same reason: this reads what the
+            # poll actually wrote to the enrichment collection, so it has to run
+            # once that is true.
+            try:
+                waiting = enrichment.review(
+                    conn, source, report, secrets=secrets,
+                    base_url=args.console_url or "",
+                )
+                if waiting.notified:
+                    print(f"    {waiting.held} event(s) awaiting review; notified",
+                          flush=True)
+                elif waiting.held:
+                    print(f"    {waiting.held} event(s) awaiting review", flush=True)
+                for problem in waiting.errors:
+                    print(f"    could not notify: {problem}", flush=True)
+            except Exception as exc:  # noqa: BLE001 — never take the poller down
+                print(f"    review check failed: {exc}", flush=True)
 
             failures = schedule.struggling().get(source.id, 0)
             if failures > 1:

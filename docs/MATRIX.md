@@ -308,7 +308,7 @@ calsync asks, Hermes answers, you approve — needs no inbound Matrix at all:
 | Step | Needs | State |
 |---|---|---|
 | Hold what cannot be placed | An enrichment collection and a review queue | **built** |
-| Notify that something is waiting | A Pushover trigger, once per batch | |
+| Notify that something is waiting | A Pushover trigger, once per question | **built** |
 | Post the question to the room | Outbound only; `matrix.send` already exists | |
 | Accept an answer | `POST /v1/tasks/{id}/result`, stored pending, never applied | |
 
