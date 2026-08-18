@@ -167,9 +167,15 @@ def migrate(conn: sqlite3.Connection) -> None:
         "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
         list(DEFAULT_SETTINGS.items()),
     )
-    conn.execute(
-        "INSERT OR REPLACE INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,)
-    )
+    # DELETE then INSERT, not INSERT OR REPLACE. `version` is itself the primary
+    # key, so "replace" collides with nothing and simply appends — the table was
+    # accumulating one row per version ever applied (3, 4, 5, ...) while looking
+    # like it held the current one. A bare `SELECT version FROM schema_version`
+    # then returns the *oldest*, which is worse than useless in the one moment
+    # anybody reads this table: working out how far a database got before a
+    # migration went wrong. Existing rows collapse on the next migrate.
+    conn.execute("DELETE FROM schema_version")
+    conn.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
     conn.commit()
 
 

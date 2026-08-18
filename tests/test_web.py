@@ -1660,3 +1660,40 @@ def test_a_team_cannot_be_left_nameless(client, tmp_path):
     activity_id = repo.list_activities(conn)[0].id
 
     assert "needs a name" in client.post(f"/activities/{activity_id}", {"name": "  "})["body"]
+
+
+def test_upgrading_calsync_does_not_accumulate_version_rows(tmp_path, monkeypatch):
+    """It records the current version, not every version ever applied.
+
+    `version` is the primary key, so `INSERT OR REPLACE` collided with nothing
+    and appended — leaving 3, 4, 5 in a table whose whole job is to answer "what
+    version is this". A bare SELECT then returns the oldest, which is exactly
+    backwards in the one situation anybody reads it: working out how far a
+    database got before a migration failed.
+
+    The bump has to be simulated. Migrating twice at the *same* version is a
+    genuine primary-key collision and stays one row under either implementation,
+    so a test that only did that would pass against the bug — which is the shape
+    of test this codebase keeps having to throw away.
+    """
+    conn = db.open_db(tmp_path / "v.db")
+
+    for version in (db.SCHEMA_VERSION + 1, db.SCHEMA_VERSION + 2):
+        monkeypatch.setattr(db, "SCHEMA_VERSION", version)
+        db.migrate(conn)
+        rows = [r[0] for r in conn.execute("SELECT version FROM schema_version")]
+        assert rows == [version], f"after upgrading to v{version}: {rows}"
+
+
+def test_an_older_database_collapses_its_version_history(tmp_path):
+    """Databases in the wild already have the accumulated rows."""
+    conn = db.open_db(tmp_path / "old.db")
+    conn.executemany("INSERT OR IGNORE INTO schema_version (version) VALUES (?)",
+                     [(1,), (2,), (3,)])
+    conn.commit()
+    assert len(list(conn.execute("SELECT version FROM schema_version"))) > 1
+
+    db.migrate(conn)
+
+    rows = [r[0] for r in conn.execute("SELECT version FROM schema_version")]
+    assert rows == [db.SCHEMA_VERSION]
