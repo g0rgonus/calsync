@@ -226,6 +226,43 @@ def test_teaching_a_venue_reaches_the_calendar(conn, source, target, tmp_path):
     )
 
 
+def test_editing_a_team_reaches_the_calendar(conn, source, target, tmp_path):
+    """The console's team form is not cosmetic — it changes how the feed parses.
+
+    `age_group` feeds `Activity.known_tokens`, which is what decides whether
+    "U10DA TASL Match vs Beach FC U10" yields an opponent or a mangled one. The
+    hash is over the unchanged feed, so before content was compared this edit
+    changed the parse and nothing else: the correction sat in the database and
+    never reached the family's calendar.
+    """
+    def edit(age_group):
+        repo.update_activity(
+            conn, "james-soccer-rush", name="Rush", emoji=None,
+            official_name="U10DA", short_name=None, league="TASL",
+            age_group=age_group, home_venue_id=None,
+            alarm_game_min=90, alarm_practice_min=30,
+        )
+
+    edit(None)  # the state somebody onboarding a team in a hurry leaves it in
+    _sync(conn, source, target)
+    uid = next(uid for uid, c in _stored(conn).items() if c["opponent"])
+    before = _summary(tmp_path, uid)
+
+    edit("U10")
+    report = _sync(conn, source, target)
+
+    assert report.refreshed == 1
+    assert before.endswith("Beach FC U10")
+    assert _summary(tmp_path, uid).endswith("Beach FC")
+
+
+def _summary(tmp_path, uid):
+    path = next((tmp_path / "out").rglob(f"{uid}.ics"))
+    return next(
+        line for line in path.read_text().splitlines() if line.startswith("SUMMARY:")
+    )
+
+
 def test_a_refresh_is_not_reported_as_a_feed_change(conn, source, target):
     """`updated` means the feed moved something. Refreshes must not inflate it."""
     _sync(conn, source, target)

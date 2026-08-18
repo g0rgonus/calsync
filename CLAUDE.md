@@ -54,7 +54,7 @@ so a fresh clone needs:
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/pytest                                    # 406 tests, ~1.9s
+.venv/bin/pytest                                    # 407 tests, ~1.9s
 .venv/bin/pytest tests/test_player360.py -k content_hash    # single test
 ```
 
