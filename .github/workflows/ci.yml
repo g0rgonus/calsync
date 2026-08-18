@@ -1,0 +1,95 @@
+# Build the image, and prove the thing inside it works.
+#
+# A workflow that only ran `docker build` would go green on an image whose sync
+# loop is broken — the build does not import the package, let alone exercise it.
+# So the image job is last and depends on the tests.
+#
+# The acceptance job is the one worth having. `docs/deployment/radicale.md`
+# records that the R1-R8 server requirements were once verified by hand, against
+# a server that no longer exists, on a version nobody pinned. That is the
+# weakest link in the project: every other layer has fast offline tests, and the
+# one place calsync meets a real CalDAV server was checked manually. Running it
+# on every push is what `scripts/dev-stack.sh` was written to make possible.
+
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          # The floor from pyproject. Testing the oldest supported version is
+          # the useful end: a newer one passing says nothing about it.
+          python-version: "3.11"
+      - run: pip install -e '.[dev]'
+      - run: pytest -q
+
+  acceptance:
+    name: acceptance (live Radicale)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -e '.[dev]'
+      # `scripts/dev-stack.sh` generates the Radicale users file with bcrypt,
+      # which needs htpasswd. Plain-text entries would be accepted by the server
+      # and silently defeat the point (deploy/radicale/config).
+      - name: Install htpasswd
+        run: sudo apt-get update && sudo apt-get install -y apache2-utils
+      - name: Bring up the stack
+        run: scripts/dev-stack.sh
+      - name: Wait for Radicale
+        run: |
+          for _ in $(seq 1 30); do
+            curl -fsS http://localhost:5232/ -o /dev/null && exit 0
+            sleep 2
+          done
+          echo "Radicale never came up" >&2
+          docker compose logs radicale
+          exit 1
+      - name: Run the acceptance checks
+        env:
+          CALSYNC_ACCEPTANCE: "1"
+        run: pytest tests/test_acceptance.py -q
+      - name: Stack logs on failure
+        if: failure()
+        run: docker compose logs
+
+  image:
+    name: image
+    runs-on: ubuntu-latest
+    # Both, because an image that builds and cannot sync is not a good image.
+    needs: [tests, acceptance]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          # Not pushed. `docker-compose.yml` uses `build: .`, so nothing
+          # consumes a registry image today; publishing is a deployment decision
+          # that comes with a compose change, not a CI default.
+          push: false
+          load: true
+          tags: calsync:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: The image runs and speaks for itself
+        run: |
+          docker run --rm calsync:ci --help
+          docker run --rm calsync:ci init-db
