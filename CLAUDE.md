@@ -17,7 +17,12 @@ table, pins and merges; `/household` edits kids and the sport catalog;
 `/settings` covers the `settings` table, and a team's own fields are on its
 source page. Nothing in the day-to-day path needs sqlite3 any more.
 
-**There is still no HTTP API.** `docs/API.md`, `docs/MATRIX.md` and
+**There is still no HTTP API, and it has a prerequisite.** Its read endpoints
+need event *content*, which `event_state` does not hold — see "Before any of
+this can be built" at the end of `docs/API.md`. The first step is deciding what
+calsync remembers, not writing endpoints.
+
+ `docs/API.md`, `docs/MATRIX.md` and
 `docs/MATCHING.md` specify components that do not exist — read them as the design
 contract, not as a description of the code.
 

@@ -366,3 +366,39 @@ POST /v1/sources/{id}/poll           # manual trigger
   makes a bad parse debuggable weeks later.
 - Prefer re-uploading a document and getting `duplicate_of` over caching state
   locally. The server is the memory.
+
+---
+
+## Before any of this can be built
+
+`GET /v1/events` and `GET /v1/events/{uid}` are the half of this API that
+motivates it — §"Hermes reads through the API, not CalDAV" argues at length that
+an agent must not reverse-engineer event data out of rendered calendar entries.
+
+**calsync does not store event data.** `event_state` holds `uid`, `source_id`,
+`collection`, `remote_id`, `content_hash`, `remote_etag`, `starts_at` and
+`cancelled`. There is no title, no venue, no opponent, no end time — the title
+because it is a render and never stored, and the rest because the feed has
+always been the source of truth and nothing has needed a second copy. The digest
+re-parses the feeds for exactly this reason (`digest.py`).
+
+So the read API cannot be implemented as specified without first deciding to
+persist event content, and that decision is not a schema chore:
+
+1. **It is a second copy of the truth.** Today a feed change shows up everywhere
+   at once because nothing caches it. A stored copy needs its own staleness
+   story, and "the API said 7pm, the calendar says 8pm" is a new failure mode.
+2. **It is children's names, locations and start times at rest** in one more
+   place, on a box whose whole security posture is "it is only ever reached
+   through a VPN". More copies, more to lose.
+3. **`PATCH /v1/events/{uid}` needs the precedence model**, not just a column.
+   An amendment that overrides a feed has to survive the next poll without being
+   silently reverted, which is [MATRIX.md](MATRIX.md) §4's trust ranks — and
+   nothing implements those either.
+4. **The title stays a render regardless.** Storing structured fields is
+   compatible with that; storing a `summary` column is not, and would undo the
+   thing that lets naming conventions change without a re-fetch.
+
+None of that argues against the API. It says the first commit is a design
+decision about what calsync remembers, taken deliberately — and that building
+the endpoints first would produce a read surface with nothing behind it.
