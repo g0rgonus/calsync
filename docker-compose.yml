@@ -46,6 +46,17 @@ services:
       - calsync-data:/data
       # Read-only, and the store refuses a file that is group- or
       # world-readable. Keep it 600 on the host.
+      #
+      # **On Linux, it also has to be owned by uid 10001** — the account this
+      # image runs as. A bind mount preserves host ownership there, so a file
+      # written by your own user is 600 and unreadable inside the container:
+      #
+      #     sudo chown -R 10001:10001 secrets
+      #
+      # macOS hides this: Docker Desktop presents the mount as the container
+      # user, so a stack that works on a laptop can fail on the box it deploys
+      # to. The alternative is passing each secret as CALSYNC_SECRET_<NAME>,
+      # which the store checks before the file.
       - ./secrets:/run/secrets/calsync:ro
       # Config lives in the database; this is only for `calsync import`.
       - ./config/calsync:/config:ro

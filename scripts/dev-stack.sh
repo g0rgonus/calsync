@@ -63,22 +63,20 @@ docker compose --profile demo up -d radicale web feeds
 # unset, the stack comes up looking healthy and never writes a single event —
 # the poller reports it per event, then backs off to hours, which is how it went
 # unnoticed for days.
-# The container runs as uid 10001 and `SecretStore` refuses a file any other
-# account can read, so the file must be 600 *and* owned by that uid. On Linux a
-# bind mount preserves host ownership, so a file written by this script belongs
-# to whoever ran it and the container gets EACCES; on macOS the mount presents
-# it as the container user and this is a no-op. Best effort: without it the
-# check below fails with a message saying exactly this, which is a fine second
-# best.
-if [ "$(uname -s)" = "Linux" ]; then
-  sudo -n chown -R 10001:10001 secrets 2>/dev/null \
-    || echo "  note: could not chown secrets/ to the container's uid (10001);" \
-            "if the check below fails on permissions, that is why" >&2
-fi
-
 docker compose run --rm --no-deps calsync set radicale_url http://radicale:5232 \
   >/dev/null
-docker compose run --rm --no-deps calsync check || {
+
+# The password goes in by environment rather than through the mounted file, and
+# not for convenience. The container runs as uid 10001 and `SecretStore` refuses
+# a secrets file any other account can read — so on Linux, where a bind mount
+# keeps host ownership, the file is either readable by the container or by the
+# tests running on this machine, and never by both. `SecretStore` checks the
+# environment first, which sidesteps the question entirely for this one call.
+#
+# The long-running poller still reads the mounted file, and on a Linux host that
+# file has to be owned by uid 10001. See docker-compose.yml.
+docker compose run --rm --no-deps \
+  -e CALSYNC_SECRET_RADICALE_PASSWORD="$password" calsync check || {
   echo "  the stack is up but calsync cannot reach it — see above" >&2
   exit 1
 }
