@@ -309,8 +309,15 @@ calsync asks, Hermes answers, you approve — needs no inbound Matrix at all:
 |---|---|---|
 | Hold what cannot be placed | An enrichment collection and a review queue | **built** |
 | Notify that something is waiting | A Pushover trigger, once per question | **built** |
-| Post the question to the room | Outbound only; `matrix.send` already exists | |
+| Post the question to the room | Outbound only; `matrix.send` already exists | **built** |
 | Accept an answer | `POST /v1/tasks/{id}/result`, stored pending, never applied | |
+
+Task ids are derived from the question rather than allocated, so the same
+unanswered question is the same task on every poll — which is what dedupes a
+re-post today and what will let an answer be accepted against a task nobody had
+to remember issuing. `respond_via` is explicitly `null` until that endpoint
+exists, rather than absent, so an agent can tell "not answerable yet" from "this
+message forgot to say how" and the payload shape does not change when it lands.
 
 The **proposal** flow — Hermes extracting events from a pasted PDF — is the
 larger one and still needs everything above it:

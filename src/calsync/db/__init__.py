@@ -23,6 +23,11 @@ ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # v4: which dormancy notification has already gone out, so a finished
     # season is mentioned once rather than at every poll for the rest of time.
     ("sources", "dormancy_notified", "TEXT"),
+    # v6: which set of open questions has already been posted to the Matrix
+    # room. Separate from `review_notified` on purpose — the two announcements
+    # have different audiences, and one flag would mean configuring Matrix after
+    # a queue opened silently skipped it.
+    ("sources", "review_dispatched", "TEXT"),
     # v6: which set of review questions has already been pushed, so a queue
     # nobody has got to yet is announced once rather than every twenty minutes.
     ("sources", "review_notified", "TEXT"),

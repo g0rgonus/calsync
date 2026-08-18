@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from calsync import db, enrichment, notify, repo
+from calsync import db, enrichment, matrix, notify, repo
 from calsync.sync import sync_source
 from calsync.targets import build
 
@@ -244,3 +244,225 @@ def test_a_refused_push_is_recorded_and_not_retried_forever(conn, target):
     # a failing HTTP call every twenty minutes for the rest of the season.
     row = conn.execute("SELECT review_notified FROM sources WHERE id = 's'").fetchone()
     assert row["review_notified"]
+
+
+# --- telling the agent ------------------------------------------------------
+#
+# Outbound only. Hermes reads the room and answers on the API; nothing here
+# reads a message back, so there is no /sync loop and no identity model to get
+# wrong (docs/MATRIX.md §7).
+
+
+class Room:
+    """A Matrix room that records what was posted."""
+
+    def __init__(self):
+        self.posted = []
+
+    def __call__(self, _config, _secrets, body, *, transaction_id, **_kw):
+        self.posted.append({"body": body, "txn": transaction_id})
+        return "$event"
+
+
+def _configure_matrix(conn):
+    from calsync.settings import set_setting
+
+    set_setting(conn, "matrix_homeserver", "https://matrix.example.org")
+    set_setting(conn, "matrix_user_id", "@calsync:example.org")
+    set_setting(conn, "matrix_room_id", "!room:example.org")
+
+
+def _dispatch(conn, target, room, *, body=None):
+    source, report = _poll(conn, target, body)
+    return enrichment.dispatch(conn, source, report, secrets=Store(), sender=room)
+
+
+def _payload(post):
+    import json as _json
+
+    block = post["body"].split("```json")[1].split("```")[0]
+    return _json.loads(block)
+
+
+def test_open_questions_are_posted_to_the_room(conn, target):
+    _configure_matrix(conn)
+    room = Room()
+    outcome = _dispatch(conn, target, room)
+
+    assert outcome.notified
+    assert len(room.posted) == 1, "one message per batch, not one per question"
+    payload = _payload(room.posted[0])
+    assert payload["source"] == "s"
+    assert payload["tasks"], "posted a message with no questions in it"
+
+
+def test_a_venue_is_asked_about_even_though_it_holds_nothing(conn, target):
+    """Dispatch is wider than the hold, and deliberately so.
+
+    A venue nobody has entered does not keep a fixture off the calendar, so it
+    never pages a human — but resolving it is the best use of a model this
+    project has, so it still gets asked.
+    """
+    repo.add_activity_alias(conn, "a", "Hawks")     # nothing is held any more
+    _configure_matrix(conn)
+    room = Room()
+    outcome = _dispatch(conn, target, room)
+
+    assert outcome.held == 0
+    assert outcome.notified, "a queue with nothing held asked nothing"
+    kinds = {t["type"] for t in _payload(room.posted[0])["tasks"]}
+    assert kinds == {"normalize_venue"}
+
+
+def test_task_ids_are_stable_across_polls(conn, target):
+    """The same unanswered question is the same task every time.
+
+    That is what lets a retry dedupe, and what will let an answer be accepted
+    against a task nobody had to remember issuing.
+    """
+    _configure_matrix(conn)
+    room = Room()
+    _dispatch(conn, target, room)
+    first = {t["task_id"] for t in _payload(room.posted[0])["tasks"]}
+
+    conn.execute("UPDATE sources SET review_dispatched = NULL WHERE id = 's'")
+    conn.commit()
+    _dispatch(conn, target, room)
+
+    assert {t["task_id"] for t in _payload(room.posted[1])["tasks"]} == first
+
+
+def test_the_same_questions_are_not_posted_twice(conn, target):
+    _configure_matrix(conn)
+    room = Room()
+    for _ in range(4):
+        _dispatch(conn, target, room)
+
+    assert len(room.posted) == 1
+
+
+def test_a_retry_of_the_same_batch_reuses_its_transaction_id(conn, target):
+    """Matrix dedupes on it, so a timeout cannot double-post the questions."""
+    _configure_matrix(conn)
+    room = Room()
+    _dispatch(conn, target, room)
+    conn.execute("UPDATE sources SET review_dispatched = NULL WHERE id = 's'")
+    conn.commit()
+    _dispatch(conn, target, room)
+
+    assert room.posted[0]["txn"] == room.posted[1]["txn"]
+
+
+def test_an_unconfigured_room_records_nothing_so_a_later_setup_still_posts(
+    conn, target
+):
+    """The gap a shared flag with the push would have created."""
+    room = Room()
+    assert not _dispatch(conn, target, room).notified
+    assert room.posted == []
+    row = conn.execute("SELECT review_dispatched FROM sources WHERE id='s'").fetchone()
+    assert row["review_dispatched"] is None
+
+    _configure_matrix(conn)
+    assert _dispatch(conn, target, room).notified
+
+
+def test_the_push_and_the_room_are_tracked_separately(conn, target):
+    """Answering one audience must not silence the other."""
+    _configure_matrix(conn)
+    push, room = Pushover(), Room()
+    _review(conn, target, push)
+    _dispatch(conn, target, room)
+
+    assert len(push.sent) == 1 and len(room.posted) == 1
+
+    conn.execute("UPDATE sources SET review_notified = NULL WHERE id = 's'")
+    conn.commit()
+    _review(conn, target, push)
+    _dispatch(conn, target, room)
+
+    assert len(push.sent) == 2, "the push did not re-fire"
+    assert len(room.posted) == 1, "the room re-posted because it shared a flag"
+
+
+def test_the_payload_says_it_cannot_be_answered_yet(conn, target):
+    """Honest rather than aspirational: the answer endpoint is not built.
+
+    Explicitly null instead of absent, so an agent can tell "not answerable" from
+    "this message forgot to say how", and so the shape does not change when the
+    endpoint lands.
+    """
+    _configure_matrix(conn)
+    room = Room()
+    _dispatch(conn, target, room)
+
+    assert _payload(room.posted[0])["respond_via"] is None
+
+
+def test_a_refused_post_is_not_recorded_so_it_is_retried(conn, target):
+    """Unlike the push: a task that never reaches the agent means no work."""
+    _configure_matrix(conn)
+
+    def refusing(*_a, **_k):
+        raise matrix.MatrixError("homeserver said no")
+
+    source, report = _poll(conn, target)
+    outcome = enrichment.dispatch(conn, source, report, secrets=Store(), sender=refusing)
+
+    assert outcome.errors and not outcome.notified
+    row = conn.execute("SELECT review_dispatched FROM sources WHERE id='s'").fetchone()
+    assert row["review_dispatched"] is None, "a failed post was recorded as sent"
+
+
+def test_ten_fixtures_are_one_question_not_ten(conn, target):
+    """One answer resolves all of them, so it is one question.
+
+    Ten `resolve_activity` tasks whose answer is a single activity alias would
+    cost ten round trips and give ten chances to answer inconsistently. The
+    console already collapses this for a human; the room gets the same shape.
+    """
+    _configure_matrix(conn)
+    room = Room()
+    _dispatch(conn, target, room)
+
+    tasks = _payload(room.posted[0])["tasks"]
+    identity = [t for t in tasks if t["type"] == "resolve_activity"]
+
+    assert len(identity) == 1, f"asked the same question {len(identity)} times"
+    assert len(identity[0]["context"]) > 1, "collapsed away the evidence too"
+
+
+def test_the_collapsed_question_offers_the_same_answer_the_console_does(conn, target):
+    """Ranked by frequency, best first — `inspection.name_candidates`.
+
+    A human clicking the suggested button and an agent taking the first
+    candidate have to be choosing from one list, or the two paths can disagree
+    about the same feed.
+    """
+    _configure_matrix(conn)
+    room = Room()
+    _dispatch(conn, target, room)
+
+    identity = next(
+        t for t in _payload(room.posted[0])["tasks"]
+        if t["type"] == "resolve_activity"
+    )
+    assert identity["candidates"][0] == "Hawks"
+
+
+def test_distinct_venues_stay_distinct_questions(conn, target):
+    """Collapsing is only right where one answer covers the lot.
+
+    One venue's address says nothing about another's, so these must not be
+    folded together the way the fixture names are.
+    """
+    _configure_matrix(conn)
+    room = Room()
+    _dispatch(conn, target, room)
+
+    venues = [
+        t for t in _payload(room.posted[0])["tasks"]
+        if t["type"] == "normalize_venue"
+    ]
+    assert len(venues) > 1
+    assert all(len(t["context"]) == 1 for t in venues)

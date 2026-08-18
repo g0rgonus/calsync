@@ -68,7 +68,7 @@ so a fresh clone needs:
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/pytest                                    # 438 tests, ~2.4s
+.venv/bin/pytest                                    # 450 tests, ~2.6s
 .venv/bin/pytest tests/test_player360.py -k content_hash    # single test
 ```
 
@@ -276,6 +276,21 @@ Decisions that span several files and are easy to undo by accident:
   no push at all. `BLOCKING_DIAGNOSTICS` is what keeps unresolved venues out of
   that fingerprint — they hold nothing back, so paging about them would train
   somebody to ignore the signal that does mean events are off the calendar.
+- **The room is told the same questions, and told them differently.**
+  `enrichment.dispatch` posts to Matrix, tracked on its own
+  `sources.review_dispatched` column rather than sharing the push's flag — the
+  two have different audiences, and one flag would mean configuring Matrix after
+  a queue opened silently skipped it. It is also deliberately *wider*: a venue
+  holds no event back so it never pages a human, but resolving one is the best
+  use of a model this project has, so it still gets asked (`DISPATCHABLE` vs
+  `BLOCKING_DIAGNOSTICS`). A failed post is **not** recorded, unlike a failed
+  push: a task that never reaches the agent means the work never happens.
+- **Ten fixtures are one question.** `COLLAPSED` folds `unidentified` into a
+  single `resolve_activity` task carrying every observed fixture and the same
+  ranked candidates `web/gate.py` offers a human, because one activity alias
+  answers all of them. Everything else stays per-item — whether "Skills Session"
+  is a game says nothing about "Playoff Game2". A human clicking the suggested
+  button and an agent taking the first candidate must be choosing from one list.
 - **Staging beats enrichment.** A source still being onboarded is already held
   somewhere; splitting its events across two holding calendars would make the
   promotion gate harder to read, not safer. `SyncReport.awaiting_review` matches

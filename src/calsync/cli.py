@@ -209,6 +209,18 @@ def cmd_poll(args) -> int:
             except Exception as exc:  # noqa: BLE001 — never take the poller down
                 print(f"    review check failed: {exc}", flush=True)
 
+            # And the same questions to the room, for whatever is listening.
+            # Separate from the push above: different audience, and a room that
+            # is not configured must not stop the poller or the notification.
+            try:
+                posted = enrichment.dispatch(conn, source, report, secrets=secrets)
+                if posted.notified:
+                    print("    open questions posted to the room", flush=True)
+                for problem in posted.errors:
+                    print(f"    could not post to the room: {problem}", flush=True)
+            except Exception as exc:  # noqa: BLE001 — never take the poller down
+                print(f"    task dispatch failed: {exc}", flush=True)
+
             failures = schedule.struggling().get(source.id, 0)
             if failures > 1:
                 print(f"    backing off: {failures} failures in a row, "
