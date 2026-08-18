@@ -21,26 +21,9 @@
 % end
       </select>
       <span class="choice-note" style="margin-top:0.35rem">
-        <span class="raw">google</span> is registered and its payload builder is
-        tested, but nothing implements Google's OAuth exchange yet, so choosing
-        it will refuse with that reason rather than half-write a season.
         <span class="raw">ics_file</span> needs <span class="raw">--out</span>.
       </span>
     </label>
-
-% if settings.target_kind == 'google':
-    <label class="field" style="margin-bottom:0.8rem">
-      <span class="label">Google calendar ids</span>
-      <input type="text" name="google_calendar_map" class="mono"
-             value="{{ raw.get('google_calendar_map', '{}') }}" autocomplete="off">
-      <span class="choice-note" style="margin-top:0.35rem">
-        JSON, mapping each collection name to a calendar id —
-        <span class="raw">{"games": "abc@group.calendar.google.com"}</span>.
-        Google calendars are not created by calsync, so each one has to exist
-        already.
-      </span>
-    </label>
-% end
 
     <div class="row">
       <label class="field" style="margin-bottom:0.8rem">

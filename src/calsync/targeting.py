@@ -1,33 +1,55 @@
 """Choose and build the configured calendar target.
 
-`targets/__init__.py` advertises a registry — three kinds are registered — but
-until now only two of them were reachable: the CLI hardcoded "ics_file when
---out is given, otherwise CalDAV", and the console grew its own copy of the
-CalDAV construction. Pluggability nothing can select is not pluggability.
+`targets/__init__.py` advertises a registry, but for a long time nothing could
+select from it: the CLI hardcoded "ics_file when --out is given, otherwise
+CalDAV", and the console grew its own copy of the CalDAV construction.
+Pluggability nothing can select is not pluggability.
+
+Being in the registry and being offered as a destination are separate things —
+see WITHDRAWN.
 
 This is the one place that turns configuration into a target, so the CLI, the
 poller and the console cannot drift apart about where events go.
 
 It also fails *early*. A target that cannot possibly work should say so before
 a feed is fetched and diffed, not raise from the middle of the write loop with
-half a season applied — especially for Google, which is registered and payload-
-complete but has no authenticated transport, so it would otherwise look
-configurable right up until the moment it mattered.
+half a season applied.
 """
 
 from __future__ import annotations
-
-import json
 
 from .secrets import SecretError, SecretStore
 from .settings import Settings
 from .targets import TargetError, build
 from .targets.http import HttpTransport
 
-#: What `target_kind` may be set to. `google` is deliberately included: it is a
-#: real, tested payload builder, and pretending it does not exist would be as
-#: misleading as pretending it works.
-KINDS = ("caldav", "ics_file", "google")
+#: What `target_kind` may be set to, and what `--target` accepts.
+KINDS = ("caldav", "ics_file")
+
+#: Registered in `targets/` but not offered as a destination, with the reason.
+#:
+#: `targets/google.py` is a complete, tested payload builder — event ids,
+#: extendedProperties, calendar-to-calendar moves. What is missing is the OAuth
+#: token exchange, tracked at
+#: https://github.com/g0rgonus/calsync/issues/1.
+#:
+#: It used to be offered with a note saying it could not work yet. That was the
+#: wrong call: an entry in a dropdown reads as a supported choice however the
+#: caption is worded, so the note explained away a problem instead of removing
+#: it. Withdrawing it is honest in a way a warning is not, and putting it back
+#: is one line once the transport exists.
+#:
+#: Checked *before* KINDS so a deployment that already stored
+#: `target_kind = google` gets this reason rather than "unknown target kind",
+#: which would read like a typo.
+WITHDRAWN = {
+    "google": (
+        "the Google target is not available yet. Its payload builder is complete "
+        "and tested, but nothing implements Google's OAuth token exchange — "
+        "https://github.com/g0rgonus/calsync/issues/1. Set target_kind to "
+        "'caldav' in the meantime."
+    ),
+}
 
 
 def build_target(
@@ -48,6 +70,8 @@ def build_target(
 
     settings = Settings.load(conn)
     kind = kind or settings.target_kind
+    if kind in WITHDRAWN:
+        raise TargetError(WITHDRAWN[kind])
     if kind not in KINDS:
         raise TargetError(
             f"unknown target kind {kind!r}; target_kind must be one of "
@@ -59,9 +83,6 @@ def build_target(
             "target_kind is 'ics_file' but no directory was given; pass --out DIR"
         )
 
-    if kind == "google":
-        return _google(conn, secrets)
-
     secrets = secrets or SecretStore()
     password = secrets.get(settings.radicale_secret_ref)
     return build(
@@ -70,37 +91,6 @@ def build_target(
         transport=HttpTransport(username=settings.radicale_user, password=password),
         username=settings.radicale_user,
         password=password,
-    )
-
-
-def _google(conn, secrets):
-    """Refuse clearly rather than fail halfway through a write.
-
-    The Google target's payload builder is complete and tested — event ids,
-    extendedProperties, the lot. What does not exist is an authenticated
-    transport: Google needs an OAuth token exchange, and there is no equivalent
-    of `targets/http.py` for it. Building one that nobody can run against real
-    Google would be untested network code in the exact seam that has already
-    produced one silent bug this project knows about (the dropped ETag), so it
-    is left undone on purpose rather than written blind.
-    """
-    row = conn.execute(
-        "SELECT value FROM settings WHERE key = 'google_calendar_map'"
-    ).fetchone()
-    calendar_map = json.loads((row["value"] if row else "") or "{}")
-
-    missing = []
-    if not calendar_map:
-        missing.append(
-            "google_calendar_map (a JSON object mapping each collection name to "
-            "a Google calendar id)"
-        )
-    missing.append(
-        "an authenticated transport — the payload builder is complete and "
-        "tested, but nothing implements Google's OAuth token exchange yet"
-    )
-    raise TargetError(
-        "the Google target cannot be used yet. Missing: " + "; ".join(missing)
     )
 
 
@@ -114,4 +104,5 @@ def describe(conn, *, out_dir: str | None = None) -> str:
     return settings.target_kind
 
 
-__all__ = ["KINDS", "build_target", "describe", "TargetError", "SecretError"]
+__all__ = ["KINDS", "WITHDRAWN", "build_target", "describe", "TargetError",
+           "SecretError"]

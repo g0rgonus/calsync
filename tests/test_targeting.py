@@ -57,21 +57,48 @@ def test_ics_file_without_a_directory_says_which_flag_is_missing(conn, secrets):
         targeting.build_target(conn, kind="ics_file", secrets=secrets)
 
 
-def test_google_refuses_early_and_says_what_is_missing(conn, secrets):
-    """It used to build fine and then raise from the middle of the write loop.
+def test_google_is_not_offered_as_a_destination():
+    """Withdrawn until the OAuth exchange exists (issues/1).
 
-    The payload builder is complete and tested; the transport does not exist.
-    Failing at selection time means a half-written season is not the way you
-    find out.
+    It used to be offered with a note saying it could not work yet. An entry in
+    a dropdown reads as a supported choice however the caption is worded, so the
+    note explained the problem away rather than removing it.
+    """
+    assert "google" not in targeting.KINDS
+
+
+def test_google_is_still_a_registered_target():
+    """Withdrawn from the picker, not deleted from the codebase.
+
+    The payload builder is complete and has its own tests; only the transport is
+    missing. Dropping it from the registry would throw that away and make
+    putting it back a rewrite rather than one line.
+    """
+    from calsync import targets
+
+    assert "google" in targets.available()
+
+
+def test_choosing_google_says_why_it_cannot_be_used_yet(conn, secrets):
+    """Not "unknown target kind", which would read like a typo.
+
+    A deployment that stored `target_kind = google` before it was withdrawn
+    lands here, and needs to be told what happened rather than left thinking it
+    misspelled something.
     """
     with pytest.raises(TargetError) as raised:
         targeting.build_target(conn, kind="google", secrets=secrets)
 
     message = str(raised.value)
+    assert "unknown target kind" not in message
     assert "OAuth" in message, "does not say what is actually missing"
-    assert "google_calendar_map" in message
+    assert "issues/1" in message, "does not point at where this is tracked"
 
 
-def test_google_is_still_listed_as_a_kind():
-    """Pretending it does not exist would mislead as much as pretending it works."""
-    assert "google" in targeting.KINDS
+def test_a_stored_google_setting_gets_the_same_explanation(conn, secrets):
+    """The realistic path: nobody passes --target google, the row is just there."""
+    from calsync.settings import set_setting
+
+    set_setting(conn, "target_kind", "google")
+    with pytest.raises(TargetError, match="OAuth"):
+        targeting.build_target(conn, secrets=secrets)

@@ -40,9 +40,15 @@ them, and nothing but calsync writes to Radicale. "It's on a private tailnet" is
 not a reason to weaken those — the risk there is an agent acting on a bad parse,
 not a stranger on the internet.
 
-The Google target is selectable (`--target google`, or `target_kind`) but has no
-authenticated transport, so it refuses at selection time and says so. Its payload
-builder is complete and tested; only the OAuth exchange is missing.
+The Google target is **withdrawn as a destination** — not in `targeting.KINDS`,
+not in the `--target` choices, not in the console's picker. Its payload builder
+is complete and tested and stays registered in `targets/`; only the OAuth
+exchange is missing, tracked at
+https://github.com/g0rgonus/calsync/issues/1. It was previously offered with a
+caption explaining that it could not work, which was the wrong call: an entry in
+a dropdown reads as a supported choice however the caption is worded. Selecting
+it anyway — an old `target_kind` row, say — gives the reason and the issue link
+rather than "unknown target kind" (`targeting.WITHDRAWN`).
 
 The daily digest goes out from the poll loop itself (`cli.py:_maybe_digest`),
 gated on the `digest_send_at` setting, which is empty by default and means

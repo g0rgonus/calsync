@@ -66,11 +66,16 @@ BUILTIN_SPORTS: tuple[tuple[str, str, str], ...] = (
 #: them encodes a particular household's choices.
 DEFAULT_SETTINGS: dict[str, str] = {
     # Where normalized events are written. calsync stops here; syncing onward
-    # to iCloud or anywhere else is a separate tool's job. The target registry
-    # has had three kinds for a while; `target_kind` is what makes them
-    # selectable rather than hardcoded in the CLI.
+    # to iCloud or anywhere else is a separate tool's job. `targeting.KINDS` is
+    # what this may be set to; being in the target registry is not the same as
+    # being offered (`targeting.WITHDRAWN`).
     "target_kind": "caldav",
-    "google_calendar_map": "{}",
+    # Commented out with the rest of the Google destination
+    # (`targeting.WITHDRAWN`), so it is not seeded into new deployments and does
+    # not need a control on a settings page that no longer offers the target.
+    # An existing row is left alone — migrations never delete — so a deployment
+    # that already filled this in still has it when Google comes back.
+    #     "google_calendar_map": "{}",
     "radicale_url": "http://localhost:5232",
     "radicale_user": "calsync",
     "radicale_secret_ref": "radicale_password",

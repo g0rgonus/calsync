@@ -535,7 +535,7 @@ Calendar, to iCloud over CalDAV, or to a directory of `.ics` files.
 | Target | Notes |
 |---|---|
 | `caldav` | Radicale, iCloud, Baikal, Nextcloud. ETag-guarded writes. |
-| `google` | Google Calendar API. |
+| `google` | Google Calendar API. Payload builder built and tested; withdrawn as a selectable destination until the OAuth exchange exists (issues/1). |
 | `ics_file` | A directory of `.ics` files — real `--dry-run` output, git-able. |
 
 **Targets receive a domain object, not an ICS blob.** If the renderer emitted

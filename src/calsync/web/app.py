@@ -585,7 +585,7 @@ def create_app(
     @app.post("/settings/calendar")
     def save_calendar_settings():
         with connect() as conn:
-            for key in ("target_kind", "google_calendar_map",
+            for key in ("target_kind",
                         "radicale_url", "radicale_user", "radicale_secret_ref",
                         "collection_template", "collection_game_label",
                         "collection_practice_label", "default_tz"):

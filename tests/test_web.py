@@ -1334,7 +1334,11 @@ def test_an_event_is_a_game_or_a_practice_and_nothing_else(client, tmp_path):
 def test_the_target_can_be_chosen_in_the_console(client, tmp_path):
     page = client.get("/settings")["body"]
     assert "Write events to" in page
-    assert "OAuth" in page, "google is offered without saying it cannot work yet"
+    # Withdrawn until the OAuth exchange exists (targeting.WITHDRAWN). Offering
+    # it with a caption explaining that it cannot work was worse than not
+    # offering it — a dropdown entry reads as supported regardless.
+    assert 'value="google"' not in page, "google is offered but cannot work"
+    assert "OAuth" not in page, "the page still explains away a choice it no longer offers"
 
     client.post("/settings/calendar", {"target_kind": "ics_file"})
     conn = db.connect(tmp_path / "calsync.db")
