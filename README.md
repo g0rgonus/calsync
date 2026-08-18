@@ -56,31 +56,35 @@ settings.
 ```bash
 cp -r deploy/radicale/. config/radicale/     # then edit users + rights
 htpasswd -B -c config/radicale/users calsync
+htpasswd -B    config/radicale/users calreader
+
 mkdir -p secrets && printf '{"radicale_password":"..."}' > secrets/secrets.json
 chmod 600 secrets/secrets.json
+sudo chown -R 10001:10001 secrets            # Linux only — see below
 
-docker compose up -d                       # Radicale, the poller, the console
-docker compose run --rm calsync import /config/calsync.yaml
-docker compose run --rm calsync stage tr-hawks          # onboarding calendar
-docker compose run --rm calsync promote tr-hawks        # when the parse is clean
+docker compose up -d radicale
+docker compose run --rm calsync set radicale_url http://radicale:5232
+docker compose run --rm calsync check        # must pass before going further
+docker compose up -d
 ```
 
-Radicale and the console are both bound to loopback — reach them through
-whatever VPN or authenticating proxy fronts the host, not by opening the ports
-([docs/deployment/radicale.md](docs/deployment/radicale.md) §5). Neither has a
-login of its own. If your proxy rewrites `Host` *and* strips `Sec-Fetch-*`,
-`calsync web --trusted-origin <host>` accepts writes from that name.
-Onboarding flow: [docs/ONBOARDING.md](docs/ONBOARDING.md).
+**The last three commands are not optional.** `radicale_url` ships as
+`http://localhost:5232`, which is right when calsync runs on the host and wrong
+inside a container, where localhost *is* the container. A stack left that way
+comes up healthy, writes nothing, reports it once per event, and then backs off
+to hours — which is exactly how it went unnoticed on the first real deployment.
+`check` asks the question directly, and the console has the same button on
+`/settings`.
 
-To look at the console without a real team's feed URL:
+**The `chown` is Linux only, and it is not cosmetic.** The image runs as uid
+10001 and the secret store refuses a file any other account can read, so the
+file has to be both `600` and owned by that uid. A Linux bind mount preserves
+host ownership; macOS presents the mount as the container user and hides the
+problem entirely, so a stack that works on a laptop fails on the box it deploys
+to. CI follows these steps on Linux to keep them honest.
 
-```bash
-docker compose --profile demo up -d web feeds   # console :8730, feeds :8000
-```
-
-`feeds` replays the recorded fixtures with their dates shifted onto this week,
-so the sync window does not discard them (`demo/feeds.py`). It is not part of
-the product.
+`docker compose --profile api up -d api` adds the read API — opt-in, because its
+only consumer is an agent that does not exist yet.
 
 ## Next step
 

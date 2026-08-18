@@ -69,11 +69,48 @@ jobs:
         if: failure()
         run: docker compose logs
 
+  deploy:
+    name: deploy (linux first run)
+    runs-on: ubuntu-latest
+    # The documented first-run steps, followed exactly, on Linux — because both
+    # of the bugs that left a real deployment writing nothing for days were in
+    # this path and neither was reachable from the other jobs. `dev-stack.sh`
+    # does not cover it: it hands the password to the container by environment,
+    # which is right for a laptop running the tests but sidesteps the mounted
+    # file that a deployment actually reads.
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install htpasswd
+        run: sudo apt-get update && sudo apt-get install -y apache2-utils
+      - name: Follow the documented first run
+        run: |
+          set -eux
+          mkdir -p config/radicale secrets
+          cp -r deploy/radicale/. config/radicale/
+          htpasswd -bBc config/radicale/users calsync deploy-test-password
+          htpasswd -bB  config/radicale/users calreader deploy-test-password
+          printf '{"radicale_password":"deploy-test-password"}' > secrets/secrets.json
+          chmod 600 secrets/secrets.json
+          # The step the docs used to omit. A bind mount preserves host
+          # ownership on Linux, and the image runs as uid 10001.
+          sudo chown -R 10001:10001 secrets
+          docker compose up -d radicale
+      - name: Configure and check, reading the mounted secrets file
+        run: |
+          set -eux
+          docker compose run --rm calsync set radicale_url http://radicale:5232
+          # No CALSYNC_SECRET_* here on purpose: this has to resolve the
+          # password through the mount, which is what a deployment does.
+          docker compose run --rm calsync check
+      - name: Stack logs on failure
+        if: failure()
+        run: docker compose logs
+
   image:
     name: image
     runs-on: ubuntu-latest
     # Both, because an image that builds and cannot sync is not a good image.
-    needs: [tests, acceptance]
+    needs: [tests, acceptance, deploy]
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3

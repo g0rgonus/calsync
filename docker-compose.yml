@@ -14,6 +14,19 @@
 #   htpasswd -B    config/radicale/users calreader
 #   mkdir -p secrets && printf '{"radicale_password":"..."}' > secrets/secrets.json
 #   chmod 600 secrets/secrets.json
+#   sudo chown -R 10001:10001 secrets              # Linux only; see the mount below
+#   docker compose up -d radicale
+#   docker compose run --rm calsync set radicale_url http://radicale:5232
+#   docker compose run --rm calsync check          # must pass before going further
+#   docker compose up -d
+#
+# The last three lines are not optional. `radicale_url` defaults to
+# http://localhost:5232, which is correct when calsync runs on the host and
+# wrong inside a container, where localhost is the container itself — a stack
+# left that way comes up healthy, writes nothing, and reports it once per event
+# before backing off to hours. `check` is what turns that into a question you
+# get answered in a second. The CI job "deploy (linux first run)" follows these
+# exact steps on Linux.
 
 services:
   radicale:
