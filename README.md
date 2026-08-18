@@ -113,8 +113,10 @@ week.
 
 ## Docker
 
-Published to `ghcr.io/g0rgonus/calsync`. To stand up a stack **without cloning
-this repo** — the image carries its own compose file and server config:
+Published to `ghcr.io/g0rgonus/calsync` for `linux/amd64` and `linux/arm64`, so
+a Raspberry Pi or an Apple Silicon Mac is as good a host as an x86 box. To stand
+up a stack **without cloning this repo** — the image carries its own compose
+file and server config:
 
 ```bash
 mkdir calsync && cd calsync

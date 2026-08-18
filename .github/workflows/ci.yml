@@ -144,6 +144,10 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v4
+      # arm64 is emulated on an amd64 runner. Slower, and the alternative is a
+      # second runner and a manifest-merge step for an image whose build is
+      # `pip install` and nothing else.
+      - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -169,6 +173,13 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
+          # Both, because the README's first line is a `docker run` of this
+          # image and a homelab is as likely to be a Raspberry Pi or an Apple
+          # Silicon Mac as it is to be an x86 box. Published amd64-only, that
+          # command fails outright with "no matching manifest", which is a poor
+          # first impression of a project whose whole pitch is that you do not
+          # need a checkout.
+          platforms: linux/amd64,linux/arm64
           push: true
           load: false
           tags: ${{ steps.meta.outputs.tags }}
@@ -179,6 +190,15 @@ jobs:
         run: |
           set -eux
           IMAGE=$(echo '${{ steps.meta.outputs.tags }}' | head -1)
+          # Both architectures are published; this runner exercises the one it
+          # can run. `docker buildx imagetools` is what checks the other is
+          # actually there, rather than assuming the platforms line worked.
+          # The plain output rather than a JSON template: `{{ json . }}` is
+          # pretty-printed, so a grep for '"architecture":"arm64"' matches
+          # nothing and fails a build that in fact published both.
+          docker buildx imagetools inspect "$IMAGE" | tee /tmp/manifest.txt
+          grep -q 'linux/amd64' /tmp/manifest.txt
+          grep -q 'linux/arm64' /tmp/manifest.txt
           docker run --rm "$IMAGE" --help
           docker run --rm "$IMAGE" init-db
           # It has to be able to lay out a deployment, or the whole point of
