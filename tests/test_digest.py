@@ -1,9 +1,10 @@
 """What's on tomorrow, as a message.
 
-The digest re-derives from the feeds rather than reading the calendar back,
-because the calendar holds renders and not data (docs/API.md). The tests that
-matter are the ones about what it must *not* do: change anything, or quietly
-under-report.
+The digest reads the receipt — `event_content`, written after each event reached
+the calendar — rather than re-parsing the feeds or unpicking the calendar's own
+rendered titles. So the tests that matter are about agreement and about what it
+must *not* do: report something nobody's phone has, quietly under-report, or
+change anything.
 """
 
 from __future__ import annotations
@@ -16,6 +17,8 @@ import pytest
 
 from calsync import db, digest, matrix, repo
 from calsync.secrets import SecretStore
+from calsync.sync import sync_source
+from calsync.targets import build
 
 FIXTURES = Path(__file__).parent / "fixtures"
 COMETS = (FIXTURES / "teamreach_comets_sample.ics").read_bytes()
@@ -41,73 +44,145 @@ def conn(tmp_path):
     return connection
 
 
-def feed(_assembled, **_kw):
-    return COMETS
+@pytest.fixture
+def synced(conn, tmp_path):
+    """A real sync, so there is a real calendar to agree with.
+
+    The digest no longer touches the network at all, so a fixture that stubbed a
+    fetcher would be testing nothing. What it reads is what a sync wrote.
+    """
+    source = repo.list_sources(conn)[0]
+    sync_source(conn, source, build("ics_file", directory=tmp_path / "out"),
+                now=NOW, raw=COMETS)
+    return conn
 
 
-def dead(_assembled, **_kw):
-    raise OSError("connection refused")
+def _calendar_titles(tmp_path):
+    return {
+        line.split(":", 1)[1].strip()
+        for path in (tmp_path / "out").rglob("*.ics")
+        for line in path.read_text().splitlines()
+        if line.startswith("SUMMARY:")
+    }
 
 
-def test_it_lists_what_starts_in_the_window(conn):
-    result = digest.collect(conn, now=NOW, fetcher=feed)
+def test_it_lists_what_starts_in_the_window(synced):
+    result = digest.collect(synced, now=NOW)
 
     assert not result.empty
     assert all(NOW <= e.starts_at <= NOW + timedelta(hours=24) for e in result.entries)
 
 
-def test_titles_come_from_the_real_renderer(conn):
-    """So the message agrees with the calendar rather than approximating it."""
-    result = digest.collect(conn, now=NOW, fetcher=feed)
+def test_the_message_says_what_the_calendar_says(synced, tmp_path):
+    """The reason for reading the receipt rather than re-parsing the feed.
+
+    Re-deriving reports what the *feed* holds, which is not always what was
+    written — a held or failed poll leaves the two disagreeing, and a message
+    announcing a game nobody's phone has is wrong in the direction that gets
+    somebody driving to a field.
+    """
+    result = digest.collect(synced, now=NOW)
+
+    assert {e.title for e in result.entries} <= _calendar_titles(tmp_path)
     assert any("Millie" in e.title for e in result.entries)
 
 
-def test_times_are_shown_in_the_venue_timezone(conn):
+def test_times_are_shown_in_the_venue_timezone(synced):
     """Same rule the event bodies follow.
 
     A parent reading a time rendered in their own timezone reads a time that is
     not the start time.
     """
-    result = digest.collect(conn, now=NOW, fetcher=feed)
-    entry = result.entries[0]
+    entry = digest.collect(synced, now=NOW).entries[0]
 
     assert entry.local.tzinfo is not None
     assert entry.local.strftime("%H:%M") in entry.line()
     assert entry.local.hour != entry.starts_at.hour, "not converted out of UTC"
 
 
-def test_a_dead_feed_is_named_rather_than_dropped(conn):
+def test_a_source_that_has_not_been_polled_is_named_rather_than_read(conn):
     """A digest that silently omits a team reads as "nothing on today".
 
-    That is the one wrong answer a schedule message can give.
+    That is the one wrong answer a schedule message can give — and the digest
+    can no longer go and look, so saying so is the whole of its defence. The
+    url_template here would fail loudly if anything tried to fetch it.
     """
-    result = digest.collect(conn, now=NOW, fetcher=dead)
+    result = digest.collect(conn, now=NOW)
 
-    assert result.unavailable == ["Comets"]
-    assert "Could not read: Comets" in result.text()
-    assert "may be incomplete" in result.text()
-
-
-def test_a_disabled_source_is_not_in_the_digest(conn):
-    """Paused or retired means it is not on the calendar either."""
-    repo.set_enabled(conn, "s", False)
-    assert digest.collect(conn, now=NOW, fetcher=feed).empty
+    assert result.empty
+    assert result.stale == ["Comets"]
+    assert "Not polled recently: Comets" in result.text()
+    assert "may be out of date" in result.text()
 
 
-def test_an_empty_day_says_so_plainly(conn):
+def test_a_failing_feed_is_named_even_though_older_events_are_still_readable(synced):
+    """The stored copy outlives the feed, so the message has to carry the doubt."""
+    repo.record_source_error(synced, "s", "connection refused")
+    synced.commit()
+
+    result = digest.collect(synced, now=NOW)
+
+    assert not result.empty, "a broken feed should not lose events already written"
+    assert result.stale == ["Comets"]
+
+
+def test_a_paused_source_is_still_on_the_calendar_and_so_is_in_the_digest(synced):
+    """Deliberately changed when the digest stopped re-parsing feeds.
+
+    Pausing stops polling; it does not take a single event off anybody's
+    calendar. The family still has a game on Saturday, so omitting it was the
+    same silent under-report the `stale` list exists to prevent. Retiring is the
+    operation that genuinely removes events, and `retire.py` cancels every one
+    before it disables anything — so those stay out, by being cancelled.
+    """
+    repo.set_enabled(synced, "s", False)
+
+    result = digest.collect(synced, now=NOW)
+
+    assert not result.empty
+    assert result.stale == [], "a deliberate pause is not a fault to report"
+
+
+def test_a_cancelled_event_is_not_on(synced):
+    """A tombstone is how a deletion propagates, not something that is on."""
+    before = len(digest.collect(synced, now=NOW).entries)
+    uid = next(
+        item.event.uid
+        for item in repo.stored_events(
+            synced, start=NOW.isoformat(),
+            end=(NOW + timedelta(hours=24)).isoformat(),
+        )
+    )
+    repo.mark_event_cancelled(synced, uid)
+    synced.commit()
+
+    assert len(digest.collect(synced, now=NOW).entries) == before - 1
+
+
+def test_an_empty_day_says_so_plainly(synced):
     quiet = NOW - timedelta(days=200)
-    assert "nothing on" in digest.collect(conn, now=quiet, fetcher=feed).text()
+    assert "nothing on" in digest.collect(synced, now=quiet).text()
 
 
-def test_collecting_writes_nothing(conn, tmp_path):
-    """A read that advanced sync state would make "what's on?" a risky command."""
-    before = (tmp_path / "calsync.db").read_bytes()
-    digest.collect(conn, now=NOW, fetcher=feed)
-    digest.collect(conn, now=NOW, fetcher=dead)
+def test_collecting_writes_nothing(synced, tmp_path):
+    """A read that advanced sync state would make "what's on?" a risky command.
 
-    assert repo.event_states(conn, "s") == {}
-    assert list(conn.execute("SELECT * FROM poll_runs")) == []
-    assert (tmp_path / "calsync.db").read_bytes() == before
+    Asserted against the rows rather than only the file: the schema runs in WAL
+    mode, so the main database file does not necessarily change on a write and a
+    bytes comparison alone can pass without proving anything.
+    """
+    def snapshot():
+        return {
+            table: list(map(tuple, synced.execute(f"SELECT * FROM {table}")))
+            for table in ("event_state", "event_content", "poll_runs", "sources")
+        }
+
+    before, before_bytes = snapshot(), (tmp_path / "calsync.db").read_bytes()
+    digest.collect(synced, now=NOW)
+    digest.collect(synced, now=NOW - timedelta(days=200))
+
+    assert snapshot() == before
+    assert (tmp_path / "calsync.db").read_bytes() == before_bytes
 
 
 # --- sending ----------------------------------------------------------------

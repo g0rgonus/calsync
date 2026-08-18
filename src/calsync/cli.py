@@ -228,9 +228,8 @@ def _maybe_digest(conn, secrets, sent_on):
             return sent_on
 
         now = _now(None)
-        result = digest.collect(conn, now=now, hours=settings.digest_window_hours,
-                                secrets=secrets)
-        if result.empty and not result.unavailable:
+        result = digest.collect(conn, now=now, hours=settings.digest_window_hours)
+        if result.empty and not result.stale:
             print("digest: nothing on, not sending", flush=True)
             return now_local.date()
 
@@ -332,12 +331,12 @@ def cmd_digest(args) -> int:
     secrets = _secrets(args)
     now = _now(args.now)
 
-    result = digest.collect(conn, now=now, hours=args.hours, secrets=secrets)
+    result = digest.collect(conn, now=now, hours=args.hours)
     print(result.text())
 
     if not args.send:
         return 0
-    if result.empty and not args.unavailable_is_news and not result.unavailable:
+    if result.empty and not args.empty_is_news and not result.stale:
         # A daily "nothing on" is how a room learns to ignore this.
         print("(nothing on — not sending)")
         return 0
@@ -485,7 +484,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_digest.add_argument("--hours", type=int, default=24)
     p_digest.add_argument("--now", help="ISO timestamp to treat as now")
     p_digest.add_argument("--secrets", help="path to a secrets JSON file")
-    p_digest.add_argument("--unavailable-is-news", action="store_true",
+    # Named for what it does. A stale source is *always* worth sending, flag or
+    # no flag — this only covers the genuinely quiet day.
+    p_digest.add_argument("--empty-is-news", action="store_true",
                           help="send even when there is nothing on")
     p_digest.set_defaults(fn=cmd_digest)
 

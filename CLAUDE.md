@@ -44,8 +44,10 @@ The Google target is selectable (`--target google`, or `target_kind`) but has no
 authenticated transport, so it refuses at selection time and says so. Its payload
 builder is complete and tested; only the OAuth exchange is missing.
 
-Nothing runs `calsync digest --send` on a schedule — the command exists and no
-cron or compose service fires it.
+The daily digest goes out from the poll loop itself (`cli.py:_maybe_digest`),
+gated on the `digest_send_at` setting, which is empty by default and means
+never. There is no cron entry and no second container — the poller already has
+the database and the secret store to hand.
 
 ## Setup and tests
 
@@ -54,7 +56,7 @@ so a fresh clone needs:
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/pytest                                    # 407 tests, ~1.9s
+.venv/bin/pytest                                    # 409 tests, ~2.0s
 .venv/bin/pytest tests/test_player360.py -k content_hash    # single test
 ```
 
@@ -187,13 +189,26 @@ Decisions that span several files and are easy to undo by accident:
   arrow is built and what the inbound half is blocked on (no API, no identity
   model, no blast-radius policy). Do not let the settings page or the docs imply
   proposals or approvals exist.
-- **A digest re-derives, it does not read back.** The calendar holds renders, so
-  anything that needs event *data* parses the feeds again rather than pulling a
-  title apart — the same refusal `docs/API.md` gives Hermes. `digest.collect`
-  writes nothing at all, and a test diffs the database file to keep it that way.
-  (`event_content` now holds what it would need, and reading from it would agree
-  with the calendar where a re-derive can lead it. That is a deliberate follow-on,
-  not an oversight.)
+- **A digest reads the receipt; it never reads the calendar back and never
+  re-parses a feed.** Pulling a rendered title apart is the refusal
+  `docs/API.md` gives Hermes and it applies here too. Re-parsing the feed is
+  subtler and was how this worked until `event_content` existed: it reports what
+  the *feed* says, which after a held or failed poll is not what is on anybody's
+  phone — a message announcing a game the calendar does not have is wrong in the
+  direction that gets somebody driving to a field. `digest.collect` takes no
+  fetcher and touches no network. It still **writes nothing at all**, and a test
+  snapshots the tables to keep it that way — comparing the database *file* alone
+  is not enough, because WAL means a write need not change it.
+- **The digest includes paused sources and excludes cancelled events.** Pausing
+  stops polling; it does not take an event off the calendar, so omitting it is
+  the same silent under-report the `stale` list exists to prevent. Retiring is
+  what removes events, and `retire.py` cancels every one before disabling
+  anything — so those stay out by being cancelled, which is the honest test.
+- **One definition of stale, in `repo.source_freshness`.** The digest and the
+  API both use it. A digest saying "all fine" while the API says "stale" would
+  be its own wrong answer, and two thresholds drift apart the moment one is
+  tuned. A disabled source is never stale: reporting a deliberate pause as a
+  fault trains people to ignore the signal.
 - **`event_content` is a receipt, not a cache, and it holds what the *source*
   said.** Written in the same call as the placement record, after the target
   accepted the write, so it cannot disagree with the calendar. Its columns are

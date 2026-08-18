@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from .models import Activity, Child, Event, Venue
 
@@ -502,19 +502,69 @@ def venue_ref(conn: sqlite3.Connection, *candidates: str | None) -> sqlite3.Row 
     return None
 
 
-def source_health(conn: sqlite3.Connection) -> dict[str, sqlite3.Row]:
+#: How many of a source's own poll intervals may pass before what it wrote is
+#: treated as possibly out of date. Two, so a single missed poll — a flaky
+#: minute of wifi — is not reported as a problem, but a feed that has genuinely
+#: stopped answering is.
+STALE_AFTER_INTERVALS = 2
+
+
+@dataclass(frozen=True)
+class Freshness:
+    """How much to trust what a source last wrote.
+
+    Anything serving stored content has to be able to say how old it is. Both
+    readers use this one definition rather than each inventing a threshold,
+    because a digest saying "all fine" while the API says "stale" would be its
+    own kind of wrong answer.
+    """
+
+    source_id: str
+    enabled: bool
+    last_success_at: datetime | None
+    last_error: str | None
+    stale: bool
+
+
+def source_freshness(
+    conn: sqlite3.Connection, *, now: datetime
+) -> dict[str, Freshness]:
     """Per-source freshness, keyed by id.
 
-    A read of stored content is only as good as the poll that produced it, so
-    anything serving that content has to be able to say when it last worked.
+    A disabled source is never "stale": it is not being polled on purpose, and
+    reporting a deliberate pause as a fault trains people to ignore the signal.
     """
-    return {
-        row["id"]: row
-        for row in conn.execute(
-            "SELECT id, enabled, poll_interval_s, last_success_at, last_error,"
-            " last_error_at FROM sources"
+    out: dict[str, Freshness] = {}
+    for row in conn.execute(
+        "SELECT id, enabled, poll_interval_s, last_success_at, last_error FROM sources"
+    ):
+        last = parse_db_stamp(row["last_success_at"])
+        enabled = bool(row["enabled"])
+        overdue = timedelta(
+            seconds=STALE_AFTER_INTERVALS * (row["poll_interval_s"] or 1200)
         )
-    }
+        out[row["id"]] = Freshness(
+            source_id=row["id"],
+            enabled=enabled,
+            last_success_at=last,
+            last_error=row["last_error"],
+            # `last_error` is only ever the *most recent* poll's error — a later
+            # success clears it — so its presence means the last attempt failed.
+            stale=enabled
+            and (last is None or row["last_error"] is not None or now - last > overdue),
+        )
+    return out
+
+
+def parse_db_stamp(value) -> datetime | None:
+    """``datetime('now')`` writes "YYYY-MM-DD HH:MM:SS", in UTC and unmarked."""
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 def record_poll_run(

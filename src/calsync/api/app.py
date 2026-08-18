@@ -288,35 +288,24 @@ def _sources_json(conn, items, *, now: datetime) -> list[dict]:
     `digest.py` names unreadable sources for the same reason: silently omitting
     one reads as "nothing on".
     """
-    health = repo.source_health(conn)
+    health = repo.source_freshness(conn, now=now)
     out = []
     for source_id in sorted({item.source_id for item in items}):
         row = health.get(source_id)
         if row is None:
             continue
-        last = _parse_db_stamp(row["last_success_at"])
-        overdue = timedelta(seconds=2 * (row["poll_interval_s"] or 1200))
         out.append(
             {
                 "id": source_id,
-                "enabled": bool(row["enabled"]),
-                "last_success_at": last.isoformat() if last else None,
-                "last_error": row["last_error"],
-                "stale": last is None or (now - last) > overdue,
+                "enabled": row.enabled,
+                "last_success_at": (
+                    row.last_success_at.isoformat() if row.last_success_at else None
+                ),
+                "last_error": row.last_error,
+                "stale": row.stale,
             }
         )
     return out
-
-
-def _parse_db_stamp(value) -> datetime | None:
-    """`datetime('now')` writes "YYYY-MM-DD HH:MM:SS", in UTC and unmarked."""
-    if not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(str(value))
-    except ValueError:
-        return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 # --- server -----------------------------------------------------------------

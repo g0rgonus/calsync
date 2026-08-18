@@ -1,20 +1,31 @@
 """What's on tomorrow, as a message.
 
-The obvious implementations are both wrong, and for reasons the project has
-already written down:
+Two implementations are wrong, for reasons the project has already written down:
 
 - **Read it back from the calendar.** `docs/API.md` refuses this for Hermes and
   the refusal applies here too — the calendar holds *renders*, not data. Pulling
   "Patrick ⚽️ vs Strikers" back apart into a child and an opponent is
   reverse-engineering a string we generated ourselves, and it re-breaks every
   time the naming convention changes.
-- **Read it out of `event_state`.** There is nothing to read. That table holds
-  hashes and placement, because the title is a render and is deliberately never
-  stored.
+- **Re-parse the feeds.** This is what the digest used to do, when `event_state`
+  held only hashes and placement and there was nothing else to read. It works,
+  and it has a flaw that is easy to miss: it reports what the *feed* says, which
+  is not always what is on the calendar. If the last poll was held by a guard,
+  or failed, or has not run yet, the feed can carry a game nobody's phone has —
+  and a message announcing it is confidently wrong in the one direction that
+  gets somebody driving to a field.
 
-So a digest re-derives from the feeds, exactly as a sync does, and renders the
-same titles through the same code — which is what makes it agree with the
-calendar rather than approximate it. It costs one fetch per source, once a day.
+So a digest reads the receipt: `event_content`, written after the target
+accepted each write, re-rendered now through the same `normalize/title.py` the
+calendar goes through. The message and the calendar are then one answer rather
+than two that usually agree. It also costs no network at all, where the old
+version fetched every feed once a day.
+
+What it inherits is the receipt's own staleness — content is only as current as
+the poll that wrote it. That is not hidden: a source whose last poll failed or
+which has gone quiet is **named in the message**, on the same principle the old
+version named a feed it could not read. Silently omitting a team reads as
+"nothing on today", which is the one wrong answer a schedule message can give.
 
 **It writes nothing.** Not to the database, not to the calendar, not a poll_runs
 row. A digest is a read, and a read that quietly advanced sync state would make
@@ -27,9 +38,8 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from . import repo, sources
-from .fetch import http_fetch, render_url
-from .render import render
+from . import repo
+from .normalize import title as title_norm
 from .settings import Settings
 
 
@@ -87,10 +97,12 @@ class Entry:
 @dataclass
 class Digest:
     entries: list[Entry]
-    #: Sources that could not be read. Named rather than dropped: a digest that
-    #: silently omits a team reads as "nothing on today", which is the one
-    #: wrong answer a schedule message can give.
-    unavailable: list[str]
+    #: Teams whose stored schedule may not be current — a feed that stopped
+    #: answering, or one that has not been polled yet. Named rather than
+    #: dropped, for the same reason a feed that could not be read used to be:
+    #: a digest that silently omits a team reads as "nothing on today", which
+    #: is the one wrong answer a schedule message can give.
+    stale: list[str]
     starts: datetime
     ends: datetime
 
@@ -100,66 +112,73 @@ class Digest:
 
     def text(self) -> str:
         day = self.starts.strftime("%A %-d %B")
-        if self.empty and not self.unavailable:
+        if self.empty and not self.stale:
             return f"**{day}** — nothing on."
 
         lines = [f"**{day}**"]
         lines += [f"- {e.line()}" for e in sorted(self.entries, key=lambda e: e.starts_at)]
-        if self.unavailable:
+        if self.stale:
             lines.append("")
             lines.append(
-                "Could not read: " + ", ".join(sorted(self.unavailable))
-                + " — so this may be incomplete."
+                "Not polled recently: " + ", ".join(sorted(self.stale))
+                + " — so this may be out of date."
             )
         return "\n".join(lines)
 
 
-def collect(
-    conn,
-    *,
-    now: datetime,
-    hours: int = 24,
-    secrets=None,
-    fetcher=http_fetch,
-) -> Digest:
-    """Everything starting in the next ``hours``, rendered.
+def collect(conn, *, now: datetime, hours: int = 24) -> Digest:
+    """Everything on the calendar that starts in the next ``hours``.
 
-    Disabled sources are skipped: paused or retired means the events are not on
-    the calendar, and a digest that disagrees with the calendar is worse than no
-    digest.
+    Read out of `event_content`, which was written after each event reached the
+    calendar — so this reports what is actually on somebody's phone, not what a
+    feed currently says. No network at all.
+
+    Cancelled events are left out: a tombstone is how a deletion propagates, not
+    something that is on. Disabled sources are **not** left out, which is a
+    change from re-parsing the feeds — pausing a source stops polling, it does
+    not take its events off the calendar, and a family that still has a game on
+    Saturday needs to be told about it. Retiring genuinely removes the events
+    (`retire.py` cancels every one before it disables anything), so those are
+    already excluded by being cancelled.
     """
     settings = Settings.load(conn)
     starts, ends = now, now + timedelta(hours=hours)
 
     entries: list[Entry] = []
-    unavailable: list[str] = []
+    activities: dict[str, tuple] = {}
 
-    for source in repo.list_sources(conn, enabled_only=True):
-        activity = repo.get_activity(conn, source.activity_id)
-        children = [repo.get_child(conn, activity.child_id)]
-        try:
-            if not source.url_template:
-                raise ValueError("no url_template")
-            raw = fetcher(render_url(source.url_template, secrets=secrets, now=now))
-            result = sources.parse(
-                source.kind, raw, activity, source_id=source.id, config=source.config
-            )
-        except Exception:  # noqa: BLE001 — one dead feed must not lose the digest
-            unavailable.append(activity.name)
+    for item in repo.stored_events(
+        conn, start=starts.isoformat(), end=ends.isoformat()
+    ):
+        if item.cancelled:
             continue
-
-        for event in result.events:
-            if not starts <= event.starts_at <= ends:
-                continue
-            rendered = render(event, activity, children, settings)
-            entries.append(
-                Entry(
-                    starts_at=event.starts_at,
-                    tz=event.tz,
-                    title=rendered.title,
-                    venue=(event.venue.name if event.venue else None),
-                    is_game=event.is_game,
-                )
+        if item.activity_id not in activities:
+            activity = repo.get_activity(conn, item.activity_id)
+            activities[item.activity_id] = (
+                activity,
+                [repo.get_child(conn, activity.child_id)],
             )
+        activity, children = activities[item.activity_id]
+        entries.append(
+            Entry(
+                starts_at=item.event.starts_at,
+                tz=item.event.tz,
+                # Composed now, through the same code the calendar went through,
+                # which is what makes the message agree with it rather than
+                # approximate it.
+                title=title_norm.render(item.event, activity, children, settings),
+                venue=(item.event.venue.name if item.event.venue else None),
+                is_game=item.event.is_game,
+            )
+        )
 
-    return Digest(entries=entries, unavailable=unavailable, starts=starts, ends=ends)
+    # Named by team rather than by source id: this is a message to a person, and
+    # "tr-comets-2026" is not what they call it.
+    freshness = repo.source_freshness(conn, now=now)
+    stale = [
+        repo.get_activity(conn, source.activity_id).name
+        for source in repo.list_sources(conn, enabled_only=True)
+        if freshness[source.id].stale
+    ]
+
+    return Digest(entries=entries, stale=stale, starts=starts, ends=ends)
