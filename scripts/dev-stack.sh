@@ -57,12 +57,13 @@ echo "  wrote config/radicale/{config,rights,users}"
 
 docker compose --profile demo up -d radicale web feeds
 
-# The one value the defaults cannot know. `radicale_url` ships as
-# http://localhost:5232, which is right when calsync runs on this machine and
-# wrong inside every container, where localhost is the container itself. Left
-# unset, the stack comes up looking healthy and never writes a single event —
-# the poller reports it per event, then backs off to hours, which is how it went
-# unnoticed for days.
+# Compose seeds this on a fresh database (CALSYNC_SETTING_RADICALE_URL), so on
+# a clean run the line below changes nothing. It stays because this script is
+# the one caller that deliberately reuses an existing volume: seeding is
+# first-run only, and a dev database created before that existed still says
+# http://localhost:5232 — right when calsync runs on this machine and wrong
+# inside every container, where localhost is the container itself. Setting it
+# explicitly makes the script correct from either starting point.
 docker compose run --rm --no-deps calsync set radicale_url http://radicale:5232 \
   >/dev/null
 

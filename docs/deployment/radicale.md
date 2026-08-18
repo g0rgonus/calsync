@@ -72,6 +72,32 @@ password.
 Passwords hashed with bcrypt in an htpasswd file — not plaintext, even on a
 private network.
 
+Neither has to be chosen. `calsync bootstrap`, run by the compose stack's
+one-shot `bootstrap` service, hashes whatever
+`CALSYNC_SECRET_RADICALE_PASSWORD` and `CALSYNC_SECRET_RADICALE_READER_PASSWORD`
+hold, and generates them when they are unset. The writer's is
+machine-to-machine and no human ever reads it; the reader's is printed once and
+kept as `radicale_reader_password`, since it is the one typed into a phone's
+CalDAV settings and into Radicale's own web UI.
+
+The users file is *derived* from those passwords on every start rather than
+written once — which is what stops the file and the stored credential from
+drifting apart, the likeliest way for a hand-run `htpasswd` to fail. Nothing is
+rotated: a password that already exists is the input. Accounts added by hand are
+left alone.
+
+Both are generated on first run rather than chosen (`calsync bootstrap`, run by
+the compose stack's one-shot `bootstrap` service). The writer's password is
+machine-to-machine and no human ever reads it; the reader's is printed once and
+kept in the secret store as `radicale_reader_password`, because it is the one
+typed into a phone's CalDAV settings. Generating them is also what stops the
+users file and the stored password from disagreeing, which was the likeliest
+way for a hand-run `htpasswd` to fail.
+
+Nothing rotates them afterwards: the users file existing is what tells bootstrap
+auth is already established. Rotating the reader's password is a deliberate act
+— delete the file and let it regenerate, then re-subscribe the devices.
+
 ```ini
 # rights — ILLUSTRATIVE, verify permission letters against current docs
 [calsync-write]

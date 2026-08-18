@@ -69,7 +69,7 @@ so a fresh clone needs:
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/pytest                                    # 488 tests, ~3.2s
+.venv/bin/pytest                                    # 514 tests, ~5s
 .venv/bin/pytest tests/test_player360.py -k content_hash    # single test
 ```
 
@@ -93,13 +93,55 @@ calsync --db drive.db check                    # can the configured calendar be 
 calsync --db drive.db set radicale_url http://radicale:5232
 ```
 
-**`check` before anything else on a new deployment.** `radicale_url` defaults to
-`http://localhost:5232`, which is right when calsync runs on the box and wrong
-inside every container, where localhost is the container itself. A stack left
-that way comes up healthy, writes nothing, reports it once per event, and then
-backs off to three-hourly — which is exactly how it went unnoticed for days.
-`scripts/dev-stack.sh` now sets it and runs `check`, and the console has the
-same button on `/settings`.
+**The first run asks the calendar question itself, and that is deliberate.**
+`radicale_url` defaults to `http://localhost:5232`, which is right when calsync
+runs on the box and wrong inside every container, where localhost is the
+container itself. A stack left that way comes up healthy, writes nothing,
+reports it once per event, and then backs off to three-hourly — which is
+exactly how it went unnoticed for days. Two things now close that off, and
+neither is a convenience:
+
+- **`CALSYNC_SETTING_<KEY>` seeds a setting when the database is created**
+  (`db.settings_from_env`), which is how compose declares `radicale_url` next
+  to the service name it refers to. Seed only, never override — a variable that
+  reasserted itself on every restart would silently undo an edit made in the
+  console, and the console is where a person looks. A mismatch is warned about
+  instead, because a variable that quietly does nothing is its own trap, and an
+  unknown key raises for the same reason.
+- **`calsync poll` verifies the target before it will start**
+  (`cli._startup_check`) and a database that has never synced refuses to run
+  without one. A deployment that *has* synced only gets a warning: the address
+  is known to have worked, so a failure there is far likelier to be Radicale
+  restarting than a mistake, and exiting would take the poller off the air for
+  something the sync loop already handles with backoff. `--out` and
+  `--target ics_file` skip it — there is no server in that path.
+
+`calsync check` still asks directly, and the console has the same button on
+`/settings`.
+
+**Credentials are generated, not requested — but a supplied one always wins.**
+`bootstrap.py` (the compose stack's one-shot `bootstrap` service, running as
+root before anything else starts) hashes whatever
+`CALSYNC_SECRET_RADICALE_PASSWORD` and `..._READER_PASSWORD` hold and generates
+them when unset. Three properties are the whole design, and each is a test:
+
+- **The users file is derived, never kept in parallel.** It is rebuilt whenever
+  it disagrees with the passwords, which is what stops the file and the stored
+  credential from drifting — the likeliest way a hand-run `htpasswd` failed.
+  Deleting it is recoverable; nothing is lost.
+- **Nothing is rotated.** A password that already exists is the input, not
+  something to replace: a fresh one locks out every subscribed phone. Accounts
+  somebody added by hand are preserved rather than dropped in the rewrite.
+- **A supplied password is never written to the secrets file.** Keeping a
+  credential out of a file on disk is a choice, and copying it into one is
+  undoing that choice on somebody's behalf. Generated ones *are* stored, or
+  they would exist nowhere.
+
+`.env.example` documents the surface. There is no third mechanism: everything
+goes through `CALSYNC_SETTING_<KEY>` or `CALSYNC_SECRET_<REF>`, so Matrix,
+Pushover and the API token are pre-configurable with no code specific to any of
+them. Feed tokens deliberately are not — they are pasted per team during
+onboarding, and nothing knows them before startup.
 
 The console is the same code paths as the CLI with a browser in front. It runs a
 live dry-run to render the gate, exactly as `calsync promote` does, rather than

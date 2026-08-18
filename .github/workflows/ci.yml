@@ -84,27 +84,50 @@ jobs:
     # file that a deployment actually reads.
     steps:
       - uses: actions/checkout@v4
-      - name: Install htpasswd
-        run: sudo apt-get update && sudo apt-get install -y apache2-utils
       - name: Follow the documented first run
         run: |
           set -eux
-          mkdir -p config/radicale secrets
-          cp -r deploy/radicale/. config/radicale/
-          htpasswd -bBc config/radicale/users calsync deploy-test-password
-          htpasswd -bB  config/radicale/users calreader deploy-test-password
-          printf '{"radicale_password":"deploy-test-password"}' > secrets/secrets.json
-          chmod 600 secrets/secrets.json
-          # The step the docs used to omit. A bind mount preserves host
-          # ownership on Linux, and the image runs as uid 10001.
-          sudo chown -R 10001:10001 secrets
-          docker compose up -d radicale
-      - name: Configure and check, reading the mounted secrets file
+          # All of it. No .env, no htpasswd, no secrets file, no chown — the
+          # zero-config path, which is the one most people take and the one
+          # where a missing step used to be invisible.
+          docker compose up -d
+      - name: Bootstrap generated a complete, private set
         run: |
           set -eux
-          docker compose run --rm calsync set radicale_url http://radicale:5232
+          docker compose logs bootstrap
+          # Two bcrypt accounts, and a secrets file no other account can read.
+          test "$(wc -l < config/radicale/users)" -eq 2
+          grep -q '^calsync:\$2b\$' config/radicale/users
+          grep -q '^calreader:\$2b\$' config/radicale/users
+          test "$(stat -c '%a' secrets/secrets.json)" = "600"
+          # The step that bit three times, and the reason this job is on Linux:
+          # a bind mount keeps host ownership, and the image runs as uid 10001.
+          test "$(stat -c '%u' secrets/secrets.json)" = "10001"
+      - name: The poller stays up, which means the check passed
+        run: |
+          set -eux
+          # Long enough for the seed, the startup check and a first pass. A
+          # poller that could not reach its calendar exits 1 here instead of
+          # running on writing nothing, which is the whole point of the check.
+          sleep 30
+          test "$(docker compose ps -q calsync | wc -l)" -eq 1
+          docker compose ps --status running calsync | grep -q calsync
+      - name: The generated password authenticates against the real server
+        run: |
+          set -eux
           # No CALSYNC_SECRET_* here on purpose: this has to resolve the
-          # password through the mount, which is what a deployment does.
+          # password through the mount, which is what a deployment does — and
+          # it proves the users file and the stored secret are the same pair.
+          docker compose run --rm calsync check
+          docker compose run --rm calsync status
+      - name: A second up changes nothing
+        run: |
+          set -eux
+          # The property that matters more than the first run: rotating a
+          # password here would lock out every device already subscribed.
+          before=$(sha256sum config/radicale/users)
+          docker compose up -d
+          test "$(sha256sum config/radicale/users)" = "$before"
           docker compose run --rm calsync check
       - name: Stack logs on failure
         if: failure()

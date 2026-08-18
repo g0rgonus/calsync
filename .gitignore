@@ -5,3 +5,6 @@ __pycache__/
 *.egg-info/
 config/
 secrets/
+# Real credentials. `.env.example` is the tracked one, and is the only file of
+# the pair that may ever hold a value.
+.env

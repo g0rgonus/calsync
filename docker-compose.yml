@@ -8,27 +8,114 @@
 #   R8     two principals, one read-write (calsync) and one read-only (devices)
 #   §5     no public ingress — bound to loopback, exposed via Tailscale
 #
-# Before first run:
-#   cp -r deploy/radicale/. ./config/radicale/     # then edit users/rights
-#   htpasswd -B -c config/radicale/users calsync
-#   htpasswd -B    config/radicale/users calreader
-#   mkdir -p secrets && printf '{"radicale_password":"..."}' > secrets/secrets.json
-#   chmod 600 secrets/secrets.json
-#   sudo chown -R 10001:10001 secrets              # Linux only; see the mount below
-#   docker compose up -d radicale
-#   docker compose run --rm calsync set radicale_url http://radicale:5232
-#   docker compose run --rm calsync check          # must pass before going further
+# First run:
+#
 #   docker compose up -d
 #
-# The last three lines are not optional. `radicale_url` defaults to
-# http://localhost:5232, which is correct when calsync runs on the host and
-# wrong inside a container, where localhost is the container itself — a stack
-# left that way comes up healthy, writes nothing, and reports it once per event
-# before backing off to hours. `check` is what turns that into a question you
-# get answered in a second. The CI job "deploy (linux first run)" follows these
-# exact steps on Linux.
+# That is all of it, and it used to be eight commands. Each one that went away
+# was a step somebody could get wrong silently, and two of them had:
+#
+#   `radicale_url` defaults to http://localhost:5232, which is right when
+#   calsync runs on the host and wrong inside a container, where localhost is
+#   the container itself. A stack left that way came up healthy, wrote nothing,
+#   and reported it once per event before backing off to hours. It is now
+#   seeded from CALSYNC_SETTING_RADICALE_URL below — next to the service name
+#   it refers to — and the poller verifies the calendar before it will start,
+#   so the same mistake is now a container that does not come up, with the
+#   reason on the first line of its log.
+#
+#   The credentials were four steps: `htpasswd -B` twice, a hand-written JSON
+#   file, `chmod 600`, and `sudo chown -R 10001:10001 secrets` on Linux, which
+#   bit three separate times. The `bootstrap` service does all of it once, as
+#   root, before anything else starts — which is the only moment that chown can
+#   happen without anybody remembering it.
+#
+# Seeding and generating are both first-run only, and deliberately: a variable
+# that reasserted itself every restart would silently undo an edit made in the
+# console, and a regenerated password would lock out every phone already
+# subscribed. Change a setting in the console, or with
+# `docker compose run --rm calsync set <key> <value>`.
+#
+# The CI job "deploy (linux first run)" follows this on Linux, which is where
+# the ownership problems live.
+
+# Everything a deployment can decide before it starts. Compose reads `.env`
+# from this directory, so these are set there — `.env.example` documents each
+# one. Unset is the normal case and means "not configured": an empty value is
+# ignored rather than seeded, so it never replaces a working default.
+#
+# Two prefixes, both of which already existed for their own reasons, which is
+# why there is no third mechanism here:
+#
+#   CALSYNC_SETTING_<KEY>   seeds a row in the settings table on first run.
+#                           Any key in db.DEFAULT_SETTINGS works, whether or
+#                           not it is listed below; an unknown one is refused
+#                           rather than ignored.
+#   CALSYNC_SECRET_<REF>    resolves a credential. `SecretStore` has always
+#                           read the environment before the file, so anything
+#                           set here needs no file at all.
+#
+# Feed tokens are deliberately absent. They arrive by pasting a team's URL
+# during onboarding, one per team, and there is no point before startup at
+# which anybody knows them.
+x-calsync-env: &calsync-env
+  CALSYNC_DB: /data/calsync.db
+  CALSYNC_SECRETS: /run/secrets/calsync/secrets.json
+
+  # The one value the defaults cannot know, and the reason this mechanism
+  # exists: localhost is the container itself, not the calendar server.
+  CALSYNC_SETTING_RADICALE_URL: ${CALSYNC_SETTING_RADICALE_URL:-http://radicale:5232}
+
+  # Calendar credentials. Set either to choose it yourself; leave both unset
+  # and `bootstrap` generates them, hashes them into Radicale's users file and
+  # stores them. A value set here is never copied into the secrets file, and
+  # changing it re-derives the users file on the next start.
+  CALSYNC_SECRET_RADICALE_PASSWORD: ${CALSYNC_SECRET_RADICALE_PASSWORD:-}
+  CALSYNC_SECRET_RADICALE_READER_PASSWORD: ${CALSYNC_SECRET_RADICALE_READER_PASSWORD:-}
+
+  # Matrix, for the daily digest and the review queue's notifications. All
+  # four or none — an empty homeserver is what "off" looks like.
+  CALSYNC_SETTING_MATRIX_HOMESERVER: ${CALSYNC_SETTING_MATRIX_HOMESERVER:-}
+  CALSYNC_SETTING_MATRIX_USER_ID: ${CALSYNC_SETTING_MATRIX_USER_ID:-}
+  CALSYNC_SETTING_MATRIX_ROOM_ID: ${CALSYNC_SETTING_MATRIX_ROOM_ID:-}
+  CALSYNC_SECRET_MATRIX_ACCESS_TOKEN: ${CALSYNC_SECRET_MATRIX_ACCESS_TOKEN:-}
+
+  # Pushover, for the few things that need a person rather than merely
+  # informing one.
+  CALSYNC_SECRET_PUSHOVER_TOKEN: ${CALSYNC_SECRET_PUSHOVER_TOKEN:-}
+  CALSYNC_SECRET_PUSHOVER_USER: ${CALSYNC_SECRET_PUSHOVER_USER:-}
+
+  # The read API's bearer token. Only the `api` profile reads it, and that
+  # service refuses to start without one.
+  CALSYNC_SECRET_API_TOKEN: ${CALSYNC_SECRET_API_TOKEN:-}
+
+  # When the digest goes out, local time, HH:MM. Empty means never.
+  CALSYNC_SETTING_DIGEST_SEND_AT: ${CALSYNC_SETTING_DIGEST_SEND_AT:-}
+  CALSYNC_SETTING_DEFAULT_TZ: ${CALSYNC_SETTING_DEFAULT_TZ:-}
 
 services:
+  # Everything a first run needs and nobody should have to type: Radicale's
+  # config and rights file, a bcrypt users file, and the passwords behind it in
+  # calsync's secret store. Runs to completion before anything else starts.
+  #
+  # As root for exactly two reasons — writing into a host-owned bind mount, and
+  # handing the finished secrets file to uid 10001, which a Linux bind mount
+  # would otherwise leave owned by root and unreadable by the poller. It drops
+  # nothing else: the container exits as soon as the files exist.
+  #
+  # Idempotent, and it says so on every subsequent `up`. The users file
+  # existing is what tells it auth is already established.
+  bootstrap:
+    image: ghcr.io/g0rgonus/calsync:${CALSYNC_TAG:-latest}
+    build: .
+    user: "0:0"
+    command: ["bootstrap", "/deploy"]
+    environment: *calsync-env
+    restart: "no"
+    volumes:
+      - ./config:/deploy/config
+      - ./secrets:/deploy/secrets
+
   radicale:
     image: tomsquest/docker-radicale:latest
     restart: unless-stopped
@@ -37,11 +124,18 @@ services:
     # Reach it over Tailscale (`tailscale serve`) rather than by changing this.
     ports:
       - "127.0.0.1:5232:5232"
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
     volumes:
       - radicale-data:/data
-      - ./config/radicale/config:/config/config:ro
-      - ./config/radicale/rights:/config/rights:ro
-      - ./config/radicale/users:/config/users:ro
+      # The directory, not the three files inside it. A bind mount whose source
+      # does not exist yet is created by Docker as a *directory*, so mounting
+      # `config/users` before bootstrap has written it would hand Radicale a
+      # directory where it expects a file — and the config already names every
+      # path under /config (`htpasswd_filename`, the rights `file`, and the
+      # `--config` argument in the image's own command).
+      - ./config/radicale:/config:ro
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:5232/", "-o", "/dev/null"]
       interval: 30s
@@ -58,6 +152,8 @@ services:
     build: .
     restart: unless-stopped
     depends_on:
+      bootstrap:
+        condition: service_completed_successfully
       radicale:
         condition: service_healthy
     volumes:
@@ -78,9 +174,7 @@ services:
       - ./secrets:/run/secrets/calsync:ro
       # Config lives in the database; this is only for `calsync import`.
       - ./config/calsync:/config:ro
-    environment:
-      CALSYNC_DB: /data/calsync.db
-      CALSYNC_SECRETS: /run/secrets/calsync/secrets.json
+    environment: *calsync-env
     # Onboarding and inspection run through the same image:
     #   docker compose run --rm calsync import /config/calsync.yaml
     #   docker compose run --rm calsync stage tr-otters
@@ -97,6 +191,9 @@ services:
     build: .
     command: ["web", "--host", "0.0.0.0", "--port", "8730"]
     restart: unless-stopped
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
     # 0.0.0.0 *inside* the container is what lets the published port reach it;
     # the publish itself is pinned to loopback, so nothing is exposed off this
     # box. Put a VPN or an authenticating proxy in front to reach it from a
@@ -109,9 +206,7 @@ services:
       # a pasted feed URL and puts it here, so that it never reaches the
       # database. Keep the directory 700 and the file 600 on the host.
       - ./secrets:/run/secrets/calsync
-    environment:
-      CALSYNC_DB: /data/calsync.db
-      CALSYNC_SECRETS: /run/secrets/calsync/secrets.json
+    environment: *calsync-env
     healthcheck:
       test: ["CMD", "python", "-c",
              "import urllib.request;urllib.request.urlopen('http://localhost:8730/')"]
@@ -141,6 +236,9 @@ services:
     build: .
     command: ["api", "--host", "0.0.0.0", "--port", "8731"]
     restart: unless-stopped
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
     # Same reasoning as `web`: 0.0.0.0 inside the container is what lets the
     # published port reach it, and the publish is pinned to loopback. The token
     # is a real control, unlike the console's absent login, but it is one
@@ -155,9 +253,7 @@ services:
       # Read-only, unlike `web`: this only ever reads the bearer token. Nothing
       # in the API path stores a credential.
       - ./secrets:/run/secrets/calsync:ro
-    environment:
-      CALSYNC_DB: /data/calsync.db
-      CALSYNC_SECRETS: /run/secrets/calsync/secrets.json
+    environment: *calsync-env
     healthcheck:
       # 401 is the healthy answer: it proves the app is serving *and* that the
       # auth hook is in front of it. `http.client` is used rather than urllib

@@ -1,6 +1,9 @@
 # calsync — Family Calendar Sync Platform
 
-Status: planning. Nothing built yet.
+Status: **historical**. This is the plan as written before any code existed,
+kept as written because the gap analysis is why the code looks the way it
+does. Where it disagrees with what is built, the README's status section is
+the current account.
 
 ## 1. The plan as stated
 

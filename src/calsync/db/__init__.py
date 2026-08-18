@@ -6,7 +6,9 @@ would be more dependency than the whole schema is worth.
 
 from __future__ import annotations
 
+import os
 import sqlite3
+import sys
 from pathlib import Path
 
 SCHEMA_VERSION = 7
@@ -162,6 +164,45 @@ def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
     return {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
 
 
+#: Prefix for seeding a setting from the environment on a database's first run.
+#: `CALSYNC_SETTING_RADICALE_URL=http://radicale:5232` is the one that matters:
+#: the container-correct address cannot be a default (it is wrong on a laptop)
+#: and could not previously be expressed anywhere but a command somebody had to
+#: remember to run, which is how a stack came up healthy and wrote nothing.
+#: Declaring it next to the service name it refers to is where it belongs.
+SETTING_ENV_PREFIX = "CALSYNC_SETTING_"
+
+
+def settings_from_env(env: dict[str, str] | None = None) -> dict[str, str]:
+    """Settings named by `CALSYNC_SETTING_*`, validated against the defaults.
+
+    An unknown key raises rather than being ignored. A typo'd environment
+    variable that quietly does nothing is the same class of failure this whole
+    mechanism exists to remove — and in a container it would leave the operator
+    reading a compose file that says the right thing while the database says
+    something else.
+    """
+    env = os.environ if env is None else env
+    seeded: dict[str, str] = {}
+    for name, value in env.items():
+        if not name.startswith(SETTING_ENV_PREFIX):
+            continue
+        # Empty is unset. Compose passes every variable it declares, whether
+        # the operator filled it in or not, so `CALSYNC_SETTING_DEFAULT_TZ=""`
+        # is what "I did not configure this" looks like from in here — and
+        # seeding it would replace a working default with nothing.
+        if not value:
+            continue
+        key = name[len(SETTING_ENV_PREFIX):].lower()
+        if key not in DEFAULT_SETTINGS:
+            raise ValueError(
+                f"{name} names no setting. Known keys: "
+                f"{', '.join(sorted(DEFAULT_SETTINGS))}"
+            )
+        seeded[key] = value
+    return seeded
+
+
 def migrate(conn: sqlite3.Connection) -> None:
     """Create the schema and seed defaults. Safe to run repeatedly."""
     conn.executescript(SCHEMA_PATH.read_text())
@@ -176,9 +217,27 @@ def migrate(conn: sqlite3.Connection) -> None:
     )
     # INSERT OR IGNORE so an operator's edited value is never clobbered by a
     # later migration.
+    # Seeds, not overrides: environment values are folded into the defaults and
+    # go in under the same INSERT OR IGNORE, so they apply to a fresh database
+    # and can never fight a value edited later in the console. That asymmetry
+    # is deliberate — a variable that reasserted itself on every restart would
+    # make the settings page lie, and the settings page is where a person
+    # looks. The cost is that editing the variable afterwards does nothing
+    # visible, so say so rather than leaving it to be discovered.
+    env_seeds = settings_from_env()
+    stored = {r["key"]: r["value"] for r in conn.execute("SELECT key, value FROM settings")}
+    for key, value in env_seeds.items():
+        if key in stored and stored[key] != value:
+            print(
+                f"warning: {SETTING_ENV_PREFIX}{key.upper()} says {value!r} but "
+                f"{key} is already set to {stored[key]!r}; the stored value "
+                f"wins. Change it in the console, or with `calsync set {key} "
+                f"{value}`.",
+                file=sys.stderr, flush=True,
+            )
     conn.executemany(
         "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
-        list(DEFAULT_SETTINGS.items()),
+        list({**DEFAULT_SETTINGS, **env_seeds}.items()),
     )
     # DELETE then INSERT, not INSERT OR REPLACE. `version` is itself the primary
     # key, so "replace" collides with nothing and simply appends — the table was
