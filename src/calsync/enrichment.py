@@ -354,6 +354,19 @@ def dispatch(
     already = (row["review_dispatched"] if row else None) or ""
 
     open_tasks = tasks(source.id, report)
+
+    # Cleanup first, and unconditionally. Anything we are no longer asking has
+    # been answered by hand or the feed changed, and a task nobody will ever ask
+    # again must not sit in the queue implying work.
+    #
+    # This used to live below, after three early returns, so it ran only when
+    # there was a *new* question set and Matrix was configured — which meant
+    # answering the **last** open question left its task `open` for ever. The
+    # unit test missed it because the fixture still had venue questions
+    # outstanding, so the set changed rather than emptied.
+    repo.resolve_stale_tasks(conn, source.id, tuple(t.id for t in open_tasks))
+    conn.commit()
+
     if not open_tasks:
         if already:
             conn.execute(
@@ -384,11 +397,6 @@ def dispatch(
             type=task.type, context=task.context, candidates=task.candidates,
             dispatched_at=stamp,
         )
-    # Anything we are no longer asking has been answered by hand, or the feed
-    # changed. Closed so the queue does not imply a question nobody will ask.
-    repo.resolve_stale_tasks(conn, source.id, tuple(t.id for t in open_tasks))
-    conn.commit()
-
     activity = repo.get_activity(conn, source.activity_id)
     try:
         sender(

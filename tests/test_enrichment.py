@@ -434,6 +434,35 @@ def test_answering_by_hand_closes_the_task(conn, target):
     assert repo.get_task(conn, identity[0].id).state == repo.RESOLVED
 
 
+def test_answering_the_last_question_closes_its_task(conn, target):
+    """The case the test above does not reach.
+
+    That one leaves venue questions outstanding, so the set *changes* and the
+    cleanup runs on its way to posting. When the last question is answered the
+    set becomes empty, and the cleanup used to sit behind the early return for
+    exactly that — so the task stayed `open` for ever. Found on a real stack,
+    not here.
+    """
+    _configure_matrix(conn)
+    room = Room()
+    # A feed whose only outstanding question is the fixture identity: no
+    # unresolved venues left to keep the set non-empty.
+    repo.upsert_venue(conn, name="Riverview")
+    for alias in ("Riverview", "Riverview Farm Park",
+                  "Riverview Farm Park Soccer Fields", "Stoney Run Athletic Complex"):
+        repo.add_venue_alias(conn, 1, alias)
+    _dispatch(conn, target, room)
+    before = repo.list_tasks(conn)
+    assert before and all(t.state == repo.OPEN for t in before)
+
+    repo.add_activity_alias(conn, "a", "Hawks")
+    _dispatch(conn, target, room)
+
+    assert all(t.state == repo.RESOLVED for t in repo.list_tasks(conn)), (
+        "a question nobody will ask again is still sitting in the queue"
+    )
+
+
 def test_redispatching_never_discards_an_answer_already_given(conn, target):
     """Task ids are derived, so the same question recurs every poll.
 
