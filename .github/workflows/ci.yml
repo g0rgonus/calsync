@@ -139,6 +139,11 @@ jobs:
     # All three, because an image that builds, cannot sync, or cannot be
     # deployed by following its own instructions is not worth publishing.
     needs: [tests, acceptance, deploy]
+    # A pull_request run builds the same commit as the push run that triggered
+    # it, from a merge ref whose `ref_name` is "6/merge" — so publishing from
+    # both means every PR pushes a second, identically-contented image under a
+    # channel name nobody asked for. The push run is the one that publishes.
+    if: github.event_name != 'pull_request'
     permissions:
       contents: read
       packages: write
@@ -160,12 +165,22 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository }}
-          # `latest` follows whatever branch was last pushed, deliberately:
-          # this repo keeps `main` as the story of v1 and does its work on a
-          # branch, so pinning `latest` to the default branch would publish
-          # something nobody runs. `sha-` tags are there to pin against.
+          # Three channels, because one moving tag cannot mean "what I run",
+          # "what is merged" and "what I would give a stranger" at once — and
+          # while this repo was private it meant whichever branch was pushed
+          # last, which is the worst of the three to hand somebody.
+          #
+          #   release  the newest tagged version. What the README points at.
+          #   latest   main. Merged, tested, not yet declared a version.
+          #   dev      a feature branch. Whatever is being worked on.
+          #   sha-     every build, for pinning and for bisecting.
+          #
+          # `release` rather than reusing `latest` for it: a homelab that
+          # pulled `latest` yesterday would silently change channel under it.
           tags: |
-            type=raw,value=latest
+            type=raw,value=release,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=dev,enable=${{ github.ref_type == 'branch' && github.ref_name != 'main' }}
             type=sha,format=short
             type=semver,pattern=v{{version}}
             type=semver,pattern=v{{major}}.{{minor}}

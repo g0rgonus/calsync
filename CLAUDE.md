@@ -69,7 +69,7 @@ so a fresh clone needs:
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/pytest                                    # 514 tests, ~5s
+.venv/bin/pytest                                    # 515 tests, ~5s
 .venv/bin/pytest tests/test_player360.py -k content_hash    # single test
 ```
 
@@ -166,7 +166,10 @@ API is opt-in — `docker compose --profile api up -d api` — because its only
 intended consumer does not exist yet and an authenticated listener nothing talks
 to is surface without a purpose.
 
-The image is published to `ghcr.io/g0rgonus/calsync` by CI and carries its own
+The image is published to `ghcr.io/g0rgonus/calsync` by CI, for amd64 and
+arm64, on three moving tags — `release` (newest version tag), `latest` (main)
+and `dev` (a feature branch) — plus `sha-` on every build. Compose defaults to
+`release`, so a deployment does not follow work in progress. It carries its own
 deployment assets: `docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/out"
 <image> init-deploy /out` writes the compose file and Radicale config, so a
 homelab never needs a checkout.

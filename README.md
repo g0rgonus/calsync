@@ -20,7 +20,7 @@ The sync loop runs end to end and has been in daily use against live feeds.
 and its safety guards, rendering, CalDAV and `.ics` directory targets, a
 continuous poller with per-source backoff, the onboarding console, a read-only
 HTTP API, a Matrix daily digest, dormancy and retirement handling, and a Docker
-stack with published images. 514 tests, plus CI jobs that stand up a real
+stack with published images. 515 tests, plus CI jobs that stand up a real
 Radicale and follow the documented first-run steps on Linux.
 
 **Specified but not built:** everything in [docs/API.md](docs/API.md) past the
@@ -73,7 +73,7 @@ the delete-then-create this project treats as the dangerous operation.
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/pytest                                # 514 tests, ~5s
+.venv/bin/pytest                                # 515 tests, ~5s
 ```
 
 ```bash
@@ -114,14 +114,22 @@ week.
 ## Docker
 
 Published to `ghcr.io/g0rgonus/calsync` for `linux/amd64` and `linux/arm64`, so
-a Raspberry Pi or an Apple Silicon Mac is as good a host as an x86 box. To stand
-up a stack **without cloning this repo** — the image carries its own compose
-file and server config:
+a Raspberry Pi or an Apple Silicon Mac is as good a host as an x86 box.
+
+Three moving tags, because one cannot mean "what I run", "what is merged" and
+"what I would hand a stranger" at the same time: **`release`** is the newest
+tagged version and what a deployment should track, **`latest`** is `main`, and
+**`dev`** is whatever branch is being worked on. `v0.2` pins a minor line,
+`v0.2.0` pins outright, and every build gets a `sha-` tag for bisecting.
+Compose defaults to `release`; `CALSYNC_TAG` in `.env` changes it.
+
+To stand up a stack **without cloning this repo** — the image carries its own
+compose file and server config:
 
 ```bash
 mkdir calsync && cd calsync
 docker run --rm --user "$(id -u):$(id -g)" \
-  -v "$PWD:/out" ghcr.io/g0rgonus/calsync:latest init-deploy /out
+  -v "$PWD:/out" ghcr.io/g0rgonus/calsync:release init-deploy /out
 ```
 
 That writes `docker-compose.yml`, `.env.example` and
