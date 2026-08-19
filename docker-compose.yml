@@ -112,7 +112,7 @@ services:
   # Idempotent, and it says so on every subsequent `up`. The users file
   # existing is what tells it auth is already established.
   bootstrap:
-    image: ghcr.io/g0rgonus/calsync:${CALSYNC_TAG:-latest}
+    image: ghcr.io/g0rgonus/calsync:${CALSYNC_TAG:-release}
     build: .
     user: "0:0"
     command: ["bootstrap", "/deploy"]
@@ -154,7 +154,7 @@ services:
     # build context; a checkout runs `docker compose build`. Compose only builds
     # when the image is absent locally, so one file serves both and there is no
     # second compose file to drift.
-    image: ghcr.io/g0rgonus/calsync:${CALSYNC_TAG:-latest}
+    image: ghcr.io/g0rgonus/calsync:${CALSYNC_TAG:-release}
     build: .
     restart: unless-stopped
     depends_on:
@@ -193,7 +193,7 @@ services:
   # writers on one file and `db.connect` sets the busy timeout that makes that
   # safe.
   web:
-    image: ghcr.io/g0rgonus/calsync:${CALSYNC_TAG:-latest}
+    image: ghcr.io/g0rgonus/calsync:${CALSYNC_TAG:-release}
     build: .
     command: ["web", "--host", "0.0.0.0", "--port", "8730"]
     restart: unless-stopped
@@ -238,7 +238,7 @@ services:
   # would be one nobody noticed was unusable.
   api:
     profiles: ["api"]
-    image: ghcr.io/g0rgonus/calsync:${CALSYNC_TAG:-latest}
+    image: ghcr.io/g0rgonus/calsync:${CALSYNC_TAG:-release}
     build: .
     command: ["api", "--host", "0.0.0.0", "--port", "8731"]
     restart: unless-stopped
