@@ -103,8 +103,9 @@ Use the file-backed storage (`multifilesystem`) rather than anything
 database-backed. One `.ics` per event in a directory tree is greppable,
 trivially backed up, and satisfies R4/R5 by construction.
 
-Back up the storage directory: `scripts/backup.sh` does, and it is the only
-copy of any season whose feed has gone away.
+Back up the `radicale-data` volume. It is the only copy of any season whose feed
+has gone away — `event_content` is pruned to the sync window, and a team feed
+drops a season within months of it ending.
 
 ---
 

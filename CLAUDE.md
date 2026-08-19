@@ -224,10 +224,10 @@ Linux, or CI will find it for you. Compose declares both `image:` and `build:` �
 image is absent locally, so one file serves a pull-based deployment and a
 checkout without a second compose file to drift.
 
-Backups: `scripts/backup.sh [DEST]`, daily from cron on the host. It takes a
-live-safe SQLite snapshot, tars Radicale's data and the credentials, verifies
-what it produced and exits non-zero if anything is missing. Each backup carries
-its own `RESTORE.md`.
+Backups are the host's job, not this repo's. The state is two Docker volumes —
+`radicale-data` and `calsync-data` — plus `.env` and `config/`. A guest-level
+snapshot captures all four; SQLite in WAL mode survives a crash-consistent one
+by replaying the WAL, so `fsfreeze` or a stopped guest is the property to check.
 
 `--from-file` replays a saved payload without a credential (needs `--source`),
 and `--now <iso>` pins the clock for reproducible runs. Exit codes are
@@ -505,10 +505,9 @@ family calendar, so treat them as contracts, not defaults:
 - **Radicale holds the only copy of every past season, not the database.**
   `event_content` is pruned to `sync_window_back_days`, and a team feed drops a
   season within months of it ending — so a game played last spring exists in
-  exactly one place, the calendar server. `scripts/backup.sh` backs that up
-  first and says why. `retire.py` goes out of its way not to delete those
-  events; a backup that skipped the `radicale-data` volume would delete them
-  anyway, just more slowly.
+  exactly one place, the calendar server. `retire.py` goes out of its way not to
+  delete those events; a backup that skipped the `radicale-data` volume would
+  delete them anyway, just more slowly.
 - **Deleting a venue is safe; deleting a child is not.** No `event_state` row
   references a venue — events carry theirs by value, resolved at sync time — so
   a deleted venue costs a pin and reappears in diagnostics. Do not generalise
