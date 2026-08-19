@@ -47,7 +47,10 @@ print(f"  generated {len(minted)} secret(s) into .env" if minted
       else "  .env already holds all three secrets")
 INNER
 
-docker compose --profile demo up -d radicale web proxy api feeds
+# --wait, because the next command talks to Radicale. `up -d` returns once
+# containers are started, not once they serve, and nothing here depends_on the
+# calendar — the poller does, but this script deliberately does not run it.
+docker compose --profile demo up -d --wait radicale web proxy api feeds
 
 # Compose seeds this on a fresh database (CALSYNC_SETTING_RADICALE_URL), so on a
 # clean run the line below changes nothing. It stays because this script is the
