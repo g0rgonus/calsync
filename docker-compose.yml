@@ -1,15 +1,23 @@
+# calsync + Radicale.  First run:
+#
+#   docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/out" \
+#     ghcr.io/g0rgonus/calsync:release init-deploy /out
+#   docker compose up -d
+#
+# init-deploy writes config/ and a .env holding the three secrets this will not
+# start without. What each service and variable is: docs/deployment/compose.md.
+
 x-env: &env
   env_file:
     - path: .env
       required: false
   environment:
     CALSYNC_DB: /data/calsync.db
-    CALSYNC_SECRETS: /run/secrets/calsync/secrets.json
+    # Beside the database, in the same volume: the only thing left in it is
+    # feed tokens, which arrive during onboarding and are the console's own
+    # state. No host directory, so no ownership to get wrong.
+    CALSYNC_SECRETS: /data/secrets.json
     CALSYNC_SETTING_RADICALE_URL: ${CALSYNC_SETTING_RADICALE_URL:-http://radicale:5232}
-    # Declared here rather than left to env_file because it is set from the
-    # shell, not from .env — `scripts/dev-stack.sh` uses 0 so the host keeps
-    # the secrets file it also reads. env_file reads .env and nothing else.
-    CALSYNC_BOOTSTRAP_OWNER_UID: ${CALSYNC_BOOTSTRAP_OWNER_UID:-10001}
 
 # `image` and `build` both. Compose pulls the published image when one exists,
 # so a checkout testing its own changes needs `docker compose up -d --build`.
@@ -25,24 +33,30 @@ x-health: &health
   retries: 3
   start_period: 5s
 
-x-needs-bootstrap: &needs-bootstrap
-  bootstrap:
-    condition: service_completed_successfully
-
 services:
-  bootstrap:
-    <<: *calsync
-    user: "0:0"
-    command: ["bootstrap", "/deploy"]
-    restart: "no"
-    volumes:
-      - ./config:/deploy/config
-      - ./secrets:/deploy/secrets
-
   radicale:
     image: tomsquest/docker-radicale:latest
     restart: unless-stopped
-    depends_on: *needs-bootstrap
+    # As the account the image ships, rather than root: its entrypoint only
+    # drops privileges when told to run radicale directly, and the command below
+    # is a shell.
+    user: "2999:2999"
+    environment:
+      CALSYNC_SECRET_RADICALE_PASSWORD: ${CALSYNC_SECRET_RADICALE_PASSWORD:-}
+      CALSYNC_SECRET_RADICALE_READER_PASSWORD: ${CALSYNC_SECRET_RADICALE_READER_PASSWORD:-}
+    # The users file is derived on every start and lives only in the container.
+    # Two accounts: calsync writes, calreader is read-only and is what goes on a
+    # family's devices.
+    command:
+      - sh
+      - -c
+      - |
+        : "$${CALSYNC_SECRET_RADICALE_PASSWORD:?is empty — set it in .env}"
+        : "$${CALSYNC_SECRET_RADICALE_READER_PASSWORD:?is empty — set it in .env}"
+        umask 077
+        printf 'calsync:%s\ncalreader:%s\n' \
+          "$$CALSYNC_SECRET_RADICALE_PASSWORD" "$$CALSYNC_SECRET_RADICALE_READER_PASSWORD" > /tmp/users
+        exec /venv/bin/radicale --config /config/config
     volumes:
       - radicale-data:/data
       - ./config/radicale:/config:ro
@@ -55,21 +69,17 @@ services:
   calsync:
     <<: *calsync
     depends_on:
-      <<: *needs-bootstrap
       radicale:
         condition: service_healthy
     volumes:
       - calsync-data:/data
-      - ./secrets:/run/secrets/calsync:ro
       - ./config/calsync:/config:ro
 
   web:
     <<: *calsync
     command: ["web", "--host", "0.0.0.0", "--port", "8730"]
-    depends_on: *needs-bootstrap
     volumes:
       - calsync-data:/data
-      - ./secrets:/run/secrets/calsync
     healthcheck:
       <<: *health
       test: ["CMD", "python", "-c",
@@ -81,10 +91,8 @@ services:
     # CALSYNC_API_REPLICAS=0 in .env turns it off without editing this file.
     deploy:
       replicas: ${CALSYNC_API_REPLICAS:-1}
-    depends_on: *needs-bootstrap
     volumes:
       - calsync-data:/data
-      - ./secrets:/run/secrets/calsync:ro
     healthcheck:
       <<: *health
       test: ["CMD", "python", "-c",
@@ -93,7 +101,6 @@ services:
   proxy:
     image: caddy:2-alpine
     restart: unless-stopped
-    depends_on: *needs-bootstrap
     ports:
       - 8730:80
     volumes:

@@ -5,8 +5,14 @@ hosts = 0.0.0.0:5232
 
 [auth]
 type = htpasswd
-htpasswd_filename = /config/users
-htpasswd_encryption = bcrypt
+# Written by the container's own command from CALSYNC_SECRET_RADICALE_PASSWORD
+# and _READER_PASSWORD, on every start. It lives in /tmp, never on the host, and
+# is 0600 — so it cannot drift from the values in .env and there is no second
+# copy of a credential to keep in step. Plain because the file is derived from
+# plaintext in .env and never leaves the container; hashing it would protect
+# against nothing the environment does not already expose.
+htpasswd_filename = /tmp/users
+htpasswd_encryption = plain
 
 [rights]
 type = from_file

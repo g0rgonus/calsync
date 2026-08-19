@@ -123,20 +123,26 @@ tagged version and what a deployment should track, **`latest`** is `main`, and
 `v0.2.0` pins outright, and every build gets a `sha-` tag for bisecting.
 Compose defaults to `release`; `CALSYNC_TAG` in `.env` changes it.
 
-To stand up a stack **without cloning this repo** — the image carries its own
-compose file and server config:
+The whole first run, in a directory with nothing in it:
 
 ```bash
 mkdir calsync && cd calsync
 docker run --rm --user "$(id -u):$(id -g)" \
   -v "$PWD:/out" ghcr.io/g0rgonus/calsync:release init-deploy /out
+docker compose up -d
 ```
 
-That writes `docker-compose.yml`, `.env.example`,
-`config/radicale/{config,rights}` and `config/caddy/Caddyfile`, then prints what
-to do next — which is `docker compose up -d`. It never overwrites a file you have edited, and it
-never writes `.env` itself, because that is the one file that holds real
-credentials.
+`init-deploy` writes `docker-compose.yml`, `config/radicale/{config,rights}`,
+`config/caddy/Caddyfile` and a `.env` with the three secrets the stack needs,
+generated. It never overwrites a file you have edited — run it again after an
+upgrade and it keeps everything, including `.env`, so no password rotates and no
+device re-subscribes.
+
+The read-only password is the one a phone needs:
+
+```bash
+grep CALSYNC_SECRET_RADICALE_READER_PASSWORD .env
+```
 
 The stack publishes **one port**, and routes by path behind it:
 
@@ -151,8 +157,11 @@ services share a browser origin as a result, and the CalDAV route needs the
 server's cooperation rather than a plain proxy pass — both in
 `docs/deployment/proxy.md`.
 
-From a checkout, `docker compose up -d` on its own is the whole first run. It
-used to be eight commands, and each one that went away was a step somebody
+A checkout is the same two commands — `init-deploy` reads its assets from the
+repo when it is run from one (`.venv/bin/calsync init-deploy .`), or
+`scripts/dev-stack.sh` does it plus the demo feed server.
+
+It used to be eight commands, and each one that went away was a step somebody
 could get wrong quietly:
 
 - **`radicale_url`** ships as `http://localhost:5232` — right when calsync runs
@@ -162,23 +171,15 @@ could get wrong quietly:
   first real deployment. Compose now sets `CALSYNC_SETTING_RADICALE_URL`, and
   the poller verifies the calendar before it will start rather than running on
   and reporting it in passing.
-- **The credentials** were `htpasswd -B` twice, a hand-written JSON file,
-  `chmod 600`, and — on Linux only — `sudo chown -R 10001:10001 secrets`, which
-  bit three separate times. The image runs as uid 10001 and a Linux bind mount
-  preserves host ownership, so a 600 file written by your own account is
-  unreadable inside the container; macOS hides this completely, which is how a
-  stack that worked on a laptop failed on the box it deployed to. A one-shot
-  `bootstrap` service now does all of it as root before anything else starts —
-  the only moment that `chown` can happen without anybody remembering it. It
-  prints the read-only account's password once: `docker compose logs bootstrap`.
+- **The credentials** were `htpasswd -B` twice, a hand-written JSON file and a
+  `chown`. They are three lines in `.env` now. Radicale cannot read an
+  environment variable, so its own container writes the htpasswd file from those
+  values at every start, into `/tmp` at 0600 — derived rather than stored, so it
+  cannot drift, and no calendar password is ever written to the host.
 
-To decide any of it yourself instead, copy `.env.example` to `.env` before the
-first `up`:
-
-```bash
-cp .env.example .env      # then edit
-docker compose up -d
-```
+`.env` is written for you by `init-deploy`, secrets and all. To choose them
+yourself, or to configure Matrix, Pushover or the household conventions, edit it
+before the first `up` — `.env.example` documents every key.
 
 Everything in there goes through one of two prefixes, both of which already
 existed for their own reasons:
@@ -220,7 +221,8 @@ any time, and the console has the same button on `/settings`. CI follows the
 documented first run on Linux, which is where the ownership problems live.
 
 The read API is part of the stack, at `/v1`. It refuses to serve without a
-bearer token, and `bootstrap` generates one and prints it once.
+bearer token, which is the third value in `.env`. `CALSYNC_API_REPLICAS=0`
+turns it off.
 
 Any CalDAV server meeting the R1–R8 contract in
 [docs/deployment/radicale.md](docs/deployment/radicale.md) will do; Radicale is

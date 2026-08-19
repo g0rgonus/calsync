@@ -81,8 +81,8 @@ The R1–R8 acceptance checks run through this path by default —
 
 ## Editing
 
-`bootstrap` writes `config/caddy/Caddyfile` on the first `up` and never
-overwrites it. `docker compose restart proxy` picks up a change;
+`init-deploy` writes `config/caddy/Caddyfile` and never overwrites it.
+`docker compose restart proxy` picks up a change;
 `docker compose exec proxy caddy validate --config /etc/caddy/Caddyfile` checks
 one first.
 

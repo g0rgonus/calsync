@@ -49,11 +49,6 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install -e '.[dev]'
-      # `scripts/dev-stack.sh` generates the Radicale users file with bcrypt,
-      # which needs htpasswd. Plain-text entries would be accepted by the server
-      # and silently defeat the point (deploy/radicale/config).
-      - name: Install htpasswd
-        run: sudo apt-get update && sudo apt-get install -y apache2-utils
       - name: Bring up the stack
         run: scripts/dev-stack.sh
       # Through the proxy, on the stack's one published port, because that is
@@ -79,37 +74,50 @@ jobs:
   deploy:
     name: deploy (linux first run)
     runs-on: ubuntu-latest
-    # The documented first-run steps, followed exactly, on Linux — because both
-    # of the bugs that left a real deployment writing nothing for days were in
-    # this path and neither was reachable from the other jobs. `dev-stack.sh`
-    # does not cover it: it hands the password to the container by environment,
-    # which is right for a laptop running the tests but sidesteps the mounted
-    # file that a deployment actually reads.
+    # The documented first run, followed exactly, on Linux — where bind-mount
+    # ownership behaves differently from macOS and every deployment bug so far
+    # has lived. `dev-stack.sh` does not cover it: it lays out config/ from the
+    # checkout, where a deployment takes it from the image.
     steps:
       - uses: actions/checkout@v5
       - name: Follow the documented first run
         run: |
           set -eux
-          # All of it. No .env, no htpasswd, no secrets file, no chown — the
-          # zero-config path, which is the one most people take and the one
-          # where a missing step used to be invisible.
-          #
+          # The documented first run, exactly: one command, then up. Config and
+          # .env both come from the image, the way a pulled deployment gets them.
+          docker compose build calsync
+          docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/out" \
+            ghcr.io/g0rgonus/calsync:release init-deploy /out
+          # Everything the stack needs, and nothing it does not.
+          test "$(stat -c '%a' .env)" = "600"
+          test "$(grep -c '^CALSYNC_SECRET.*=.' .env)" -eq 3
+          test -s config/radicale/config
+          test -s config/radicale/rights
+          test -s config/caddy/Caddyfile
           # --build, because compose pulls the published image when one exists
           # in the registry. Without it this job tests the last release against
           # this branch's compose file, which is not what it is for.
           docker compose up -d --build
-      - name: Bootstrap generated a complete, private set
+
+      - name: No credential is written to the host
         run: |
           set -eux
-          docker compose logs bootstrap
-          # Two bcrypt accounts, and a secrets file no other account can read.
-          test "$(wc -l < config/radicale/users)" -eq 2
-          grep -q '^calsync:\$2b\$' config/radicale/users
-          grep -q '^calreader:\$2b\$' config/radicale/users
-          test "$(stat -c '%a' secrets/secrets.json)" = "600"
-          # The step that bit three times, and the reason this job is on Linux:
-          # a bind mount keeps host ownership, and the image runs as uid 10001.
-          test "$(stat -c '%u' secrets/secrets.json)" = "10001"
+          # The whole point of deriving the users file inside the container: the
+          # only place a password exists on this machine is .env.
+          test ! -e config/radicale/users
+          test ! -e secrets/secrets.json
+          # And the file Radicale actually reads is in its container, 0600.
+          docker compose exec -T radicale sh -c 'test "$(stat -c %a /tmp/users)" = 600'
+          docker compose exec -T radicale sh -c 'test "$(wc -l < /tmp/users)" -eq 2'
+
+      - name: Radicale runs as its own account, not root
+        run: |
+          set -eux
+          # The image only drops privileges when told to run radicale directly,
+          # and this stack gives it a shell — so `user:` is what keeps it off
+          # root, and nothing else would notice if that line went.
+          test "$(docker compose exec -T radicale id -u)" = "2999"
+
       - name: The poller stays up, which means the check passed
         run: |
           set -eux
@@ -119,14 +127,13 @@ jobs:
           sleep 30
           test "$(docker compose ps -q calsync | wc -l)" -eq 1
           docker compose ps --status running calsync | grep -q calsync
-      - name: The generated password authenticates against the real server
+
+      - name: The configured password authenticates against the real server
         run: |
           set -eux
-          # No CALSYNC_SECRET_* here on purpose: this has to resolve the
-          # password through the mount, which is what a deployment does — and
-          # it proves the users file and the stored secret are the same pair.
           docker compose run --rm calsync check
           docker compose run --rm calsync status
+
       - name: The one published port serves all three paths
         run: |
           set -eux
@@ -134,27 +141,33 @@ jobs:
             curl -fsS http://localhost:8730/ -o /dev/null && break
             sleep 2
           done
-          # The console at the root, and Radicale under a path with its prefix
-          # intact — a CalDAV client follows the hrefs in this body, so an
-          # unprefixed one is an autodiscovery failure that looks like a bad
-          # password.
           curl -fsS http://localhost:8730/ -o /dev/null
           curl -fsS http://localhost:8730/.well-known/caldav -o /dev/null
-          # sudo, because the step above just asserted this file is 600 and owned
-          # by uid 10001 — the runner cannot read it, which is the point.
-          pw=$(sudo python3 -c 'import json;print(json.load(open("secrets/secrets.json"))["radicale_password"])')
+          # Radicale under a path with its prefix intact — a CalDAV client
+          # follows the hrefs in this body, so an unprefixed one is an
+          # autodiscovery failure that looks like a bad password.
+          pw=$(grep '^CALSYNC_SECRET_RADICALE_PASSWORD=' .env | cut -d= -f2-)
           curl -fsS -u "calsync:$pw" \
             -X PROPFIND -H 'Depth: 0' http://localhost:8730/cal/ | grep -q '<href>/cal/'
+          token=$(grep '^CALSYNC_SECRET_API_TOKEN=' .env | cut -d= -f2-)
+          test "$(curl -s -o /dev/null -w '%{http_code}' \
+            -H "Authorization: Bearer $token" http://localhost:8730/v1)" = "200"
 
-      - name: A second up changes nothing
+      - name: A restart changes no credential
         run: |
           set -eux
-          # The property that matters more than the first run: rotating a
-          # password here would lock out every device already subscribed.
-          before=$(sha256sum config/radicale/users)
+          # Derived on every start, so the property to hold is that the same
+          # .env keeps producing the same working pair — a changed one would
+          # lock out every subscribed device. A second init-deploy must not
+          # touch it either.
+          before=$(sha256sum .env)
+          docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/out" \
+            ghcr.io/g0rgonus/calsync:release init-deploy /out
+          test "$(sha256sum .env)" = "$before"
           docker compose up -d --build
-          test "$(sha256sum config/radicale/users)" = "$before"
+          sleep 10
           docker compose run --rm calsync check
+
       - name: Stack logs on failure
         if: failure()
         run: docker compose logs
