@@ -157,6 +157,47 @@ The first three are required.
 - `proxy` has none, and no `depends_on` on what it fronts: Caddy resolves
   upstreams per request, so a service that is down is a 502 on its own path.
 
+## Upgrading from 0.4.x
+
+The credentials moved into `.env` and the secret store moved into the
+`calsync-data` volume, so this upgrade is not drop-in. In a stopped stack:
+
+```bash
+docker compose down
+
+# 1. Config and a .env with generated secrets. Keeps anything already there.
+docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/out" \
+  ghcr.io/g0rgonus/calsync:release init-deploy /out
+
+# 2. The compose file moved, so it has to be re-issued explicitly.
+rm docker-compose.yml config/radicale/config
+docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/out" \
+  ghcr.io/g0rgonus/calsync:release init-deploy /out
+
+# 3. Feed tokens. They were in ./secrets/secrets.json and are now in the
+#    volume — without this, every source fails to resolve its {{secret:...}}
+#    and no feed fetches.
+docker run --rm -v "$(basename "$PWD")_calsync-data:/data" -v "$PWD/secrets:/old:ro" alpine \
+  sh -c 'cp /old/secrets.json /data/secrets.json \
+      && chown 10001:10001 /data/secrets.json && chmod 600 /data/secrets.json'
+
+docker compose pull && docker compose up -d
+```
+
+**The calendar passwords in the old `secrets/secrets.json` are not carried
+over.** `init-deploy` generates fresh ones into `.env`, which means every
+subscribed device needs the new read-only password:
+
+```bash
+grep CALSYNC_SECRET_RADICALE_READER_PASSWORD .env
+```
+
+To keep the old ones instead, copy them out of `secrets/secrets.json` into
+`.env` before the first `up` — `radicale_password` and
+`radicale_reader_password` — and nothing re-subscribes.
+
+Afterwards `./secrets` is unused and can be deleted.
+
 ## Upgrading
 
 ```bash
