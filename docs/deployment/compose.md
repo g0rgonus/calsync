@@ -56,7 +56,13 @@ and no password is rotated — devices stay subscribed.
 The compose file and the image ship together, so a compose file ahead of its
 image expects files that image's `bootstrap` does not write. The symptom is a
 crash-looping `proxy` with `open /etc/caddy/Caddyfile: no such file or
-directory`; pulling the matching image fixes it.
+directory`, and `bootstrap` printing neither `wrote` nor `kept` for the
+Caddyfile. Pulling the matching image fixes it; reverting the compose file does
+too.
+
+To run a build that has no version yet, pin the immutable `sha-` tag —
+`CALSYNC_TAG=sha-1a2b3c4`. Not `dev`, which repoints to whichever branch was
+pushed last.
 
 In a checkout, `docker compose up -d` **pulls** the published image rather than
 building your changes. Testing local changes needs `--build`.
