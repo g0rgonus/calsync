@@ -68,11 +68,6 @@ jobs:
           echo "Radicale never came up at /cal" >&2
           docker compose logs radicale proxy
           exit 1
-      - name: Who owns the secrets file
-        if: always()
-        run: |
-          ls -ln secrets/ config/radicale/ || true
-          id
       - name: Run the acceptance checks
         env:
           CALSYNC_ACCEPTANCE: "1"

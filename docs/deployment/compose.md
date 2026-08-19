@@ -98,6 +98,11 @@ container paths, and `CALSYNC_SETTING_RADICALE_URL` overrides a code default of
 service. Scoping a secret to one service means an explicit `environment:` entry
 there.
 
+**`env_file` reads `.env` and nothing else.** A variable exported in the shell —
+`CALSYNC_BOOTSTRAP_OWNER_UID=0 docker compose up -d` — reaches a container only
+if it is declared under `environment:` as `${VAR:-default}`, which is why that
+one is. Everything else goes in `.env`.
+
 ### Variables
 
 All optional.

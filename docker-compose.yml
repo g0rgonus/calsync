@@ -6,6 +6,10 @@ x-env: &env
     CALSYNC_DB: /data/calsync.db
     CALSYNC_SECRETS: /run/secrets/calsync/secrets.json
     CALSYNC_SETTING_RADICALE_URL: ${CALSYNC_SETTING_RADICALE_URL:-http://radicale:5232}
+    # Declared here rather than left to env_file because it is set from the
+    # shell, not from .env — `scripts/dev-stack.sh` uses 0 so the host keeps
+    # the secrets file it also reads. env_file reads .env and nothing else.
+    CALSYNC_BOOTSTRAP_OWNER_UID: ${CALSYNC_BOOTSTRAP_OWNER_UID:-10001}
 
 # `image` and `build` both. Compose pulls the published image when one exists,
 # so a checkout testing its own changes needs `docker compose up -d --build`.
