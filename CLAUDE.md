@@ -69,7 +69,7 @@ so a fresh clone needs:
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/pytest                                    # 524 tests, ~5s
+.venv/bin/pytest                                    # 502 tests, ~5s
 .venv/bin/pytest tests/test_player360.py -k content_hash    # single test
 ```
 
@@ -264,6 +264,15 @@ The onboarding half runs *before* a source exists, which is why it is separate:
 safety**: a failed fetch aborts before the diff (zero events and "all cancelled"
 are the same shape), and state is recorded only *after* the target accepts a
 write (the reverse makes a failed write look synced and never retried).
+
+**`db.migrate` runs concurrently, and has to.** Every service opens the
+database at startup, so on a first `up` several are inside it at once. Each
+statement is individually idempotent except the `ALTER TABLE`s, whose guard is
+check-then-act — that pair needs the write lock held across it, which is what
+`BEGIN IMMEDIATE` is for. Taking the lock up front also avoids the read-to-write
+upgrade deadlock, which `busy_timeout` does not cover. The whole pass is retried
+on a lock because `PRAGMA journal_mode = WAL` fails outright when converting a
+fresh database another connection has open.
 
 `repo.py` is the only module that bridges SQLite and the domain objects. Adapters
 and normalizers never touch the DB, which is what keeps them testable without

@@ -151,3 +151,32 @@ def test_writing_ics_files_has_no_server_to_ask(conn, monkeypatch):
     """`--out` does not use the configured target, so checking it is wrong."""
     assert _check(conn, monkeypatch, _refusing, out="./out") is True
     assert _check(conn, monkeypatch, _refusing, target="ics_file") is True
+
+
+def test_several_processes_can_open_a_fresh_database_at_once(tmp_path):
+    """`web`, `api` and the poller all migrate on startup, and on a first `up`
+    they are inside it together.
+
+    Two ways this used to fail, both only on a *fresh* database and both only
+    under concurrency — so a laptop running one service never saw either. The
+    `ALTER TABLE` guard is check-then-act, so both sides read "column absent"
+    and the loser got `duplicate column name`. And `PRAGMA journal_mode = WAL`
+    needs an exclusive lock to convert, which fails outright rather than
+    waiting out `busy_timeout`.
+    """
+    import concurrent.futures
+
+    path = tmp_path / "race.db"
+
+    def open_it(_):
+        conn = db.open_db(path)
+        try:
+            return conn.execute("SELECT count(*) FROM settings").fetchone()[0]
+        finally:
+            conn.close()
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        counts = list(pool.map(open_it, range(8)))
+
+    assert all(c == counts[0] for c in counts), counts
+    assert counts[0] > 0
