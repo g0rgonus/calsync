@@ -30,12 +30,33 @@ authenticating proxy fronts the host is what stands in front of it.
 
 ## Upgrading
 
-`docker compose pull && docker compose up -d`. The compose file and the image
-ship together — `init-deploy` writes the compose file out of the image — so a
-compose file newer than the image can expect files that image's `bootstrap`
-does not write. The symptom is a crash-looping `proxy` with
-`open /etc/caddy/Caddyfile: no such file or directory`; pulling the matching
-image fixes it.
+```bash
+docker compose pull && docker compose up -d
+```
+
+That is enough when only the image moved. **It is not enough when the compose
+file moved** — a new service, a changed port — because `init-deploy` never
+overwrites, so it keeps the `docker-compose.yml` and server config already on
+disk and the upgrade silently does nothing.
+
+To take a new compose file, delete what you want re-issued first:
+
+```bash
+rm docker-compose.yml config/radicale/config
+docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/out" \
+  ghcr.io/g0rgonus/calsync:release init-deploy /out
+docker compose pull && docker compose up -d
+```
+
+`config/radicale/config` is worth including: `bootstrap` keeps an existing one
+forever, so a change to the shipped server config never reaches a deployment
+that already has one. `rights`, `.env` and the users file are untouched by this,
+and no password is rotated — devices stay subscribed.
+
+The compose file and the image ship together, so a compose file ahead of its
+image expects files that image's `bootstrap` does not write. The symptom is a
+crash-looping `proxy` with `open /etc/caddy/Caddyfile: no such file or
+directory`; pulling the matching image fixes it.
 
 In a checkout, `docker compose up -d` **pulls** the published image rather than
 building your changes. Testing local changes needs `--build`.
