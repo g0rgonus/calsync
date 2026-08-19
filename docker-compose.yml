@@ -7,8 +7,8 @@ x-env: &env
     CALSYNC_SECRETS: /run/secrets/calsync/secrets.json
     CALSYNC_SETTING_RADICALE_URL: ${CALSYNC_SETTING_RADICALE_URL:-http://radicale:5232}
 
-# `image` and `build` both: Compose builds only when the image is absent
-# locally, so this serves a pull and a checkout.
+# `image` and `build` both. Compose pulls the published image when one exists,
+# so a checkout testing its own changes needs `docker compose up -d --build`.
 x-calsync: &calsync
   <<: *env
   image: ghcr.io/g0rgonus/calsync:${CALSYNC_TAG:-release}

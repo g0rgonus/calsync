@@ -93,7 +93,11 @@ jobs:
           # All of it. No .env, no htpasswd, no secrets file, no chown — the
           # zero-config path, which is the one most people take and the one
           # where a missing step used to be invisible.
-          docker compose up -d
+          #
+          # --build, because compose pulls the published image when one exists
+          # in the registry. Without it this job tests the last release against
+          # this branch's compose file, which is not what it is for.
+          docker compose up -d --build
       - name: Bootstrap generated a complete, private set
         run: |
           set -eux
@@ -145,7 +149,7 @@ jobs:
           # The property that matters more than the first run: rotating a
           # password here would lock out every device already subscribed.
           before=$(sha256sum config/radicale/users)
-          docker compose up -d
+          docker compose up -d --build
           test "$(sha256sum config/radicale/users)" = "$before"
           docker compose run --rm calsync check
       - name: Stack logs on failure

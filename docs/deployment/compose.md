@@ -28,6 +28,18 @@ One port is published, routed by path:
 The publish is not an access control. The console has no login; whatever VPN or
 authenticating proxy fronts the host is what stands in front of it.
 
+## Upgrading
+
+`docker compose pull && docker compose up -d`. The compose file and the image
+ship together — `init-deploy` writes the compose file out of the image — so a
+compose file newer than the image can expect files that image's `bootstrap`
+does not write. The symptom is a crash-looping `proxy` with
+`open /etc/caddy/Caddyfile: no such file or directory`; pulling the matching
+image fixes it.
+
+In a checkout, `docker compose up -d` **pulls** the published image rather than
+building your changes. Testing local changes needs `--build`.
+
 ## Services
 
 | | |
