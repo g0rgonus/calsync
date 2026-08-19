@@ -10,8 +10,8 @@ docker compose up -d
 ```
 
 No `.env` and no arguments. `bootstrap` writes Radicale's config, rights and
-users file, the Caddyfile, and generates both calendar passwords. It prints the
-read-only one once:
+users file, the Caddyfile, and generates the two calendar passwords and the
+API's bearer token. It prints the read-only password and the token once:
 
 ```bash
 docker compose logs bootstrap
@@ -23,7 +23,7 @@ One port is published, routed by path:
 |---|---|
 | `http://localhost:8730/` | the console |
 | `http://localhost:8730/cal/` | Radicale — what a phone subscribes to |
-| `http://localhost:8730/v1` | the read API, with `--profile api` |
+| `http://localhost:8730/v1` | the read API |
 
 The publish is not an access control. The console has no login; whatever VPN or
 authenticating proxy fronts the host is what stands in front of it.
@@ -75,7 +75,7 @@ building your changes. Testing local changes needs `--build`.
 | `radicale` | The calendar server. Not published: reached at `/cal` through `proxy`, and directly at `http://radicale:5232` by calsync. |
 | `calsync` | The poller. One-off commands use the same service — `docker compose run --rm calsync status`, `… stage tr-otters`, `… import /config/calsync.yaml`. |
 | `web` | The console, port 8730 in-container. It and the poller are two writers on one SQLite file; `db.connect` sets the busy timeout that allows for that. |
-| `api` | The read API, port 8731 in-container. `--profile api`. Refuses to start without `CALSYNC_SECRET_API_TOKEN`. |
+| `api` | The read API, port 8731 in-container, served at `/v1`. Refuses to start without a bearer token; `bootstrap` generates one and prints it once. `CALSYNC_API_REPLICAS=0` turns it off. |
 | `proxy` | Caddy. The only published port. |
 | `feeds` | `--profile demo` only. Replays the recorded fixtures with their dates shifted onto this week. Needs a checkout — it mounts `demo/` and `tests/fixtures/`. |
 
@@ -110,7 +110,8 @@ All optional.
 | `CALSYNC_SETTING_MATRIX_*`, `CALSYNC_SECRET_MATRIX_ACCESS_TOKEN` | All four or none. Outbound only (`docs/MATRIX.md` §7). |
 | `CALSYNC_SETTING_DIGEST_SEND_AT` | `HH:MM` local. Empty means never. The poller carries it; there is no cron. |
 | `CALSYNC_SECRET_PUSHOVER_TOKEN`, `_USER` | Pushes. |
-| `CALSYNC_SECRET_API_TOKEN` | Required by the `api` profile. |
+| `CALSYNC_SECRET_API_TOKEN` | The read API's bearer token. Generated if unset, and printed once. |
+| `CALSYNC_API_REPLICAS` | `0` turns the read API off. Defaults to 1. |
 | `CALSYNC_SETTING_DEFAULT_TZ`, `_TITLE_TEMPLATE`, `_COLLECTION_TEMPLATE` | Household conventions. Full list: `DEFAULT_SETTINGS` in `src/calsync/db/__init__.py`. |
 | `CALSYNC_BOOTSTRAP_OWNER_UID` | Who owns the secrets file. Defaults to 10001; `0` leaves it alone. |
 | `CALSYNC_TAG` | `release` (default), `latest`, `dev`, `v0.2`, `v0.2.0`, `sha-1a2b3c4`. |
@@ -121,7 +122,8 @@ onboarding, one per team.
 ## Credentials
 
 Two accounts: `calsync` writes, `calreader` is read-only and is what goes on a
-family's devices.
+family's devices. `bootstrap` also generates the API's bearer token, under
+`api_token`.
 
 Radicale authenticates against an htpasswd file and cannot read an environment
 variable, so a password set in `.env` still has to reach `config/radicale/users`
@@ -170,4 +172,3 @@ account it runs as.
 - `web` fetches its own root, exercising the template layer.
 - `proxy` has none, and no `depends_on` on what it fronts: Caddy resolves
   upstreams per request, so a service that is down is a 502 on its own path.
-  `/v1` answers 502 until `--profile api` is up.

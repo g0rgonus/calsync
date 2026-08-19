@@ -583,6 +583,14 @@ def cmd_bootstrap(args) -> int:
         print(f"    password {result.reader_password}", flush=True)
         print("  Stored as "
               f"{bootstrap_mod.READER_REF} if you need it again.", flush=True)
+    if result.api_token:
+        # Same reasoning: generated here, and the console shows only that a
+        # token is stored, never the value.
+        print(flush=True)
+        print("  The read API's bearer token:", flush=True)
+        print(f"    {result.api_token}", flush=True)
+        print("  Stored as "
+              f"{bootstrap_mod.API_REF} if you need it again.", flush=True)
     return 0
 
 

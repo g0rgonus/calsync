@@ -62,6 +62,10 @@ CALSYNC_UID = 10001
 WRITER_REF = "radicale_password"
 READER_REF = "radicale_reader_password"
 
+#: The read API's bearer token. `db.DEFAULT_SETTINGS["api_token_ref"]` names the
+#: same string; the API refuses to serve without it.
+API_REF = "api_token"
+
 WRITER_USER = "calsync"
 READER_USER = "calreader"
 
@@ -76,6 +80,9 @@ class Result:
     #: Printed once, because a reader password nobody sees cannot subscribe a
     #: phone. Empty when nothing was generated.
     reader_password: str = ""
+    #: Same, for the read API's bearer token: generated here, and there is no
+    #: other way to read it back out.
+    api_token: str = ""
 
     def say(self, line: str) -> None:
         self.lines.append(line)
@@ -244,8 +251,6 @@ def ensure_credentials(
     config_dir: Path,
     store: SecretStore,
     result: Result,
-    *,
-    owner_uid: int | None = CALSYNC_UID,
 ) -> None:
     """Make the users file agree with the passwords, whoever chose them.
 
@@ -298,12 +303,31 @@ def ensure_credentials(
         + ")"
     )
 
-    if owner_uid is not None and store.path.exists():
-        _hand_over(store.path, owner_uid, result)
     # Only worth printing when nobody chose it — a password from a .env file is
     # already in front of the person reading the log.
     if READER_USER in stale and origins[READER_USER] == "generated":
         result.reader_password = passwords[READER_USER]
+
+
+def ensure_api_token(store: SecretStore, result: Result) -> None:
+    """The read API's bearer token, generated if nobody chose one.
+
+    Same rules as the calendar passwords: an existing value is the input rather
+    than something to replace, and one supplied by the environment is not copied
+    into the secrets file. The API refuses to serve without a token, so
+    generating it is what lets the service be on by default.
+    """
+    token, origin = _password_for(store, API_REF, result)
+    if origin != "generated":
+        result.say(f"kept  {store.path} (api_token from "
+                   f"{'the environment' if origin == 'environment' else 'the secret store'})")
+        return
+    try:
+        store.put(API_REF, token)
+    except SecretError as exc:
+        raise BootstrapError(str(exc)) from exc
+    result.say(f"wrote {store.path} (the read API's token)")
+    result.api_token = token
 
 
 def _hand_over(path: Path, uid: int, result: Result) -> None:
@@ -331,5 +355,11 @@ def run(root: Path, *, store: SecretStore | None = None,
     store = store or SecretStore(path=root / "secrets" / "secrets.json")
     ensure_server_config(root / "config" / "radicale", result)
     ensure_proxy_config(root / "config" / "caddy", result)
-    ensure_credentials(root / "config" / "radicale", store, result, owner_uid=owner_uid)
+    ensure_credentials(root / "config" / "radicale", store, result)
+    ensure_api_token(store, result)
+    # Last, and here rather than inside a step: every secret is written by now,
+    # and `SecretStore.put` writes a new file each time, so a handover done
+    # earlier would be undone by the next thing to store something.
+    if owner_uid is not None and store.path.exists():
+        _hand_over(store.path, owner_uid, result)
     return result

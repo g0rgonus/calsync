@@ -73,8 +73,10 @@ services:
 
   api:
     <<: *calsync
-    profiles: ["api"]
     command: ["api", "--host", "0.0.0.0", "--port", "8731"]
+    # CALSYNC_API_REPLICAS=0 in .env turns it off without editing this file.
+    deploy:
+      replicas: ${CALSYNC_API_REPLICAS:-1}
     depends_on: *needs-bootstrap
     volumes:
       - calsync-data:/data
