@@ -75,7 +75,7 @@ building your changes. Testing local changes needs `--build`.
 | `radicale` | The calendar server. Not published: reached at `/cal` through `proxy`, and directly at `http://radicale:5232` by calsync. |
 | `calsync` | The poller. One-off commands use the same service — `docker compose run --rm calsync status`, `… stage tr-otters`, `… import /config/calsync.yaml`. |
 | `web` | The console, port 8730 in-container. It and the poller are two writers on one SQLite file; `db.connect` sets the busy timeout that allows for that. |
-| `api` | The read API, port 8731 in-container, served at `/v1`. Refuses to start without a bearer token; `bootstrap` generates one and prints it once. |
+| `api` | The read API, port 8731 in-container, served at `/v1`. Refuses to start without a bearer token; `bootstrap` generates one and prints it once. `CALSYNC_API_REPLICAS=0` turns it off. |
 | `proxy` | Caddy. The only published port. |
 | `feeds` | `--profile demo` only. Replays the recorded fixtures with their dates shifted onto this week. Needs a checkout — it mounts `demo/` and `tests/fixtures/`. |
 
@@ -111,6 +111,7 @@ All optional.
 | `CALSYNC_SETTING_DIGEST_SEND_AT` | `HH:MM` local. Empty means never. The poller carries it; there is no cron. |
 | `CALSYNC_SECRET_PUSHOVER_TOKEN`, `_USER` | Pushes. |
 | `CALSYNC_SECRET_API_TOKEN` | The read API's bearer token. Generated if unset, and printed once. |
+| `CALSYNC_API_REPLICAS` | `0` turns the read API off. Defaults to 1. |
 | `CALSYNC_SETTING_DEFAULT_TZ`, `_TITLE_TEMPLATE`, `_COLLECTION_TEMPLATE` | Household conventions. Full list: `DEFAULT_SETTINGS` in `src/calsync/db/__init__.py`. |
 | `CALSYNC_BOOTSTRAP_OWNER_UID` | Who owns the secrets file. Defaults to 10001; `0` leaves it alone. |
 | `CALSYNC_TAG` | `release` (default), `latest`, `dev`, `v0.2`, `v0.2.0`, `sha-1a2b3c4`. |
