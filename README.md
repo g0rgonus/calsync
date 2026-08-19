@@ -20,7 +20,7 @@ The sync loop runs end to end and has been in daily use against live feeds.
 and its safety guards, rendering, CalDAV and `.ics` directory targets, a
 continuous poller with per-source backoff, the onboarding console, a read-only
 HTTP API, a Matrix daily digest, dormancy and retirement handling, and a Docker
-stack with published images. 514 tests, plus CI jobs that stand up a real
+stack with published images. 515 tests, plus CI jobs that stand up a real
 Radicale and follow the documented first-run steps on Linux.
 
 **Specified but not built:** everything in [docs/API.md](docs/API.md) past the
@@ -73,7 +73,7 @@ the delete-then-create this project treats as the dangerous operation.
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/pytest                                # 514 tests, ~5s
+.venv/bin/pytest                                # 515 tests, ~5s
 ```
 
 ```bash
