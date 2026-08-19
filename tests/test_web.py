@@ -514,6 +514,30 @@ def test_an_origin_mismatch_names_both_sides(client):
     assert "--trusted-origin" in result["body"]
 
 
+def test_the_console_asks_for_an_origin_it_will_recognise(client):
+    """`no-referrer` here made every write from an older browser unrecognisable.
+
+    Fetch serializes `Origin` as `null` on a POST whenever the page's referrer
+    policy is `no-referrer`, so the console's own forms arrived opaque and the
+    Origin fallback — the only check left on a browser that does not send
+    Sec-Fetch-Site — refused all of them, suggesting a `--trusted-origin` with
+    nothing after it. `same-origin` leaks just as little to an outbound link.
+    """
+    assert '<meta name="referrer" content="same-origin">' in client.get("/")["body"]
+
+
+def test_an_opaque_origin_does_not_suggest_an_empty_flag(client):
+    result = client.post(
+        "/children",
+        {"name": "Mallory"},
+        headers={"Origin": "null", "Host": "localhost:8730"},
+    )
+    assert "opaque" in result["body"]
+    # The defect this replaces: the mismatch branch's remedy, printed with an
+    # empty value after the flag because an opaque origin parses to no host.
+    assert "start it with" not in result["body"]
+
+
 def test_a_trusted_origin_is_accepted_without_sec_fetch_site(tmp_path, secrets_path, feed):
     app = web_app.create_app(
         tmp_path / "calsync.db",

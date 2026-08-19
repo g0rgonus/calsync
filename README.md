@@ -132,11 +132,24 @@ docker run --rm --user "$(id -u):$(id -g)" \
   -v "$PWD:/out" ghcr.io/g0rgonus/calsync:release init-deploy /out
 ```
 
-That writes `docker-compose.yml`, `.env.example` and
-`config/radicale/{config,rights}`, then prints what to do next — which is
-`docker compose up -d`. It never overwrites a file you have edited, and it
+That writes `docker-compose.yml`, `.env.example`,
+`config/radicale/{config,rights}` and `config/caddy/Caddyfile`, then prints what
+to do next — which is `docker compose up -d`. It never overwrites a file you have edited, and it
 never writes `.env` itself, because that is the one file that holds real
 credentials.
+
+The stack publishes **one port**, and routes by path behind it:
+
+| | |
+|---|---|
+| `http://localhost:8730/` | the console |
+| `http://localhost:8730/cal/` | Radicale — this is what a phone subscribes to |
+| `http://localhost:8730/v1` | the read API, with `--profile api` |
+
+One address, one certificate, one thing to put a VPN in front of. The three
+services share a browser origin as a result, and the CalDAV route needs the
+server's cooperation rather than a plain proxy pass — both in
+`docs/deployment/proxy.md`.
 
 From a checkout, `docker compose up -d` on its own is the whole first run. It
 used to be eight commands, and each one that went away was a step somebody
@@ -269,6 +282,8 @@ touching the assertion.
 | [MATCHING.md](docs/MATCHING.md) | Dedup and adoption — specified, not built |
 | [MATRIX.md](docs/MATRIX.md) | The room, the digest, and which arrow exists |
 | [PLAN.md](docs/PLAN.md) | The original architecture and gap analysis |
+| [deployment/compose.md](docs/deployment/compose.md) | Why the stack is shaped like this — first run, passwords, the uid that bites |
+| [deployment/proxy.md](docs/deployment/proxy.md) | The one published port, and why /cal is not a plain reverse proxy |
 | [deployment/radicale.md](docs/deployment/radicale.md) | CalDAV requirements and acceptance checks |
 | [sources/](docs/sources/) | Per-source traps, one-to-one with the golden tests |
 

@@ -113,27 +113,14 @@ permissions: R
 
 ---
 
-## 4. Storage and history
+## 4. Storage
 
 Use the file-backed storage (`multifilesystem`) rather than anything
 database-backed. One `.ics` per event in a directory tree is greppable,
 trivially backed up, and satisfies R4/R5 by construction.
 
-**Git history is worth having.** Radicale can run a hook after storage
-changes; pointing it at `git commit` gives free, human-readable version
-history of every schedule change — which pairs with how much of this design is
-about provenance and reversibility.
-
-Two caveats:
-
-- The hook fires **per storage operation**. A first-run backfill of a full
-  season could produce a commit per event. Either accept the noise or import
-  in a quiet window — don't be alarmed by a hundred commits appearing at once.
-- The git repo grows forever. Fine at this scale (a few hundred small text
-  files a year), but it is not self-pruning.
-
-Back up the storage directory independently of git. The repo protects against
-bad edits; it does not protect against losing the disk.
+Back up the storage directory: `scripts/backup.sh` does, and it is the only
+copy of any season whose feed has gone away.
 
 ---
 
@@ -146,6 +133,11 @@ basic auth on the open internet.
 Plain HTTP on the tailnet is acceptable since Tailscale encrypts transport. If
 you'd rather have TLS end-to-end, `tailscale serve` will terminate it without
 a certificate dance.
+
+In the compose stack Radicale is not published: it is reached through the proxy
+at `/cal/`, the stack's one port and the one thing to put Tailscale in front of.
+Routing, and the `X-Script-Name` requirement that comes with a path mount, are
+in `docs/deployment/proxy.md`.
 
 Resource sizing is a non-issue: a few hundred events a year, one writer, a
 20-minute poll interval. Anything that runs Python will run this.
@@ -224,7 +216,6 @@ s = Settings.load(open_db(pathlib.Path(tempfile.mkdtemp())/'d.db'))
   assumptions.
 - **Missing ETags** turn every write into a blind overwrite. If the server
   doesn't return them, the conflict detection in the CalDAV target is inert.
-- **The git hook on bulk import** — see §4.
 - **Rights syntax** is the most likely thing to be wrong on first attempt, and
   it fails open or closed in confusing ways. The §6 read-only check catches
   the dangerous direction.

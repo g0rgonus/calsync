@@ -1,0 +1,38 @@
+# The stack's one entry point. docs/deployment/proxy.md.
+#
+#   /       the console
+#   /cal/   Radicale
+#   /v1     the read API (--profile api)
+
+:80 {
+	# `handle`, not `handle_path`: Radicale strips the prefix itself whenever an
+	# X-Forwarded-* header is present, so it needs the path whole. X-Script-Name
+	# is what puts the prefix back on the hrefs it returns, which is all a CalDAV
+	# client navigates by.
+	handle /cal/* {
+		reverse_proxy radicale:5232 {
+			header_up X-Script-Name /cal
+		}
+	}
+	redir /cal /cal/ 301
+
+	redir /.well-known/caldav /cal/ 301
+	redir /.well-known/carddav /cal/ 301
+
+	# The API keeps its own namespace: `GET /v1` publishes server-absolute paths.
+	# /api is a signpost onto it, 308 so a POST keeps its method and body.
+	handle_path /api/* {
+		redir * {uri} 308
+	}
+	redir /api /v1 308
+
+	# Both: `GET /v1` is the contract document, and `/v1/*` does not match it.
+	@api path /v1 /v1/*
+	handle @api {
+		reverse_proxy api:8731
+	}
+
+	handle {
+		reverse_proxy web:8730
+	}
+}
