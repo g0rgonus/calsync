@@ -18,13 +18,13 @@ COPY src/ ./src/
 COPY docker-compose.yml .env.example ./deploy-assets/
 COPY deploy/ ./deploy-assets/deploy/
 
-RUN pip install --no-cache-dir '.[deploy]' \
+RUN pip install --no-cache-dir . \
  && mkdir -p /data && chown calsync:calsync /data
 
 USER calsync
 VOLUME ["/data"]
 ENV CALSYNC_DB=/data/calsync.db \
-    CALSYNC_SECRETS=/run/secrets/calsync/secrets.json
+    CALSYNC_SECRETS=/data/secrets.json
 
 # `poll` honours each source's own poll_interval_s and handles SIGTERM, so
 # `docker compose stop` finishes the source in flight rather than dying between

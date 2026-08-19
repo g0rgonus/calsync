@@ -48,7 +48,30 @@ pytestmark = pytest.mark.skipif(
 BASE = os.environ.get("CALSYNC_ACCEPTANCE_URL", "http://localhost:8730/cal")
 USER = os.environ.get("CALSYNC_ACCEPTANCE_USER", "calsync")
 READER = os.environ.get("CALSYNC_ACCEPTANCE_READER", "calreader")
-SECRETS = Path(__file__).resolve().parent.parent / "secrets" / "secrets.json"
+def _configured(name: str) -> str:
+    """A credential, from the environment or from `.env`.
+
+    Both, because `.env` is where the stack keeps these and where dev-stack.sh
+    writes them — reading it means the documented
+    `CALSYNC_ACCEPTANCE=1 pytest` still works straight afterwards, with nothing
+    to export by hand. There is no secrets file on the host any more.
+    """
+    if os.environ.get(name):
+        return os.environ[name]
+    path = Path(__file__).resolve().parent.parent / ".env"
+    if not path.exists():
+        return ""
+    for line in path.read_text().splitlines():
+        key, sep, value = line.partition("=")
+        if sep and key.strip() == name:
+            return value.strip()
+    return ""
+
+
+WRITER_PASSWORD = _configured("CALSYNC_SECRET_RADICALE_PASSWORD")
+#: Its own value, not the writer's. The two accounts are separate credentials in
+#: a real deployment, and R8 is only worth anything if it is checked as one.
+READER_PASSWORD = _configured("CALSYNC_SECRET_RADICALE_READER_PASSWORD")
 
 FIXTURE = Path(__file__).parent / "fixtures" / "teamreach_wrens_sample.ics"
 NOW = datetime(2026, 3, 1, 12, 0, tzinfo=timezone.utc)
@@ -92,12 +115,16 @@ PROBE = None  # built lazily by the fixture below, once RenderedEvent is importe
 
 @pytest.fixture(scope="module")
 def password():
-    if not SECRETS.exists():
-        pytest.skip("no secrets/secrets.json — run scripts/dev-stack.sh")
-    value = json.loads(SECRETS.read_text()).get("radicale_password")
-    if not value:
-        pytest.skip("no radicale_password in the secret store")
-    return value
+    if not WRITER_PASSWORD:
+        pytest.skip("no CALSYNC_SECRET_RADICALE_PASSWORD — run scripts/dev-stack.sh")
+    return WRITER_PASSWORD
+
+
+@pytest.fixture
+def reader_password():
+    if not READER_PASSWORD:
+        pytest.skip("no CALSYNC_SECRET_RADICALE_READER_PASSWORD — run scripts/dev-stack.sh")
+    return READER_PASSWORD
 
 
 def header(response, name: str) -> str | None:
@@ -211,10 +238,10 @@ def test_r6_an_upstream_resource_name_is_accepted(collection, password):
     assert call("GET", collection + UID, password=password).status == 200
 
 
-def test_r8_the_read_only_principal_cannot_write(collection, password):
+def test_r8_the_read_only_principal_cannot_write(collection, reader_password):
     """The check that catches a rights file failing open."""
     response = call("PUT", collection + "reader-probe.ics", user=READER,
-                    password=password, body=_probe(),
+                    password=reader_password, body=_probe(),
                     headers={"Content-Type": "text/calendar; charset=utf-8"})
     assert response.status in (401, 403), (
         f"the read-only principal wrote successfully ({response.status}) — "
@@ -222,8 +249,9 @@ def test_r8_the_read_only_principal_cannot_write(collection, password):
     )
 
 
-def test_r8_the_read_only_principal_can_read(collection, password):
-    assert call("GET", collection + UID, user=READER, password=password).status == 200
+def test_r8_the_read_only_principal_can_read(collection, reader_password):
+    assert call("GET", collection + UID,
+                user=READER, password=reader_password).status == 200
 
 
 # --- and one real sync ------------------------------------------------------
@@ -441,7 +469,8 @@ def configured_by_settings(tmp_path, password):
 def _store():
     from calsync.secrets import SecretStore
 
-    return SecretStore(path=SECRETS, environ={})
+    return SecretStore(path=Path("/nonexistent"),
+                       environ={"CALSYNC_SECRET_RADICALE_PASSWORD": WRITER_PASSWORD})
 
 
 def test_the_configured_target_can_reach_the_server(configured_by_settings):

@@ -162,21 +162,16 @@ could get wrong quietly:
   first real deployment. Compose now sets `CALSYNC_SETTING_RADICALE_URL`, and
   the poller verifies the calendar before it will start rather than running on
   and reporting it in passing.
-- **The credentials** were `htpasswd -B` twice, a hand-written JSON file,
-  `chmod 600`, and — on Linux only — `sudo chown -R 10001:10001 secrets`, which
-  bit three separate times. The image runs as uid 10001 and a Linux bind mount
-  preserves host ownership, so a 600 file written by your own account is
-  unreadable inside the container; macOS hides this completely, which is how a
-  stack that worked on a laptop failed on the box it deployed to. A one-shot
-  `bootstrap` service now does all of it as root before anything else starts —
-  the only moment that `chown` can happen without anybody remembering it. It
-  prints the read-only account's password once: `docker compose logs bootstrap`.
+- **The credentials** were `htpasswd -B` twice, a hand-written JSON file and a
+  `chown`. They are three lines in `.env` now. Radicale cannot read an
+  environment variable, so its own container writes the htpasswd file from those
+  values at every start, into `/tmp` at 0600 — derived rather than stored, so it
+  cannot drift, and no calendar password is ever written to the host.
 
-To decide any of it yourself instead, copy `.env.example` to `.env` before the
-first `up`:
+The first run:
 
 ```bash
-cp .env.example .env      # then edit
+cp .env.example .env      # fill in the three secrets
 docker compose up -d
 ```
 
@@ -220,7 +215,8 @@ any time, and the console has the same button on `/settings`. CI follows the
 documented first run on Linux, which is where the ownership problems live.
 
 The read API is part of the stack, at `/v1`. It refuses to serve without a
-bearer token, and `bootstrap` generates one and prints it once.
+bearer token, which is the third value in `.env`. `CALSYNC_API_REPLICAS=0`
+turns it off.
 
 Any CalDAV server meeting the R1–R8 contract in
 [docs/deployment/radicale.md](docs/deployment/radicale.md) will do; Radicale is

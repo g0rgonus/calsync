@@ -119,23 +119,30 @@ neither is a convenience:
 `calsync check` still asks directly, and the console has the same button on
 `/settings`.
 
-**Credentials are generated, not requested — but a supplied one always wins.**
-`bootstrap.py` (the compose stack's one-shot `bootstrap` service, running as
-root before anything else starts) hashes whatever
-`CALSYNC_SECRET_RADICALE_PASSWORD` and `..._READER_PASSWORD` hold and generates
-them when unset. Three properties are the whole design, and each is a test:
+**Credentials come from `.env`, and there is no init container.** The three the
+stack will not start without are `CALSYNC_SECRET_RADICALE_PASSWORD`,
+`..._READER_PASSWORD` and `..._API_TOKEN`. Radicale cannot read an environment
+variable — none of the eleven auth backends it ships does — so its own container
+writes the htpasswd file from those two values at every start. Three properties
+are the design:
 
-- **The users file is derived, never kept in parallel.** It is rebuilt whenever
-  it disagrees with the passwords, which is what stops the file and the stored
-  credential from drifting — the likeliest way a hand-run `htpasswd` failed.
-  Deleting it is recoverable; nothing is lost.
-- **Nothing is rotated.** A password that already exists is the input, not
-  something to replace: a fresh one locks out every subscribed phone. Accounts
-  somebody added by hand are preserved rather than dropped in the rewrite.
-- **A supplied password is never written to the secrets file.** Keeping a
-  credential out of a file on disk is a choice, and copying it into one is
-  undoing that choice on somebody's behalf. Generated ones *are* stored, or
-  they would exist nowhere.
+- **Derived, never stored.** Rebuilt from `.env` on every start, so it cannot
+  drift from the password the poller uses. There is no second copy and nothing
+  to re-derive after an edit.
+- **Never on the host.** `/tmp` inside the container, 0600. The only place a
+  calendar password exists on the machine is `.env`.
+- **Nothing rotates on its own.** Change `.env` and restart to change a
+  password; otherwise every subscribed device keeps working.
+
+**`user: "2999:2999"` on the radicale service is load-bearing.** That image's
+entrypoint only drops privileges when `$1` is exactly `/venv/bin/radicale`, and
+this stack gives it a shell — without that line Radicale runs as root, and
+nothing else would notice.
+
+The only secret `.env` cannot hold is a **feed token**: they are pasted per team
+during onboarding and nobody knows them before startup. Those go to
+`/data/secrets.json`, beside the database in the volume that is already the
+console's state — no host directory, so no ownership to get wrong.
 
 `.env.example` documents the surface. There is no third mechanism: everything
 goes through `CALSYNC_SETTING_<KEY>` or `CALSYNC_SECRET_<REF>`, so Matrix,
@@ -164,8 +171,8 @@ Docker: `docker compose up -d` runs Radicale, the poller, the console, the read
 API and a Caddy `proxy`; one-off commands go through `docker compose run --rm
 calsync <cmd>`. The API is in the default stack because it is no longer a port
 of its own — it is one path on the port the console already occupies, behind a
-bearer token `bootstrap` generates, which makes it the only service here with a
-credential in front of it.
+bearer token from `.env`, which makes it the only service here with a credential
+in front of it.
 
 **The stack publishes one port** and routes by path: `/` is the console,
 `/cal/` is Radicale, `/v1` is the read API (`/api/…` 308s onto it).
@@ -187,7 +194,7 @@ credential in front of it.
   a same-origin check and it has no login, so anything else on this port is
   same-origin with it. Safe for these three; re-examine before a fourth.
 
-`bootstrap` places `config/caddy/Caddyfile` from the image's deploy assets,
+`init-deploy` writes `config/caddy/Caddyfile` from the image's deploy assets,
 never overwriting an edited one. `proxy` has no `depends_on` on what it fronts,
 so a backend that is down is a 502 on its own path rather than a stack that will
 not start.

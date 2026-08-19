@@ -13,12 +13,7 @@ license-files = ["LICENSE"]
 dependencies = ["icalendar>=6.0", "pyyaml>=6.0", "bottle>=0.13"]
 
 [project.optional-dependencies]
-# Not a runtime dependency: nothing in the sync path hashes anything. `calsync
-# bootstrap` needs it to write a bcrypt htpasswd line on a first run, the
-# published image carries it for that one command, and without it bootstrap
-# says so and points at `htpasswd`, which writes the same file.
-deploy = ["bcrypt>=4.0"]
-dev = ["pytest>=8.0", "bcrypt>=4.0"]
+dev = ["pytest>=8.0"]
 
 [project.scripts]
 calsync = "calsync.cli:main"

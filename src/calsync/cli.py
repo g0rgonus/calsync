@@ -21,7 +21,6 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import bootstrap as bootstrap_mod
 from . import config as config_mod
 from . import db, repo
 from .secrets import SecretError, SecretStore
@@ -458,8 +457,12 @@ def cmd_web(args) -> int:
     return 0
 
 
-#: Where the deployment assets live. Defined once, in `bootstrap`.
-DEPLOY_ASSETS = bootstrap_mod.DEPLOY_ASSETS
+#: Where the deployment assets live inside the image, and the same files in a
+#: checkout. Both, so `init-deploy` works whether you pulled the image or cloned.
+DEPLOY_ASSETS = (
+    Path("/app/deploy-assets"),
+    Path(__file__).resolve().parent.parent.parent,
+)
 
 
 def cmd_init_deploy(args) -> int:
@@ -523,74 +526,31 @@ def cmd_init_deploy(args) -> int:
 
     print()
     print("Next, in that directory:")
+    print("  cp .env.example .env")
+    print()
+    print("Fill in three secrets — the stack will not start without them:")
+    print("  CALSYNC_SECRET_RADICALE_PASSWORD          calsync's own account")
+    print("  CALSYNC_SECRET_RADICALE_READER_PASSWORD   the one phones use")
+    print("  CALSYNC_SECRET_API_TOKEN                  the read API")
+    print()
+    print("Any three random strings will do:")
+    print("  openssl rand -base64 24")
+    print()
+    print("Then:")
     print("  docker compose up -d")
     print()
-    print("That is the whole first run. The stack's `bootstrap` service writes")
-    print("the users file and generates both passwords — it prints the")
-    print("read-only one for subscribing a phone, so keep that first log:")
-    print("  docker compose logs bootstrap")
-    print()
-    # One port, and the calendar address is the one somebody has to type into a
-    # phone — printing it here is cheaper than finding it in a compose file.
+    # The calendar address is the one somebody has to type into a phone, so
+    # printing it here is cheaper than finding it in a compose file.
     print("It publishes one port, routed by path:")
     print("  http://localhost:8730/       the console")
     print("  http://localhost:8730/cal/   the calendar, for phones")
-    print("  http://localhost:8730/v1     the read API, with --profile api")
-    print()
-    print("To choose the passwords yourself instead, or to configure Matrix,")
-    print("Pushover or the read API before the first start:")
-    print("  cp .env.example .env      # then edit, then up -d")
+    print("  http://localhost:8730/v1     the read API")
     print()
     print("`radicale_url` is seeded from CALSYNC_SETTING_RADICALE_URL in the")
     print("compose file, and the poller verifies it before it will start, so a")
     print("stack that cannot reach its calendar fails visibly instead of coming")
     print("up healthy and writing nothing. `docker compose run --rm calsync")
     print("check` asks the same question at any time.")
-    return 0
-
-
-def cmd_bootstrap(args) -> int:
-    """Generate the credentials a first run needs, instead of asking for them.
-
-    Run by a one-shot compose service as root, before anything else starts —
-    which is the only moment the secrets file can be handed to uid 10001
-    without somebody remembering `sudo chown` on a Linux host.
-
-    Safe to run on every `up`: the users file existing means auth is already
-    established, and rotating a password every subscribed device still uses
-    would be worse than the friction this removes.
-    """
-    try:
-        result = bootstrap_mod.run(
-            Path(args.directory),
-            store=_secrets(args) if getattr(args, "secrets", None) else None,
-            # 0 means "leave the ownership alone", per the flag's help.
-            owner_uid=args.owner_uid or None,
-        )
-    except bootstrap_mod.BootstrapError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
-
-    for line in result.lines:
-        print(f"  {line}", flush=True)
-    if result.reader_password:
-        # Once, and only on the run that created it. It is in the secret store
-        # too — this is here so subscribing a phone does not start with reading
-        # a JSON file as root.
-        print(flush=True)
-        print("  A read-only account for the family's devices:", flush=True)
-        print(f"    user     {bootstrap_mod.READER_USER}", flush=True)
-        print(f"    password {result.reader_password}", flush=True)
-        print("  Stored as "
-              f"{bootstrap_mod.READER_REF} if you need it again.", flush=True)
-    if result.api_token:
-        # Same reasoning: generated here, and the console shows only that a
-        # token is stored, never the value.
-        print(flush=True)
-        print("  The read API's bearer token:", flush=True)
-        print(f"    {result.api_token}", flush=True)
-        print("  Stored as "
-              f"{bootstrap_mod.API_REF} if you need it again.", flush=True)
     return 0
 
 
@@ -771,24 +731,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_init_deploy.add_argument("directory", nargs="?", default=".")
     p_init_deploy.set_defaults(fn=cmd_init_deploy)
 
-    p_bootstrap = sub.add_parser(
-        "bootstrap",
-        help="generate the server config and credentials a first run needs",
-    )
-    p_bootstrap.add_argument("directory", nargs="?", default="/deploy",
-                             help="deployment directory (default: /deploy)")
-    p_bootstrap.add_argument("--secrets", help="path to a secrets JSON file")
-    p_bootstrap.add_argument(
-        "--owner-uid", type=int,
-        # From the environment so compose can set it without a second command
-        # line. `scripts/dev-stack.sh` uses 0: there, the host reads the same
-        # secrets file the container does, and handing it to uid 10001 would
-        # lock this account out of its own development stack.
-        default=int(os.environ.get("CALSYNC_BOOTSTRAP_OWNER_UID")
-                    or bootstrap_mod.CALSYNC_UID),
-        help="hand the secrets file to this uid (0 to leave it alone)",
-    )
-    p_bootstrap.set_defaults(fn=cmd_bootstrap)
 
     p_set = sub.add_parser("set", help="set one setting")
     p_set.add_argument("key")
