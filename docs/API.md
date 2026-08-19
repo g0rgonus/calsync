@@ -226,7 +226,9 @@ DELETE /v1/events/{uid}              # STATUS:CANCELLED tombstone, not a purge
 ```
 
 The two reads are **the only part of this document that exists**. `calsync api`
-serves them on port 8731; everything else here — documents, proposals, review,
+serves them on port 8731, and the compose stack serves them at `/v1` on its one
+published port, where the paths in this document and in `GET /v1` are correct
+as written (`docs/deployment/proxy.md`); everything else here — documents, proposals, review,
 tasks, amendments — is a design contract with no code behind it, because none
 of its consumers exist yet. Cancellation still writes a tombstone rather than
 purging, so a deletion propagates instead of leaving a stale event on every

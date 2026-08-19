@@ -69,7 +69,7 @@ so a fresh clone needs:
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/pytest                                    # 515 tests, ~5s
+.venv/bin/pytest                                    # 518 tests, ~5s
 .venv/bin/pytest tests/test_player360.py -k content_hash    # single test
 ```
 
@@ -160,19 +160,51 @@ calsync --db drive.db stage tr-otters          # routes to the `onboarding` coll
 calsync --db drive.db promote tr-otters        # gated on a clean parse + a seen fixture
 ```
 
-Docker: `docker compose up -d` runs Radicale, the poller and the console;
-one-off commands go through `docker compose run --rm calsync <cmd>`. The read
-API is opt-in — `docker compose --profile api up -d api` — because its only
-intended consumer does not exist yet and an authenticated listener nothing talks
-to is surface without a purpose.
+Docker: `docker compose up -d` runs Radicale, the poller, the console and a
+Caddy `proxy`; one-off commands go through `docker compose run --rm calsync
+<cmd>`. The read API is opt-in — `docker compose --profile api up -d api` —
+because its only intended consumer does not exist yet and an authenticated
+listener nothing talks to is surface without a purpose.
+
+**The stack publishes one port** and routes by path: `/` is the console,
+`/cal/` is Radicale, `/v1` is the read API (`/api/…` 308s onto it).
+`docs/deployment/proxy.md` is the reference. Three constraints hold it up:
+
+- **`/cal` uses `handle`, never `handle_path`.** Radicale strips the prefix
+  itself whenever an `X-Forwarded-*` header is present, so it needs the path
+  whole plus `X-Script-Name` — which is also what prefixes the hrefs in a
+  PROPFIND body, the only thing a CalDAV client navigates by. Stripping in both
+  places strips by *string*, not by path segment:
+  `"/calsync/family/".removeprefix("/cal")` is `"sync/family/"`, which fails an
+  assertion inside Radicale and answers 500 to everything. The writer account is
+  `calsync`, so `/cal` is a prefix of its principal path.
+- **The API is mounted at its own `/v1`, not under a stripped `/api`.** `GET
+  /v1` publishes server-absolute paths generated from the route table, so a
+  stripped prefix makes every path it advertises a 404 on the console. `/api` is
+  a 308 signpost — 308 because the write endpoint is a POST.
+- **The three services share one browser origin.** The console's write guard is
+  a same-origin check and it has no login, so anything else on this port is
+  same-origin with it. Safe for these three; re-examine before a fourth.
+
+`bootstrap` places `config/caddy/Caddyfile` from the image's deploy assets,
+never overwriting an edited one. `proxy` has no `depends_on` on what it fronts,
+so a backend that is down is a 502 on its own path rather than a stack that will
+not start.
+
+**`docker-compose.yml`, `.env.example` and the files under `deploy/` carry
+config and nothing else.** Reference lives in `docs/deployment/`; reasoning that
+is no longer load-bearing lives in the git history. Shipped files state what is
+true now — no "this used to be", no accounts of what went wrong. When a
+constraint is real and non-obvious, one factual line saying what it is, and the
+detail in the doc.
 
 The image is published to `ghcr.io/g0rgonus/calsync` by CI, for amd64 and
 arm64, on three moving tags — `release` (newest version tag), `latest` (main)
 and `dev` (a feature branch) — plus `sha-` on every build. Compose defaults to
 `release`, so a deployment does not follow work in progress. It carries its own
 deployment assets: `docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/out"
-<image> init-deploy /out` writes the compose file and Radicale config, so a
-homelab never needs a checkout.
+<image> init-deploy /out` writes the compose file, Radicale's config and the
+Caddyfile, so a homelab never needs a checkout.
 
 **The image runs as uid 10001, and on Linux that is a recurring friction
 point** — it has bitten the secrets mount, the dev-stack script and
@@ -532,6 +564,11 @@ assertion.
   front of a page unreachable without one is a thing to maintain, not a control.
   Writes *are* checked, via `Sec-Fetch-Site`; never reintroduce an `Origin`-vs-
   `Host` comparison, which any Host-rewriting proxy turns into a total outage.
+  The `Origin` fallback behind it — all a browser too old for `Sec-Fetch-Site`
+  has — is coupled to `layout.tpl`'s referrer policy, which is why that meta is
+  `same-origin` and not `no-referrer`. `no-referrer` makes a browser send
+  `Origin: null` on every POST, so the console's own forms arrive opaque and
+  the fallback refuses every write it is reached for.
 - **The API is a separate app for a different reason, not a different port.**
   It serves programs over a bearer token, so it has no `Sec-Fetch-Site` check
   (no cookies, nothing to ride) and it refuses to start without a credential.

@@ -129,30 +129,46 @@ def _write(path: Path, text: str, mode: int) -> None:
     os.replace(tmp, path)
 
 
-def _assets() -> Path:
+def _assets(kind: str = "radicale") -> Path:
     source = next((p for p in DEPLOY_ASSETS if (p / "deploy" / "radicale").is_dir()), None)
     if source is None:
         raise BootstrapError("this build carries no deployment assets")
-    return source / "deploy" / "radicale"
+    return source / "deploy" / kind
+
+
+def _place(src: Path, out: Path, result: Result) -> None:
+    """Copy one asset into a deployment, once.
+
+    Never overwritten. These are files somebody edits — the rights file in
+    particular — and replacing an edited one during a routine `up -d` is how a
+    deployment loses a change nobody remembers making.
+    """
+    if out.exists():
+        result.say(f"kept  {out}")
+        return
+    out.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(src, out)
+    os.chmod(out, 0o644)
+    result.say(f"wrote {out}")
 
 
 def ensure_server_config(config_dir: Path, result: Result) -> None:
-    """Radicale's own config and rights file, if they are not there already.
-
-    Never overwritten. The rights file in particular is one somebody edits, and
-    replacing an edited one during a routine `up -d` is how a deployment loses
-    a change nobody remembers making.
-    """
+    """Radicale's own config and rights file, if they are not there already."""
     assets = _assets()
     for name in ("config", "rights"):
-        out = config_dir / name
-        if out.exists():
-            result.say(f"kept  {out}")
-            continue
-        out.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(assets / name, out)
-        os.chmod(out, 0o644)
-        result.say(f"wrote {out}")
+        _place(assets / name, config_dir / name, result)
+
+
+def ensure_proxy_config(config_dir: Path, result: Result) -> None:
+    """The Caddyfile behind the stack's one published port.
+
+    Here rather than left to the compose file to bind-mount out of a checkout,
+    because a pulled deployment has no checkout — the image carries its own
+    deployment assets and this is the same path Radicale's config takes. A
+    proxy that came up with no config would serve nothing at the only address
+    anybody has.
+    """
+    _place(_assets("caddy") / "Caddyfile", config_dir / "Caddyfile", result)
 
 
 def _supplied(ref: str) -> str:
@@ -314,5 +330,6 @@ def run(root: Path, *, store: SecretStore | None = None,
     result = Result()
     store = store or SecretStore(path=root / "secrets" / "secrets.json")
     ensure_server_config(root / "config" / "radicale", result)
+    ensure_proxy_config(root / "config" / "caddy", result)
     ensure_credentials(root / "config" / "radicale", store, result, owner_uid=owner_uid)
     return result

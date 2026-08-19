@@ -1,16 +1,11 @@
-# Radicale 3.x. Verify against the docs for the version you pull —
-# docs/deployment/radicale.md §7 notes that 2.x and 3.x differ enough that a
-# copied snippet will not work.
+# Radicale 3.x. Requirements and acceptance checks: docs/deployment/radicale.md.
 
 [server]
-# Container-internal. Public exposure is the compose port binding's job, and it
-# is deliberately loopback-only.
 hosts = 0.0.0.0:5232
 
 [auth]
 type = htpasswd
 htpasswd_filename = /config/users
-# bcrypt, not plaintext, even on a private network (deployment doc §3).
 htpasswd_encryption = bcrypt
 
 [rights]
@@ -18,15 +13,10 @@ type = from_file
 file = /config/rights
 
 [storage]
-# multifilesystem, NOT a database backend. One .ics per event satisfies R4/R5
-# by construction: a server that normalizes properties silently destroys
-# X-CALSYNC-* provenance and the X-APPLE-STRUCTURED-LOCATION pin.
+# File-backed, not a database backend: one .ics per event, so unknown X-
+# properties survive a round trip (R4/R5).
 type = multifilesystem
 filesystem_folder = /data/collections
-
-# Free version history of every schedule change. Note the hook fires per storage
-# operation, so a first-run backfill produces a commit per event (§4).
-hook = git add -A && (git diff --cached --quiet || git commit -m "calsync: %(user)s")
 
 [logging]
 level = info

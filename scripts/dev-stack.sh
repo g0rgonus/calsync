@@ -20,8 +20,11 @@ READER_USER="${READER_USER:-calreader}"
 command -v htpasswd >/dev/null || {
   echo "htpasswd not found (apache2-utils / httpd-tools)" >&2; exit 1; }
 
-mkdir -p config/radicale secrets
+mkdir -p config/radicale config/caddy secrets
 cp deploy/radicale/config deploy/radicale/rights config/radicale/
+# The stack publishes one port and `proxy` serves it. `bootstrap` places this
+# too, on a real deployment; here the script lays out config/ itself.
+cp deploy/caddy/Caddyfile config/caddy/
 
 # Generated, not prompted: an interactive password in a setup script is a
 # password that ends up in shell history or in a doc as a literal.
@@ -59,7 +62,7 @@ password="$(python3 -c 'import json;print(json.load(open("secrets/secrets.json")
 # the server and silently defeat the point.
 htpasswd -bBc config/radicale/users "$RADICALE_USER" "$password" 2>/dev/null
 htpasswd -bB  config/radicale/users "$READER_USER"  "$password" 2>/dev/null
-echo "  wrote config/radicale/{config,rights,users}"
+echo "  wrote config/radicale/{config,rights,users} and config/caddy/Caddyfile"
 
 # Keep the credentials owned by whoever ran this. `bootstrap` hands the secrets
 # file to uid 10001 on a real deployment, because a Linux bind mount preserves
@@ -68,7 +71,7 @@ echo "  wrote config/radicale/{config,rights,users}"
 # file owned by 10001 is one they cannot open.
 export CALSYNC_BOOTSTRAP_OWNER_UID=0
 
-docker compose --profile demo up -d radicale web feeds
+docker compose --profile demo up -d radicale web proxy feeds
 
 # Compose seeds this on a fresh database (CALSYNC_SETTING_RADICALE_URL), so on
 # a clean run the line below changes nothing. It stays because this script is
@@ -95,6 +98,9 @@ docker compose run --rm --no-deps \
   exit 1
 }
 echo
-echo "  radicale  http://localhost:5232"
-echo "  console   http://localhost:8730"
+# One published port, routed by path — docs/deployment/proxy.md. Radicale is
+# no longer on 5232 from the host, which is what the acceptance suite's
+# default base URL follows.
+echo "  console   http://localhost:8730/"
+echo "  radicale  http://localhost:8730/cal/"
 echo "  feeds     http://localhost:8000"

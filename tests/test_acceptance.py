@@ -40,7 +40,12 @@ pytestmark = pytest.mark.skipif(
     reason="needs a live stack: scripts/dev-stack.sh, then CALSYNC_ACCEPTANCE=1",
 )
 
-BASE = os.environ.get("CALSYNC_ACCEPTANCE_URL", "http://localhost:5232")
+# Through the proxy, at the path a phone subscribes to, because that is the
+# deployment — nothing publishes 5232 any more. It also means these checks
+# cover the one route that needs the server's cooperation: CalDAV clients
+# navigate by the absolute hrefs in a PROPFIND body, so a path-mounted
+# Radicale that is not told its prefix hands back hrefs to a different site.
+BASE = os.environ.get("CALSYNC_ACCEPTANCE_URL", "http://localhost:8730/cal")
 USER = os.environ.get("CALSYNC_ACCEPTANCE_USER", "calsync")
 READER = os.environ.get("CALSYNC_ACCEPTANCE_READER", "calreader")
 SECRETS = Path(__file__).resolve().parent.parent / "secrets" / "secrets.json"

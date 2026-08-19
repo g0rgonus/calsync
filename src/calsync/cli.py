@@ -490,6 +490,7 @@ def cmd_init_deploy(args) -> int:
         (source / ".env.example", dest / ".env.example"),
         (source / "deploy" / "radicale" / "config", dest / "config" / "radicale" / "config"),
         (source / "deploy" / "radicale" / "rights", dest / "config" / "radicale" / "rights"),
+        (source / "deploy" / "caddy" / "Caddyfile", dest / "config" / "caddy" / "Caddyfile"),
     ]
 
     written, kept = [], []
@@ -528,6 +529,13 @@ def cmd_init_deploy(args) -> int:
     print("the users file and generates both passwords — it prints the")
     print("read-only one for subscribing a phone, so keep that first log:")
     print("  docker compose logs bootstrap")
+    print()
+    # One port, and the calendar address is the one somebody has to type into a
+    # phone — printing it here is cheaper than finding it in a compose file.
+    print("It publishes one port, routed by path:")
+    print("  http://localhost:8730/       the console")
+    print("  http://localhost:8730/cal/   the calendar, for phones")
+    print("  http://localhost:8730/v1     the read API, with --profile api")
     print()
     print("To choose the passwords yourself instead, or to configure Matrix,")
     print("Pushover or the read API before the first start:")

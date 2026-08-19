@@ -56,14 +56,17 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y apache2-utils
       - name: Bring up the stack
         run: scripts/dev-stack.sh
-      - name: Wait for Radicale
+      # Through the proxy, on the stack's one published port, because that is
+      # what the acceptance suite now talks to. It waits on both halves at
+      # once: a 502 here is the proxy up and Radicale not.
+      - name: Wait for Radicale, through the proxy
         run: |
           for _ in $(seq 1 30); do
-            curl -fsS http://localhost:5232/ -o /dev/null && exit 0
+            curl -fsS http://localhost:8730/cal/ -o /dev/null && exit 0
             sleep 2
           done
-          echo "Radicale never came up" >&2
-          docker compose logs radicale
+          echo "Radicale never came up at /cal" >&2
+          docker compose logs radicale proxy
           exit 1
       - name: Run the acceptance checks
         env:
@@ -120,6 +123,22 @@ jobs:
           # it proves the users file and the stored secret are the same pair.
           docker compose run --rm calsync check
           docker compose run --rm calsync status
+      - name: The one published port serves all three paths
+        run: |
+          set -eux
+          for _ in $(seq 1 30); do
+            curl -fsS http://localhost:8730/ -o /dev/null && break
+            sleep 2
+          done
+          # The console at the root, and Radicale under a path with its prefix
+          # intact — a CalDAV client follows the hrefs in this body, so an
+          # unprefixed one is an autodiscovery failure that looks like a bad
+          # password.
+          curl -fsS http://localhost:8730/ -o /dev/null
+          curl -fsS http://localhost:8730/.well-known/caldav -o /dev/null
+          curl -fsS -u "calsync:$(python3 -c 'import json;print(json.load(open("secrets/secrets.json"))["radicale_password"])')" \
+            -X PROPFIND -H 'Depth: 0' http://localhost:8730/cal/ | grep -q '<href>/cal/'
+
       - name: A second up changes nothing
         run: |
           set -eux

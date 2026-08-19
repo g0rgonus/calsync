@@ -46,7 +46,26 @@ def test_a_first_run_produces_a_working_set(root):
     assert "\ncalreader:$2b$" in users
     assert (root / "config" / "radicale" / "config").exists()
     assert (root / "config" / "radicale" / "rights").exists()
+    assert (root / "config" / "caddy" / "Caddyfile").exists()
     assert result.reader_password
+
+
+def test_the_proxy_config_is_placed_and_then_left_alone(root):
+    """The one published port serves nothing without it, and it is editable.
+
+    A pulled deployment has no checkout to bind-mount a Caddyfile out of, so
+    the image carries it and this puts it in place — the same path Radicale's
+    config takes, and the same never-overwrite rule, because a route somebody
+    added by hand must survive the next `up -d`.
+    """
+    _run(root)
+    caddyfile = root / "config" / "caddy" / "Caddyfile"
+    assert "reverse_proxy radicale:5232" in caddyfile.read_text()
+
+    caddyfile.write_text("# mine\n")
+    result = _run(root)
+    assert caddyfile.read_text() == "# mine\n"
+    assert any("kept" in line and "Caddyfile" in line for line in result.lines)
 
 
 def test_the_stored_password_is_the_one_in_the_users_file(root):
