@@ -7,7 +7,7 @@ routes by path:
 |---|---|
 | `/` | the console |
 | `/cal/` | Radicale — this is what a phone subscribes to |
-| `/v1` | the read API, with `--profile api`. `/api/…` 308s onto it |
+| `/v1` | the read API. `/api/…` 308s onto it |
 
 `docker compose up -d` publishes `8730` and nothing else. calsync's own writes
 do not go through it: the poller reaches `http://radicale:5232` directly on the
@@ -87,8 +87,7 @@ overwrites it. `docker compose restart proxy` picks up a change;
 one first.
 
 `proxy` has no `depends_on` on the services it fronts. Caddy resolves upstreams
-per request, so a backend that is down is a 502 on its own path — including
-`/v1` until `--profile api` is up.
+per request, so a backend that is down is a 502 on its own path.
 
 TLS is not configured: the port is plain HTTP and whatever fronts the host
 terminates it. Serving HTTPS from Caddy directly needs a hostname and a volume

@@ -69,7 +69,7 @@ so a fresh clone needs:
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/pytest                                    # 520 tests, ~5s
+.venv/bin/pytest                                    # 524 tests, ~5s
 .venv/bin/pytest tests/test_player360.py -k content_hash    # single test
 ```
 
@@ -160,11 +160,12 @@ calsync --db drive.db stage tr-otters          # routes to the `onboarding` coll
 calsync --db drive.db promote tr-otters        # gated on a clean parse + a seen fixture
 ```
 
-Docker: `docker compose up -d` runs Radicale, the poller, the console and a
-Caddy `proxy`; one-off commands go through `docker compose run --rm calsync
-<cmd>`. The read API is opt-in — `docker compose --profile api up -d api` —
-because its only intended consumer does not exist yet and an authenticated
-listener nothing talks to is surface without a purpose.
+Docker: `docker compose up -d` runs Radicale, the poller, the console, the read
+API and a Caddy `proxy`; one-off commands go through `docker compose run --rm
+calsync <cmd>`. The API is in the default stack because it is no longer a port
+of its own — it is one path on the port the console already occupies, behind a
+bearer token `bootstrap` generates, which makes it the only service here with a
+credential in front of it.
 
 **The stack publishes one port** and routes by path: `/` is the console,
 `/cal/` is Radicale, `/v1` is the read API (`/api/…` 308s onto it).

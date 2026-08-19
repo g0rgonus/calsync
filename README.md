@@ -144,7 +144,7 @@ The stack publishes **one port**, and routes by path behind it:
 |---|---|
 | `http://localhost:8730/` | the console |
 | `http://localhost:8730/cal/` | Radicale — this is what a phone subscribes to |
-| `http://localhost:8730/v1` | the read API, with `--profile api` |
+| `http://localhost:8730/v1` | the read API |
 
 One address, one certificate, one thing to put a VPN in front of. The three
 services share a browser origin as a result, and the CalDAV route needs the
@@ -219,8 +219,8 @@ already handles that with backoff. `calsync check` asks the question directly at
 any time, and the console has the same button on `/settings`. CI follows the
 documented first run on Linux, which is where the ownership problems live.
 
-`docker compose --profile api up -d api` adds the read API — opt-in, because its
-only consumer is an agent that does not exist yet.
+The read API is part of the stack, at `/v1`. It refuses to serve without a
+bearer token, and `bootstrap` generates one and prints it once.
 
 Any CalDAV server meeting the R1–R8 contract in
 [docs/deployment/radicale.md](docs/deployment/radicale.md) will do; Radicale is

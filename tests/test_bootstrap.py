@@ -326,3 +326,56 @@ def test_a_users_file_somebody_else_built_is_left_alone(root):
 
     assert (target / "users").read_text() == entries
     assert result.reader_password == ""
+
+
+# --- the read API's token ----------------------------------------------------
+#
+# The API refuses to serve without one, so generating it here is what lets that
+# service be on by default rather than behind a profile.
+
+
+def test_a_first_run_generates_and_reports_the_api_token(root):
+    result = _run(root)
+    stored = json.loads((root / "secrets" / "secrets.json").read_text())
+
+    assert stored["api_token"] == result.api_token
+    assert len(result.api_token) >= 24
+
+
+def test_the_api_token_is_not_rotated(root):
+    first = _run(root).api_token
+    again = _run(root)
+
+    stored = json.loads((root / "secrets" / "secrets.json").read_text())
+    assert stored["api_token"] == first
+    assert not again.api_token, "only reported on the run that created it"
+
+
+def test_a_supplied_api_token_is_never_copied_into_the_secrets_file(root, monkeypatch):
+    monkeypatch.setenv("CALSYNC_SECRET_API_TOKEN", "chosen-by-me")
+    result = _run(root)
+    stored = json.loads((root / "secrets" / "secrets.json").read_text())
+
+    assert "api_token" not in stored
+    assert not result.api_token, "nothing to print — the operator has it"
+
+
+def test_the_secrets_file_is_handed_over_after_every_secret_is_written(root, monkeypatch):
+    """The ordering bug this arrangement exists to avoid.
+
+    `SecretStore.put` writes a new file and renames it, so ownership reverts to
+    whoever bootstrap is running as. A handover done part-way through is undone
+    by the next thing stored — and on a run where only the API token is missing,
+    a handover living inside `ensure_credentials` would not happen at all,
+    leaving a root-owned secrets file the poller cannot read.
+    """
+    seen = {}
+
+    def record(path, uid, result):
+        seen["contents"] = json.loads(path.read_text())
+
+    monkeypatch.setattr(bootstrap, "_hand_over", record)
+    bootstrap.run(root, store=_store(root), owner_uid=10001)
+
+    assert "api_token" in seen["contents"], "handed over before the token was written"
+    assert "radicale_password" in seen["contents"]
