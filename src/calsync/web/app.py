@@ -135,6 +135,14 @@ def create_app(
 
         ``none`` means a user-initiated navigation with no initiator — a typed
         URL or a bookmark, which no attacker page can produce.
+
+        The ``Origin`` fallback is coupled to ``layout.tpl``'s referrer policy.
+        ``no-referrer`` makes a browser serialize ``Origin`` as ``null`` on every
+        POST — Fetch, "append a request `Origin` header" — so the console's own
+        forms arrived opaque and this refused every write it was ever reached
+        for, on exactly the old browsers it exists to serve. It is
+        ``same-origin`` for that reason: nothing leaks to an outbound link, and
+        a write to the console still says where it came from.
         """
         if request.method not in ("POST", "PUT", "DELETE"):
             return
@@ -157,14 +165,27 @@ def create_app(
         if not origin:
             return
         host = request.headers.get("Host") or ""
-        if urlparse(origin).netloc in {host, *trusted_origins}:
+        sent = urlparse(origin).netloc
+        if sent in {host, *trusted_origins}:
             return
+        if not sent:
+            # An opaque origin — a sandboxed frame, a page opened from a file,
+            # or a referrer policy that suppresses it. It names no host, so
+            # --trusted-origin has nothing to take; saying so beats printing the
+            # flag with an empty value after it.
+            raise Refused(
+                f"that form came from an opaque origin ({origin}), which names no "
+                f"host, so there is no --trusted-origin for it. If you are looking "
+                f"at this console at {host!r} right now, that is a bug in calsync "
+                "rather than something you did — its own pages are supposed to "
+                "send their origin."
+            )
         raise Refused(
-            f"that form was submitted from {urlparse(origin).netloc or origin!r}, "
+            f"that form was submitted from {sent!r}, "
             f"but this console is being served as {host!r}. If both of those are "
             "yours, which is what happens when anything in front of calsync "
             "rewrites Host, start it with "
-            f"--trusted-origin {urlparse(origin).netloc}"
+            f"--trusted-origin {sent}"
         )
 
     @app.error(500)
