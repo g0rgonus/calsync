@@ -140,7 +140,10 @@ jobs:
           # password.
           curl -fsS http://localhost:8730/ -o /dev/null
           curl -fsS http://localhost:8730/.well-known/caldav -o /dev/null
-          curl -fsS -u "calsync:$(python3 -c 'import json;print(json.load(open("secrets/secrets.json"))["radicale_password"])')" \
+          # sudo, because the step above just asserted this file is 600 and owned
+          # by uid 10001 — the runner cannot read it, which is the point.
+          pw=$(sudo python3 -c 'import json;print(json.load(open("secrets/secrets.json"))["radicale_password"])')
+          curl -fsS -u "calsync:$pw" \
             -X PROPFIND -H 'Depth: 0' http://localhost:8730/cal/ | grep -q '<href>/cal/'
 
       - name: A second up changes nothing
