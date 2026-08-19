@@ -47,6 +47,12 @@ if not data.get("radicale_password"):
 # credential, mints one, and rewrites the file this script just built — which
 # invalidates the calreader entry the R8 acceptance checks authenticate with.
 data.setdefault("radicale_reader_password", data["radicale_password"])
+# Same reasoning for the API's token. Any secret bootstrap finds missing it
+# mints, and `SecretStore.put` writes a whole new file — as root, mode 600,
+# inside a container. The host then cannot read the passwords the acceptance
+# suite authenticates with. Seeding every secret bootstrap knows about is what
+# keeps this file the host's.
+data.setdefault("api_token", secrets.token_urlsafe(32))
 # Mode before content: the gap between creating a world-readable file and
 # chmod-ing it is exactly long enough to lose a credential.
 fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)

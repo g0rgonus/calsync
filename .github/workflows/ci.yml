@@ -31,8 +31,8 @@ jobs:
     name: tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           # The floor from pyproject. Testing the oldest supported version is
           # the useful end: a newer one passing says nothing about it.
@@ -44,8 +44,8 @@ jobs:
     name: acceptance (live Radicale)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
       - run: pip install -e '.[dev]'
@@ -86,7 +86,7 @@ jobs:
     # which is right for a laptop running the tests but sidesteps the mounted
     # file that a deployment actually reads.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Follow the documented first run
         run: |
           set -eux
@@ -174,7 +174,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       # arm64 is emulated on an amd64 runner. Slower, and the alternative is a
       # second runner and a manifest-merge step for an image whose build is
       # `pip install` and nothing else.
