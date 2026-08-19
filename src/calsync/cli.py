@@ -20,6 +20,8 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+# By name: `.secrets` is a module here and `_secrets` is already a function.
+from secrets import token_urlsafe
 
 from . import config as config_mod
 from . import db, repo
@@ -465,6 +467,40 @@ DEPLOY_ASSETS = (
 )
 
 
+#: The secrets the stack will not start without. `.env.example` carries them as
+#: empty assignments; this fills them in.
+REQUIRED_SECRETS = (
+    "CALSYNC_SECRET_RADICALE_PASSWORD",
+    "CALSYNC_SECRET_RADICALE_READER_PASSWORD",
+    "CALSYNC_SECRET_API_TOKEN",
+)
+
+
+def _write_env(example: Path, out: Path) -> None:
+    """`.env` with the three required secrets filled in.
+
+    Generated here rather than asked for, because three random strings are not a
+    decision anybody wants to make — but generated *once, on the host, by the
+    operator*, which is what makes this different from the init container this
+    replaced. `.env` stays the single place a credential is written, Radicale
+    still derives its users file from it on every start, and nothing regenerates
+    behind anybody's back: `init-deploy` never overwrites, so a second run keeps
+    the file and every subscribed device with it.
+
+    Not printed. They are in a file the person running this owns, and echoing a
+    credential puts it in scrollback and in CI logs.
+    """
+    text = example.read_text()
+    for name in REQUIRED_SECRETS:
+        text = text.replace(f"{name}=\n", f"{name}={token_urlsafe(24)}\n", 1)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    # Mode before content: the window between a world-readable file and a chmod
+    # is exactly long enough to lose a credential.
+    fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w") as handle:
+        handle.write(text)
+
+
 def cmd_init_deploy(args) -> int:
     """Write out everything a deployment needs besides the image.
 
@@ -486,10 +522,6 @@ def cmd_init_deploy(args) -> int:
     dest = Path(args.directory)
     wanted = [
         (source / "docker-compose.yml", dest / "docker-compose.yml"),
-        # Not `.env`: this writes files nobody has edited yet, and a `.env`
-        # holding real credentials is exactly the file a later `init-deploy`
-        # must not be able to touch. The example is copied, and copying it is
-        # the deployment's job.
         (source / ".env.example", dest / ".env.example"),
         (source / "deploy" / "radicale" / "config", dest / "config" / "radicale" / "config"),
         (source / "deploy" / "radicale" / "rights", dest / "config" / "radicale" / "rights"),
@@ -519,6 +551,13 @@ def cmd_init_deploy(args) -> int:
         print('    -v "$PWD:/out" <image> init-deploy /out', file=sys.stderr)
         return 1
 
+    env = dest / ".env"
+    if env.exists():
+        kept.append(env)
+    else:
+        _write_env(source / ".env.example", env)
+        written.append(env)
+
     for path in written:
         print(f"  wrote {path}")
     for path in kept:
@@ -526,18 +565,14 @@ def cmd_init_deploy(args) -> int:
 
     print()
     print("Next, in that directory:")
-    print("  cp .env.example .env")
-    print()
-    print("Fill in three secrets — the stack will not start without them:")
-    print("  CALSYNC_SECRET_RADICALE_PASSWORD          calsync's own account")
-    print("  CALSYNC_SECRET_RADICALE_READER_PASSWORD   the one phones use")
-    print("  CALSYNC_SECRET_API_TOKEN                  the read API")
-    print()
-    print("Any three random strings will do:")
-    print("  openssl rand -base64 24")
-    print()
-    print("Then:")
     print("  docker compose up -d")
+    print()
+    print("That is the whole first run. The three secrets the stack needs were")
+    print("generated into .env — the calendar password, the read-only one your")
+    print("phones use, and the read API's token. Nothing rotates them: running")
+    print("this again keeps the file, and every subscribed device with it.")
+    print()
+    print("  grep CALSYNC_SECRET_RADICALE_READER_PASSWORD .env    # for a phone")
     print()
     # The calendar address is the one somebody has to type into a phone, so
     # printing it here is cheaper than finding it in a compose file.

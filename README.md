@@ -123,20 +123,26 @@ tagged version and what a deployment should track, **`latest`** is `main`, and
 `v0.2.0` pins outright, and every build gets a `sha-` tag for bisecting.
 Compose defaults to `release`; `CALSYNC_TAG` in `.env` changes it.
 
-To stand up a stack **without cloning this repo** — the image carries its own
-compose file and server config:
+The whole first run, in a directory with nothing in it:
 
 ```bash
 mkdir calsync && cd calsync
 docker run --rm --user "$(id -u):$(id -g)" \
   -v "$PWD:/out" ghcr.io/g0rgonus/calsync:release init-deploy /out
+docker compose up -d
 ```
 
-That writes `docker-compose.yml`, `.env.example`,
-`config/radicale/{config,rights}` and `config/caddy/Caddyfile`, then prints what
-to do next — which is `docker compose up -d`. It never overwrites a file you have edited, and it
-never writes `.env` itself, because that is the one file that holds real
-credentials.
+`init-deploy` writes `docker-compose.yml`, `config/radicale/{config,rights}`,
+`config/caddy/Caddyfile` and a `.env` with the three secrets the stack needs,
+generated. It never overwrites a file you have edited — run it again after an
+upgrade and it keeps everything, including `.env`, so no password rotates and no
+device re-subscribes.
+
+The read-only password is the one a phone needs:
+
+```bash
+grep CALSYNC_SECRET_RADICALE_READER_PASSWORD .env
+```
 
 The stack publishes **one port**, and routes by path behind it:
 
@@ -151,8 +157,11 @@ services share a browser origin as a result, and the CalDAV route needs the
 server's cooperation rather than a plain proxy pass — both in
 `docs/deployment/proxy.md`.
 
-From a checkout, `docker compose up -d` on its own is the whole first run. It
-used to be eight commands, and each one that went away was a step somebody
+A checkout is the same two commands — `init-deploy` reads its assets from the
+repo when it is run from one (`.venv/bin/calsync init-deploy .`), or
+`scripts/dev-stack.sh` does it plus the demo feed server.
+
+It used to be eight commands, and each one that went away was a step somebody
 could get wrong quietly:
 
 - **`radicale_url`** ships as `http://localhost:5232` — right when calsync runs
@@ -168,12 +177,9 @@ could get wrong quietly:
   values at every start, into `/tmp` at 0600 — derived rather than stored, so it
   cannot drift, and no calendar password is ever written to the host.
 
-The first run:
-
-```bash
-cp .env.example .env      # fill in the three secrets
-docker compose up -d
-```
+`.env` is written for you by `init-deploy`, secrets and all. To choose them
+yourself, or to configure Matrix, Pushover or the household conventions, edit it
+before the first `up` — `.env.example` documents every key.
 
 Everything in there goes through one of two prefixes, both of which already
 existed for their own reasons:

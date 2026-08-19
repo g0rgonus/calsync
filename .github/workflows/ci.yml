@@ -83,23 +83,17 @@ jobs:
       - name: Follow the documented first run
         run: |
           set -eux
-          # The documented first run, exactly: copy the example, fill in the
-          # three secrets it refuses to start without, up.
-          cp .env.example .env
-          python3 - <<'PY'
-          import pathlib, secrets
-          p = pathlib.Path(".env")
-          s = p.read_text()
-          for key in ("CALSYNC_SECRET_RADICALE_PASSWORD",
-                      "CALSYNC_SECRET_RADICALE_READER_PASSWORD",
-                      "CALSYNC_SECRET_API_TOKEN"):
-              s = s.replace(f"{key}=", f"{key}={secrets.token_urlsafe(24)}", 1)
-          p.write_text(s)
-          PY
-          # config/ comes from the image, the way a pulled deployment gets it.
+          # The documented first run, exactly: one command, then up. Config and
+          # .env both come from the image, the way a pulled deployment gets them.
           docker compose build calsync
           docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/out" \
             ghcr.io/g0rgonus/calsync:release init-deploy /out
+          # Everything the stack needs, and nothing it does not.
+          test "$(stat -c '%a' .env)" = "600"
+          test "$(grep -c '^CALSYNC_SECRET.*=.' .env)" -eq 3
+          test -s config/radicale/config
+          test -s config/radicale/rights
+          test -s config/caddy/Caddyfile
           # --build, because compose pulls the published image when one exists
           # in the registry. Without it this job tests the last release against
           # this branch's compose file, which is not what it is for.
@@ -164,7 +158,12 @@ jobs:
           set -eux
           # Derived on every start, so the property to hold is that the same
           # .env keeps producing the same working pair — a changed one would
-          # lock out every subscribed device.
+          # lock out every subscribed device. A second init-deploy must not
+          # touch it either.
+          before=$(sha256sum .env)
+          docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/out" \
+            ghcr.io/g0rgonus/calsync:release init-deploy /out
+          test "$(sha256sum .env)" = "$before"
           docker compose up -d --build
           sleep 10
           docker compose run --rm calsync check

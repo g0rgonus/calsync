@@ -1,9 +1,11 @@
 # calsync + Radicale.  First run:
 #
-#   cp .env.example .env      # fill in the three required secrets
+#   docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/out" \
+#     ghcr.io/g0rgonus/calsync:release init-deploy /out
 #   docker compose up -d
 #
-# What each service and variable is: docs/deployment/compose.md.
+# init-deploy writes config/ and a .env holding the three secrets this will not
+# start without. What each service and variable is: docs/deployment/compose.md.
 
 x-env: &env
   env_file:

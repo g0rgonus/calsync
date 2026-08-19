@@ -5,22 +5,32 @@ routing in `proxy.md`.
 
 ## First run
 
-```bash
-cp .env.example .env      # fill in the three secrets
-docker compose up -d
-```
-
-The three are `CALSYNC_SECRET_RADICALE_PASSWORD`,
-`CALSYNC_SECRET_RADICALE_READER_PASSWORD` and `CALSYNC_SECRET_API_TOKEN`. Any
-random strings — `openssl rand -base64 24`. The stack will not start without
-them: Radicale's own container refuses, naming the variable.
-
-From a pulled image rather than a checkout, `init-deploy` writes the compose
-file and server config first:
+In a directory with nothing in it:
 
 ```bash
 docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/out" \
   ghcr.io/g0rgonus/calsync:release init-deploy /out
+docker compose up -d
+```
+
+`init-deploy` writes the compose file, `config/radicale/{config,rights}`,
+`config/caddy/Caddyfile` and a `.env` holding three generated secrets:
+`CALSYNC_SECRET_RADICALE_PASSWORD`, `..._READER_PASSWORD` and
+`..._API_TOKEN`. The stack will not start without them — Radicale's container
+refuses, naming the variable.
+
+Generated once, on the host, by whoever runs the command. `.env` stays the only
+place a credential is written, and `init-deploy` never overwrites, so running it
+again after an upgrade rotates nothing and re-subscribes no device.
+
+From a checkout it is the same command run from the repo —
+`.venv/bin/calsync init-deploy .`, which takes the assets from `deploy/` rather
+than the image. `scripts/dev-stack.sh` does that plus the demo feed server.
+
+The read-only password is the one a phone needs:
+
+```bash
+grep CALSYNC_SECRET_RADICALE_READER_PASSWORD .env
 ```
 
 One port is published, routed by path:
