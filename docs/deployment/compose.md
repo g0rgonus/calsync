@@ -226,6 +226,14 @@ docker compose pull && docker compose up -d
 `.env`, `rights` and both volumes are untouched by that, and no password
 changes — devices stay subscribed.
 
+### 0.5.x → 0.6.0
+
+The compose file moved: `radicale` now assembles its rights file at start, the
+way it already assembled its users file. Everything works without re-issuing it,
+with one exception — `CALSYNC_RADICALE_ANONYMOUS_READ` is read by that command,
+so on a 0.5.x compose file setting it does nothing at all and says nothing about
+it. To use it, re-issue the compose file with the block above.
+
 To run a build that has no version yet, pin the immutable `sha-` tag —
 `CALSYNC_TAG=sha-1a2b3c4`. Not `dev`, which repoints to whichever branch was
 pushed last.
