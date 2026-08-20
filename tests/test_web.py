@@ -20,6 +20,7 @@ from urllib.parse import unquote, urlencode
 import pytest
 
 from calsync import db, repo
+from calsync.fetch import FetchError
 from calsync.secrets import SecretStore
 from calsync.settings import Settings
 from calsync.web import app as web_app
@@ -1196,6 +1197,174 @@ def test_every_route_is_exercised_by_some_test():
         if not re.search(pattern, tests_src):
             missing.append(path)
     assert not missing, f"routes no test calls: {missing}"
+
+
+# --- the calendar -----------------------------------------------------------
+
+
+def _month_before(month: str) -> str:
+    year, number = (int(part) for part in month.split("-"))
+    return f"{year - 1}-12" if number == 1 else f"{year}-{number - 1:02d}"
+
+
+def _month_after(month: str) -> str:
+    year, number = (int(part) for part in month.split("-"))
+    return f"{year + 1}-01" if number == 12 else f"{year}-{number + 1:02d}"
+
+
+def synced(client, tmp_path, calendar):
+    """A source with a season actually written to `calendar`."""
+    onboard(client)
+    conn = db.open_db(tmp_path / "calsync.db")
+    source = repo.list_sources(conn, enabled_only=False)[0]
+    client.post(f"/sources/{source.id}/sync")
+    return source.id
+
+
+def test_the_calendar_shows_what_was_written(writing, tmp_path):
+    client, calendar = writing
+    synced(client, tmp_path, calendar)
+
+    page = client.get("/calendar?month=2026-03")
+    assert page["status"] == 200
+    assert "March 2026" in page["body"]
+    # Titled the way the calendar has it — composed now, through the same
+    # `normalize/title.py` the event went through on its way out.
+    assert "Parker" in page["body"]
+
+    # Everything that reached the calendar is on some month of this page, and
+    # nothing else is. A count for one month would pass just as well if half the
+    # season had been dropped on a boundary.
+    conn = db.connect(tmp_path / "calsync.db")
+    months = sorted(
+        row["m"] for row in conn.execute(
+            "SELECT DISTINCT substr(starts_at, 1, 7) AS m FROM event_state"
+        )
+    )
+    # A month either side: days are the venue's, so an event stored just after
+    # midnight UTC belongs to the previous month locally.
+    span = [_month_before(months[0]), *months, _month_after(months[-1])]
+    chips = sum(
+        client.get(f"/calendar?month={m}")["body"].count('class="chip')
+        for m in span
+    )
+    assert chips == len(calendar.written)
+
+
+def test_the_calendar_reads_the_receipt_not_the_feed(writing, tmp_path, feed):
+    """`event_content`, the same source the digest and the API read.
+
+    A feed that has since changed — or gone away entirely — must not change what
+    this page says, because it has not changed what is on anybody's phone.
+    """
+    client, calendar = writing
+    synced(client, tmp_path, calendar)
+    before = client.get("/calendar?view=agenda&month=2026-03")["body"]
+
+    feed.error = FetchError("the team app is down")
+    assert client.get("/calendar?view=agenda&month=2026-03")["body"] == before
+    assert feed.fetches, "sanity: the fixture feed is the one being read"
+
+
+def test_the_calendar_offers_both_views(writing, tmp_path):
+    client, calendar = writing
+    synced(client, tmp_path, calendar)
+
+    grid = client.get("/calendar?month=2026-03")["body"]
+    agenda = client.get("/calendar?view=agenda&month=2026-03")["body"]
+    assert "<table class=\"cal\"" in grid and "agenda-row" not in grid
+    assert "agenda-row" in agenda and "<table class=\"cal\"" not in agenda
+    # Every chip in the grid points at its row in the agenda.
+    assert "#ev-0" in grid and 'id="ev-0"' in agenda
+
+
+def test_a_month_with_nothing_in_it_says_which_kind_of_nothing(writing, tmp_path):
+    """Empty because nothing is on, or empty because it aged out of retention.
+
+    They read identically and mean opposite things — the second is not a gap in
+    the calendar, only in what calsync still remembers about it.
+    """
+    client, calendar = writing
+    synced(client, tmp_path, calendar)
+
+    ahead = client.get("/calendar?month=2027-01")["body"]
+    assert "no team has an event" in ahead
+
+    behind = client.get("/calendar?month=2020-01")["body"]
+    assert "retention window" in behind
+    assert "still on the calendar server" in behind
+
+
+def test_a_held_event_is_marked_on_the_calendar(writing, tmp_path):
+    """The enrichment collection is not a family calendar, and the page says so.
+
+    An event calsync could not place is on no-one's phone; showing it beside the
+    ones that are, unmarked, would be the console asserting something false.
+    """
+    client, calendar = writing
+    onboard(client)
+    conn = db.open_db(tmp_path / "calsync.db")
+    source = repo.list_sources(conn, enabled_only=False)[0]
+    # Promote it off staging: staging beats enrichment, so a staged source never
+    # holds anything for review.
+    repo.set_staging(conn, source.id, None)
+    conn.commit()
+    conn.close()
+    client.post(f"/sources/{source.id}/sync")
+
+    conn = db.connect(tmp_path / "calsync.db")
+    held = conn.execute(
+        "SELECT COUNT(*) AS n FROM event_state WHERE collection = 'enrichment'"
+    ).fetchone()["n"]
+    page = client.get("/calendar?view=agenda&month=2026-03")["body"]
+    if held:
+        assert "held for review" in page
+    else:
+        assert "held for review" not in page
+
+
+def test_the_calendar_filters_to_one_child(writing, tmp_path):
+    client, calendar = writing
+    synced(client, tmp_path, calendar)
+
+    page = client.get("/calendar?view=agenda&month=2026-03&child=parker")
+    assert page["status"] == 200
+    assert "Otters Spring 2026" in page["body"]
+
+    conn = db.connect(tmp_path / "calsync.db")
+    conn.execute(
+        "INSERT INTO children (id, name, initial, birth_order) "
+        "VALUES ('mira', 'Mira', 'M', 2)"
+    )
+    conn.commit()
+    other = client.get("/calendar?view=agenda&month=2026-03&child=mira")["body"]
+    assert "Otters Spring 2026" not in other
+    assert "Nothing written for March" in other
+
+
+def test_a_malformed_month_falls_back_rather_than_refusing(writing, tmp_path):
+    """It arrives from a link. An error page in place of a calendar helps nobody."""
+    client, calendar = writing
+    synced(client, tmp_path, calendar)
+
+    page = client.get("/calendar?month=not-a-month")
+    assert page["status"] == 200
+    assert "Stopped" not in page["body"]
+
+
+def test_the_calendar_does_not_claim_to_hold_what_calsync_did_not_write(
+    writing, tmp_path
+):
+    """A page called "Calendar" that shows only calsync's own writes has to say so.
+
+    Hand-created family appointments are never touched (docs/MATCHING.md), which
+    also means they are never seen — and a view that quietly omits half the
+    family's week is one somebody will plan around.
+    """
+    client, calendar = writing
+    synced(client, tmp_path, calendar)
+    page = client.get("/calendar?month=2026-03")["body"]
+    assert "added to the calendar by hand is not here" in page
 
 
 # --- syncing on demand ------------------------------------------------------

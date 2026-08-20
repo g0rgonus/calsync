@@ -15,7 +15,8 @@ feed URL, confirm three things, and the source is staged; the gate in
 `docs/ONBOARDING.md` §5 is the app's primary screen. `/venues` manages the alias
 table, pins and merges; `/household` edits kids and the sport catalog;
 `/settings` covers the `settings` table, and a team's own fields are on its
-source page. Nothing in the day-to-day path needs sqlite3 any more.
+source page. `/calendar` shows what has actually been written, month grid or
+agenda. Nothing in the day-to-day path needs sqlite3 any more.
 
 **The HTTP API** (`calsync api`, `src/calsync/api/`) serves `GET /v1` (the
 machine-readable contract), `GET /v1/events`, `GET /v1/events/{uid}` and
@@ -69,7 +70,7 @@ so a fresh clone needs:
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/pytest                                    # 509 tests, ~5s
+.venv/bin/pytest                                    # 517 tests, ~5s
 .venv/bin/pytest tests/test_player360.py -k content_hash    # single test
 ```
 
@@ -461,6 +462,18 @@ Decisions that span several files and are easy to undo by accident:
   lock is all there is between the console and the *poller*, which is a separate
   process — a sync that loses that race reports it and asks for a retry rather
   than half-writing.
+- **`/calendar` reads the receipt, like the digest and the API.**
+  `event_content` re-titled now, never a re-parse of the feed and never a read
+  back from Radicale — the same refusal `docs/API.md` gives Hermes. Three
+  consequences are load-bearing rather than regrettable: it shows what is on a
+  phone rather than what a feed currently says, a naming-convention change
+  re-renders it without re-fetching, and it **cannot** show a hand-created
+  family appointment. The page says that last one out loud, because a view
+  called "Calendar" that silently omits half a family's week is one somebody
+  will plan around. Days are grouped in the *venue's* timezone, matching
+  `digest.py` and the event bodies. A month below `sync_window_back_days` is
+  empty here and says why: the events are still on the calendar server, which
+  holds the only copy.
 - **Staging beats enrichment.** A source still being onboarded is already held
   somewhere; splitting its events across two holding calendars would make the
   promotion gate harder to read, not safer. `SyncReport.awaiting_review` matches
