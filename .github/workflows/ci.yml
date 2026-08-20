@@ -93,6 +93,7 @@ jobs:
           test "$(grep -c '^CALSYNC_SECRET.*=.' .env)" -eq 3
           test -s config/radicale/config
           test -s config/radicale/rights
+          test -s config/radicale/rights.anonymous
           test -s config/caddy/Caddyfile
           # --build, because compose pulls the published image when one exists
           # in the registry. Without it this job tests the last release against
@@ -266,3 +267,4 @@ jobs:
           test -f /tmp/deploy/docker-compose.yml
           test -f /tmp/deploy/config/radicale/config
           test -f /tmp/deploy/config/radicale/rights
+          test -f /tmp/deploy/config/radicale/rights.anonymous

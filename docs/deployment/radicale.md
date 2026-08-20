@@ -99,7 +99,10 @@ permissions: R
 
 `CALSYNC_RADICALE_ANONYMOUS_READ=1` in `.env` appends
 `config/radicale/rights.anonymous` to the rights file at start, which grants
-read to a request carrying **no credentials**. A phone then subscribes to a bare
+read to a request carrying **no credentials**. New in 0.6.0, and read by the
+compose file's own start-up command rather than by calsync — so a deployment
+carrying a 0.5.x `docker-compose.yml` has to re-issue it first
+(`compose.md`, "Upgrading"), or the variable sits there doing nothing. A phone then subscribes to a bare
 URL — `http://<host>:8730/cal/calsync/games/` — with nothing to type, nothing to
 re-enter when a device is wiped, and nothing to rotate.
 
