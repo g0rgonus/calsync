@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import socketserver
 import sqlite3
+import threading
 import urllib.request
 import traceback
 from concurrent.futures import ThreadPoolExecutor
@@ -78,7 +79,7 @@ def create_app(
     trusted_origins=(),
     matrix_opener=None,
     push_opener=None,
-    retire_target=None,
+    write_target=None,
     calendar_transport=None,
 ) -> Bottle:
     """Build the console.
@@ -93,6 +94,11 @@ def create_app(
     here than it looks: the sync window is what decides which events are live,
     so a console tested against a fixture from last spring would report an empty
     parse and every gate condition would pass vacuously.
+
+    ``write_target`` is the seam for the two console actions that reach the
+    family's real calendars — retiring a source and syncing one on demand. One
+    parameter rather than two, because a test that could inject a target for one
+    of them and not the other would be testing a console nobody runs.
     """
     app = Bottle()
     secrets = secrets or SecretStore()
@@ -111,6 +117,15 @@ def create_app(
 
     def connect():
         return closing(db.connect(db_path))
+
+    # Which sources a "Sync now" is in flight for. The server is threaded, so
+    # two clicks on a slow feed are two requests at once — and a sync is the one
+    # console action that both fetches and writes, where running it twice over
+    # means the second copy diffing against state the first has not committed
+    # yet. Nothing here coordinates with the *poller*; that is a different
+    # process and SQLite's write lock is what stands between them.
+    in_flight: set[str] = set()
+    in_flight_lock = threading.Lock()
 
     # --- guards ------------------------------------------------------------
 
@@ -486,9 +501,8 @@ def create_app(
     def retire_source_route(source_id):
         """Clear what a source still has coming, then stop polling.
 
-        Needs a real target, unlike everything else on this page — it is the one
-        console action that writes to the family's calendars, because removing
-        an event is a write. A preview cannot do it.
+        Needs a real target rather than the previews behind the rest of this
+        page, because removing an event is a write. "Sync now" is the other one.
 
         Events that have already happened stay put (`retire.py`), so retiring a
         season a month after it ended normally removes nothing and the message
@@ -497,7 +511,7 @@ def create_app(
         with connect() as conn:
             source = _require_source(conn, source_id)
             try:
-                target = retire_target or targeting.build_target(
+                target = write_target or targeting.build_target(
                     conn, secrets=secrets
                 )
                 report = retire.retire_source(conn, source, target, now=clock())
@@ -517,6 +531,113 @@ def create_app(
         if report.kept:
             done += f"; {report.kept} past event(s) left in place"
         redirect(f"/sources/{source_id}?ok=" + _q(f"Polling stopped — {done}."))
+
+    # --- syncing on demand -------------------------------------------------
+
+    def _sync_now(source_ids: list[str]) -> tuple[list, list[str]]:
+        """Run the real sync loop for the named sources, now.
+
+        The same ``sync_source`` the poller calls, against the same target — not
+        the dry run behind every other number on these pages. That is the whole
+        point of the button: a dry run cannot put a venue you have just taught,
+        or an answer you have just approved, on anybody's phone. Waiting for the
+        next poll can, in twenty minutes.
+
+        Two things it deliberately does not do. It does not touch the poller's
+        schedule, so a forced sync is extra work rather than a skipped one — the
+        feed is fetched twice in an hour, which is nothing, and the alternative
+        is a button that quietly *delays* the next automatic poll. And it does
+        not run the season-end, review or dispatch passes the poller runs after
+        a sync: those decide whether to disable a source and whether to page
+        somebody, and neither belongs on a key somebody pressed to see a change
+        land.
+        """
+        taken: list[str] = []
+        with in_flight_lock:
+            for source_id in source_ids:
+                if source_id not in in_flight:
+                    in_flight.add(source_id)
+                    taken.append(source_id)
+        if not taken:
+            raise Refused(
+                "that is already syncing — give it a moment rather than "
+                "starting a second run over the top of the first."
+            )
+
+        reports, problems = [], []
+        try:
+            with connect() as conn:
+                try:
+                    target = write_target or targeting.build_target(
+                        conn, secrets=secrets
+                    )
+                except (SecretError, TargetError) as exc:
+                    raise Refused(f"could not reach the calendar: {exc}") from exc
+
+                for source_id in taken:
+                    source = _require_source(conn, source_id)
+                    try:
+                        reports.append(
+                            sync_source(
+                                conn, source, target, now=clock(),
+                                secrets=secrets, fetcher=fetcher,
+                            )
+                        )
+                    except sqlite3.OperationalError as exc:
+                        if "locked" not in str(exc):
+                            raise
+                        # The poller holds the write lock from its first
+                        # recorded event to the end of the source, which is
+                        # longer than the busy timeout when a feed is large.
+                        # Nothing is lost: whatever reached the calendar before
+                        # this is on it, and the next poll records the rest.
+                        problems.append(
+                            f"{source_id}: the poller was writing to the "
+                            "database and would not let go in time — try again "
+                            "in a moment."
+                        )
+        finally:
+            with in_flight_lock:
+                in_flight.difference_update(taken)
+        return reports, problems
+
+    @app.post("/sources/<source_id>/sync")
+    def sync_one(source_id):
+        with connect() as conn:
+            source = _require_source(conn, source_id)
+            if not source.enabled:
+                # Refused rather than "resume, then sync": the events of a
+                # retired season were cancelled on the way out, and a sync would
+                # put every upcoming one back. Whoever paused it gets to say.
+                raise Refused(
+                    "polling is paused for this team, so there is nothing to "
+                    "sync it against. Resume polling first — and if it was "
+                    "retired rather than paused, be sure you want its events "
+                    "back on the calendar."
+                )
+
+        reports, problems = _sync_now([source_id])
+        if problems:
+            redirect(f"/sources/{source_id}?err=" + _q("; ".join(problems)))
+        redirect(f"/sources/{source_id}?ok=" + _q(reports[0].line()))
+
+    @app.post("/sync")
+    def sync_every():
+        """Every enabled source, one after another.
+
+        Serially, unlike the dashboard's checks: those are reads through their
+        own connections, and this writes.
+        """
+        with connect() as conn:
+            source_ids = [s.id for s in repo.list_sources(conn, enabled_only=True)]
+        if not source_ids:
+            redirect("/?err=" + _q("no team is being polled, so there is "
+                                   "nothing to sync."))
+
+        reports, problems = _sync_now(source_ids)
+        lines = [r.line() for r in reports] + problems
+        key = "err" if problems or any(r.status != "ok" for r in reports) else "ok"
+        redirect(f"/?check=0&{key}=" + _q(" · ".join(lines)))
 
     @app.post("/sources/<source_id>/persists")
     def set_persists(source_id):

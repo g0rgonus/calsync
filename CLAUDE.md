@@ -69,7 +69,7 @@ so a fresh clone needs:
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/pytest                                    # 502 tests, ~5s
+.venv/bin/pytest                                    # 509 tests, ~5s
 .venv/bin/pytest tests/test_player360.py -k content_hash    # single test
 ```
 
@@ -444,6 +444,23 @@ Decisions that span several files and are easy to undo by accident:
   forms call, so the agent path and the manual path cannot drift. An approved
   venue answer still leaves `pin_confirmed = 0`: approving an alias is not
   vouching for coordinates.
+- **"Sync now" is the console's second write, and it is the real sync loop.**
+  Everything else a source page reports comes from `sync_source(dry_run=True)`
+  against `_NoTarget`, which is what makes the gate trustworthy and also what
+  makes it useless for landing a change: an alias taught at breakfast reaches
+  a phone at the next poll. `POST /sources/<id>/sync` runs the same call the
+  poller runs, against `targeting.build_target` — the seam is `write_target`,
+  shared with retire, because a test that could inject a target for one and not
+  the other would be testing a console nobody runs. It refuses a **disabled**
+  source: retiring cancels every upcoming event and *then* disables, so syncing
+  one would put the season back with one click. It does not run the season-end,
+  review or dispatch passes the poller runs afterwards — those decide whether to
+  switch a source off and whether to page somebody, and neither belongs on a key
+  pressed to watch a change land. Concurrency is handled at two levels and they
+  are not the same: an in-process set stops a double-click, and SQLite's write
+  lock is all there is between the console and the *poller*, which is a separate
+  process — a sync that loses that race reports it and asks for a retry rather
+  than half-writing.
 - **Staging beats enrichment.** A source still being onboarded is already held
   somewhere; splitting its events across two holding calendars would make the
   promotion gate harder to read, not safer. `SyncReport.awaiting_review` matches

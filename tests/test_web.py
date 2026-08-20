@@ -12,9 +12,10 @@ real ``config.apply`` and the real sync loop in dry-run mode.
 from __future__ import annotations
 
 import json
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import unquote, urlencode
 
 import pytest
 
@@ -1197,6 +1198,122 @@ def test_every_route_is_exercised_by_some_test():
     assert not missing, f"routes no test calls: {missing}"
 
 
+# --- syncing on demand ------------------------------------------------------
+
+
+def test_sync_now_writes_for_real(writing, tmp_path):
+    """The point of the button, and the thing a dry run cannot do.
+
+    Every other number on the source page comes from `sync_source(dry_run=True)`
+    against a target that refuses to be written to. This one has to reach the
+    calendar, so the test checks the calendar rather than a redirect.
+    """
+    client, calendar = writing
+    onboard(client)
+    conn = db.connect(tmp_path / "calsync.db")
+    source_id = repo.list_sources(conn, enabled_only=False)[0].id
+    assert repo.tracked_events(conn, source_id) == 0
+
+    result = client.post(f"/sources/{source_id}/sync")
+    assert result["status"] == 303
+
+    conn = db.connect(tmp_path / "calsync.db")
+    assert calendar.written, "nothing reached the calendar"
+    assert repo.tracked_events(conn, source_id) == len(calendar.written)
+
+
+def test_sync_now_reports_what_it_did(writing, tmp_path):
+    """The report line, not "done". A held guard and a clean poll both redirect."""
+    client, calendar = writing
+    onboard(client)
+    conn = db.connect(tmp_path / "calsync.db")
+    source_id = repo.list_sources(conn, enabled_only=False)[0].id
+
+    where = client.post(f"/sources/{source_id}/sync")["headers"]["Location"]
+    assert "ok=" in where
+    assert "new" in unquote(where), where
+
+
+def test_sync_now_is_refused_for_a_paused_source(writing, tmp_path):
+    """Retiring cancels every upcoming event and then disables the source.
+
+    A sync that ignored that would write the whole season back, which is the
+    console undoing a deliberate act with one click and no warning.
+    """
+    client, calendar = writing
+    onboard(client)
+    conn = db.connect(tmp_path / "calsync.db")
+    source_id = repo.list_sources(conn, enabled_only=False)[0].id
+    client.post(f"/sources/{source_id}/enabled", {"enabled": "0"})
+
+    page = client.post(f"/sources/{source_id}/sync")["body"]
+    assert "paused" in page
+    assert not calendar.written, "a paused source was synced anyway"
+
+
+def test_the_source_page_does_not_offer_to_sync_a_paused_source(writing, tmp_path):
+    client, _calendar = writing
+    onboard(client)
+    conn = db.connect(tmp_path / "calsync.db")
+    source_id = repo.list_sources(conn, enabled_only=False)[0].id
+    assert "/sync" in client.get(f"/sources/{source_id}")["body"]
+
+    client.post(f"/sources/{source_id}/enabled", {"enabled": "0"})
+    page = client.get(f"/sources/{source_id}")["body"]
+    assert f"/sources/{source_id}/sync" not in page
+    assert "disabled" in page, "the button should be shown and dead, not hidden"
+
+
+def test_syncing_everything_covers_every_enabled_source(writing, tmp_path):
+    client, calendar = writing
+    onboard(client)
+    conn = db.connect(tmp_path / "calsync.db")
+    source_id = repo.list_sources(conn, enabled_only=False)[0].id
+
+    assert client.post("/sync")["status"] == 303
+    conn = db.connect(tmp_path / "calsync.db")
+    assert repo.tracked_events(conn, source_id) > 0
+
+
+def test_syncing_with_no_teams_says_so_rather_than_claiming_success(client):
+    where = client.post("/sync")["headers"]["Location"]
+    assert "err=" in where
+    assert "nothing to sync" in unquote(where)
+
+
+def test_a_sync_already_running_is_refused_rather_than_doubled(writing, tmp_path):
+    """Two clicks on a slow feed are two requests: the server is threaded.
+
+    The second must not diff against state the first has not committed, so it
+    is refused with a reason rather than queued behind it.
+    """
+    client, calendar = writing
+    onboard(client)
+    conn = db.connect(tmp_path / "calsync.db")
+    source = repo.list_sources(conn, enabled_only=False)[0]
+
+    started, release = threading.Event(), threading.Event()
+    real_upsert = calendar.upsert
+
+    def slow(event, previous=None):
+        started.set()
+        release.wait(5)
+        return real_upsert(event, previous)
+
+    calendar.upsert = slow
+    first = threading.Thread(
+        target=lambda: client.post(f"/sources/{source.id}/sync"), daemon=True
+    )
+    first.start()
+    assert started.wait(5), "the first sync never reached the calendar"
+
+    second = client.post(f"/sources/{source.id}/sync")
+    release.set()
+    first.join(10)
+
+    assert "already syncing" in second["body"]
+
+
 # --- retiring a season ------------------------------------------------------
 
 
@@ -1225,14 +1342,16 @@ class CollectingTarget:
 
 
 @pytest.fixture
-def retiring(tmp_path, secrets_path, feed):
+def writing(tmp_path, secrets_path, feed):
+    """A console wired to a calendar that records, for the two actions that
+    reach one: retiring a season and syncing on demand."""
     calendar = CollectingTarget()
     app = web_app.create_app(
         tmp_path / "calsync.db",
         secrets=SecretStore(path=secrets_path, environ={}),
         fetcher=feed,
         clock=lambda: NOW,
-        retire_target=calendar,
+        write_target=calendar,
     )
     client = Client(app)
     conn = db.open_db(tmp_path / "calsync.db")
@@ -1256,9 +1375,9 @@ def test_the_source_page_offers_to_retire_the_season(client, tmp_path):
 
 
 def test_retiring_from_the_console_clears_the_calendar_and_stops_polling(
-    retiring, tmp_path
+    writing, tmp_path
 ):
-    client, calendar = retiring
+    client, calendar = writing
     onboard(client)
     conn = db.connect(tmp_path / "calsync.db")
     source_id = repo.list_sources(conn, enabled_only=False)[0].id

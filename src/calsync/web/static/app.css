@@ -599,3 +599,13 @@ details.more > summary:hover { color: var(--cone); }
 
 /* A card the flash message is about, jumped to by fragment after a save. */
 .card:target, .sport:target { outline: 2px solid var(--go); outline-offset: 3px; }
+
+/* A button that is present but cannot be pressed — "Sync now" on a paused
+ * team. Shown rather than hidden, because a control that vanishes reads as a
+ * feature that is missing; the note beside it says why. */
+.btn:disabled, .btn:disabled:hover {
+  background: transparent;
+  color: var(--ink-2);
+  border-color: var(--line-soft);
+  cursor: not-allowed;
+}
