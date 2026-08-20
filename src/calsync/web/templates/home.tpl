@@ -68,6 +68,16 @@
 % end
 </div>
 
+<div class="btn-row" style="margin-top:1.4rem">
+  <form method="post" action="/sync">
+    <button class="btn btn-quiet" type="submit">Sync every team now</button>
+  </form>
+  <span class="note">
+    Writes for real, one team after another. The page above is a dry run and
+    changes nothing.
+  </span>
+</div>
+
 % if not live:
 <p class="note" style="margin-top:1rem">
   Feeds were not checked. <a href="/">Check them now</a>.

@@ -2,18 +2,21 @@
 
 from __future__ import annotations
 
+import calendar as calendar_mod
 import json
 import socketserver
 import sqlite3
+import threading
 import urllib.request
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote, urlparse
 from wsgiref.simple_server import WSGIRequestHandler, WSGIServer, make_server
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import bottle
 from bottle import Bottle, redirect, request, static_file, template
@@ -22,6 +25,7 @@ from .. import config as config_mod
 from .. import db, dormancy, enrichment, matrix, notify, repo, retire, sources, targeting
 from ..fetch import FetchError, http_fetch, render_url
 from ..inspection import InspectionError, inspect_feed
+from ..normalize import title as title_norm
 from ..normalize import venue as venue_norm
 from ..onboarding import (
     Draft,
@@ -78,7 +82,7 @@ def create_app(
     trusted_origins=(),
     matrix_opener=None,
     push_opener=None,
-    retire_target=None,
+    write_target=None,
     calendar_transport=None,
 ) -> Bottle:
     """Build the console.
@@ -93,6 +97,11 @@ def create_app(
     here than it looks: the sync window is what decides which events are live,
     so a console tested against a fixture from last spring would report an empty
     parse and every gate condition would pass vacuously.
+
+    ``write_target`` is the seam for the two console actions that reach the
+    family's real calendars — retiring a source and syncing one on demand. One
+    parameter rather than two, because a test that could inject a target for one
+    of them and not the other would be testing a console nobody runs.
     """
     app = Bottle()
     secrets = secrets or SecretStore()
@@ -111,6 +120,15 @@ def create_app(
 
     def connect():
         return closing(db.connect(db_path))
+
+    # Which sources a "Sync now" is in flight for. The server is threaded, so
+    # two clicks on a slow feed are two requests at once — and a sync is the one
+    # console action that both fetches and writes, where running it twice over
+    # means the second copy diffing against state the first has not committed
+    # yet. Nothing here coordinates with the *poller*; that is a different
+    # process and SQLite's write lock is what stands between them.
+    in_flight: set[str] = set()
+    in_flight_lock = threading.Lock()
 
     # --- guards ------------------------------------------------------------
 
@@ -486,9 +504,8 @@ def create_app(
     def retire_source_route(source_id):
         """Clear what a source still has coming, then stop polling.
 
-        Needs a real target, unlike everything else on this page — it is the one
-        console action that writes to the family's calendars, because removing
-        an event is a write. A preview cannot do it.
+        Needs a real target rather than the previews behind the rest of this
+        page, because removing an event is a write. "Sync now" is the other one.
 
         Events that have already happened stay put (`retire.py`), so retiring a
         season a month after it ended normally removes nothing and the message
@@ -497,7 +514,7 @@ def create_app(
         with connect() as conn:
             source = _require_source(conn, source_id)
             try:
-                target = retire_target or targeting.build_target(
+                target = write_target or targeting.build_target(
                     conn, secrets=secrets
                 )
                 report = retire.retire_source(conn, source, target, now=clock())
@@ -517,6 +534,113 @@ def create_app(
         if report.kept:
             done += f"; {report.kept} past event(s) left in place"
         redirect(f"/sources/{source_id}?ok=" + _q(f"Polling stopped — {done}."))
+
+    # --- syncing on demand -------------------------------------------------
+
+    def _sync_now(source_ids: list[str]) -> tuple[list, list[str]]:
+        """Run the real sync loop for the named sources, now.
+
+        The same ``sync_source`` the poller calls, against the same target — not
+        the dry run behind every other number on these pages. That is the whole
+        point of the button: a dry run cannot put a venue you have just taught,
+        or an answer you have just approved, on anybody's phone. Waiting for the
+        next poll can, in twenty minutes.
+
+        Two things it deliberately does not do. It does not touch the poller's
+        schedule, so a forced sync is extra work rather than a skipped one — the
+        feed is fetched twice in an hour, which is nothing, and the alternative
+        is a button that quietly *delays* the next automatic poll. And it does
+        not run the season-end, review or dispatch passes the poller runs after
+        a sync: those decide whether to disable a source and whether to page
+        somebody, and neither belongs on a key somebody pressed to see a change
+        land.
+        """
+        taken: list[str] = []
+        with in_flight_lock:
+            for source_id in source_ids:
+                if source_id not in in_flight:
+                    in_flight.add(source_id)
+                    taken.append(source_id)
+        if not taken:
+            raise Refused(
+                "that is already syncing — give it a moment rather than "
+                "starting a second run over the top of the first."
+            )
+
+        reports, problems = [], []
+        try:
+            with connect() as conn:
+                try:
+                    target = write_target or targeting.build_target(
+                        conn, secrets=secrets
+                    )
+                except (SecretError, TargetError) as exc:
+                    raise Refused(f"could not reach the calendar: {exc}") from exc
+
+                for source_id in taken:
+                    source = _require_source(conn, source_id)
+                    try:
+                        reports.append(
+                            sync_source(
+                                conn, source, target, now=clock(),
+                                secrets=secrets, fetcher=fetcher,
+                            )
+                        )
+                    except sqlite3.OperationalError as exc:
+                        if "locked" not in str(exc):
+                            raise
+                        # The poller holds the write lock from its first
+                        # recorded event to the end of the source, which is
+                        # longer than the busy timeout when a feed is large.
+                        # Nothing is lost: whatever reached the calendar before
+                        # this is on it, and the next poll records the rest.
+                        problems.append(
+                            f"{source_id}: the poller was writing to the "
+                            "database and would not let go in time — try again "
+                            "in a moment."
+                        )
+        finally:
+            with in_flight_lock:
+                in_flight.difference_update(taken)
+        return reports, problems
+
+    @app.post("/sources/<source_id>/sync")
+    def sync_one(source_id):
+        with connect() as conn:
+            source = _require_source(conn, source_id)
+            if not source.enabled:
+                # Refused rather than "resume, then sync": the events of a
+                # retired season were cancelled on the way out, and a sync would
+                # put every upcoming one back. Whoever paused it gets to say.
+                raise Refused(
+                    "polling is paused for this team, so there is nothing to "
+                    "sync it against. Resume polling first — and if it was "
+                    "retired rather than paused, be sure you want its events "
+                    "back on the calendar."
+                )
+
+        reports, problems = _sync_now([source_id])
+        if problems:
+            redirect(f"/sources/{source_id}?err=" + _q("; ".join(problems)))
+        redirect(f"/sources/{source_id}?ok=" + _q(reports[0].line()))
+
+    @app.post("/sync")
+    def sync_every():
+        """Every enabled source, one after another.
+
+        Serially, unlike the dashboard's checks: those are reads through their
+        own connections, and this writes.
+        """
+        with connect() as conn:
+            source_ids = [s.id for s in repo.list_sources(conn, enabled_only=True)]
+        if not source_ids:
+            redirect("/?err=" + _q("no team is being polled, so there is "
+                                   "nothing to sync."))
+
+        reports, problems = _sync_now(source_ids)
+        lines = [r.line() for r in reports] + problems
+        key = "err" if problems or any(r.status != "ok" for r in reports) else "ok"
+        redirect(f"/?check=0&{key}=" + _q(" · ".join(lines)))
 
     @app.post("/sources/<source_id>/persists")
     def set_persists(source_id):
@@ -597,6 +721,132 @@ def create_app(
             kinds=targeting.KINDS,
             check=check,
             calendar_check=calendar_check,
+            flash=_flash(),
+        )
+
+    # --- the calendar ------------------------------------------------------
+
+    @app.get("/calendar")
+    def calendar_view():
+        """What calsync has actually written, month by month.
+
+        Read out of ``event_content`` — the receipt, the same source the digest
+        and ``GET /v1/events`` read — and re-titled now through
+        ``normalize/title.py``. Three things follow from that, and all three are
+        the point rather than a compromise:
+
+        - It shows what is **on the calendar**, not what a feed currently says.
+          A poll held by a guard, or one that has not run yet, leaves the two
+          different, and the calendar is the one somebody's phone has.
+        - It re-composes each title on this request, so a naming-convention
+          change shows up here without anything being re-fetched.
+        - It cannot show a hand-created family appointment, because calsync
+          never saw one. This is a view of calsync's own writes, and a page
+          claiming to be the family's whole calendar would be lying about the
+          half it does not manage.
+
+        Bounded by what is retained: content is pruned to
+        ``sync_window_back_days``, so a month further back than that is empty
+        here and lives only on the calendar server.
+        """
+        # `mode` in here and in the template, `view` in the URL: `render()`'s
+        # first parameter is the template name and is called `view`, so a
+        # context key of that name collides with it.
+        mode = "agenda" if request.query.get("view") == "agenda" else "month"
+        child_id = request.query.get("child") or None
+
+        with connect() as conn:
+            settings = Settings.load(conn)
+            children = repo.list_children(conn)
+            zone = _zone(settings.default_tz)
+            month = _month_of(request.query.get("month"), zone=zone, clock=clock)
+            start, end = _month_bounds(month, zone)
+
+            # Padded on both sides, then filtered exactly below. `stored_events`
+            # compares ISO strings, and a feed may write an offset rather than
+            # UTC — so a string bound can miss an event by its own offset. A day
+            # either side covers every real one.
+            items = repo.stored_events(
+                conn,
+                start=(start - timedelta(days=1)).isoformat(),
+                end=(end + timedelta(days=1)).isoformat(),
+                child_id=child_id,
+            )
+
+            colours, seen = {}, {}
+            entries = []
+            for item in items:
+                if not start <= item.event.starts_at < end:
+                    continue
+                if item.activity_id not in seen:
+                    activity = repo.get_activity(conn, item.activity_id)
+                    seen[item.activity_id] = (
+                        activity, [repo.get_child(conn, activity.child_id)]
+                    )
+                activity, kids = seen[item.activity_id]
+                if activity.child_id not in colours:
+                    colours[activity.child_id] = len(colours) % _COLOURS
+                # In the venue's timezone, not the browser's and not the
+                # household default: a game at 7pm local is on that day for the
+                # people driving to it. Same rule the event bodies follow.
+                local = item.event.local_start
+                entries.append({
+                    "uid": item.event.uid,
+                    "local": local,
+                    "day": local.date(),
+                    "title": title_norm.render(item.event, activity, kids, settings),
+                    "activity": activity,
+                    "child": kids[0],
+                    "colour": colours[activity.child_id],
+                    "venue": item.event.venue,
+                    "source_id": item.source_id,
+                    "cancelled": item.cancelled,
+                    "held": bool(settings.enrichment_collection)
+                            and item.collection == settings.enrichment_collection,
+                    "collection": item.collection,
+                    "is_game": item.event.is_game,
+                })
+
+        def link(mode=mode, month=month, child=child_id):
+            """One place that spells a link to this page, defaults included.
+
+            Built here rather than in the template because every control on the
+            page is the current view with one thing changed, and a template that
+            reassembles three parameters by hand loses one of them the first
+            time a fourth is added.
+            """
+            parts = [f"view={mode}", f"month={month.year:04d}-{month.month:02d}"]
+            if child:
+                parts.append(f"child={quote(child, safe='')}")
+            return "/calendar?" + "&".join(parts)
+
+        entries.sort(key=lambda e: (e["local"], e["title"]))
+        by_day: dict[date, list] = {}
+        for position, entry in enumerate(entries):
+            # Numbered rather than keyed on the uid: a feed's uid is not ours to
+            # assume anything about, and it ends up in a fragment identifier
+            # that a chip in the grid links to in the agenda.
+            entry["anchor"] = f"ev-{position}"
+            by_day.setdefault(entry["day"], []).append(entry)
+
+        return render(
+            "calendar.tpl",
+            mode=mode,
+            month=month,
+            weeks=calendar_mod.Calendar(firstweekday=0).monthdatescalendar(
+                month.year, month.month
+            ),
+            by_day=by_day,
+            entries=entries,
+            link=link,
+            children=children,
+            child_id=child_id,
+            today=clock().astimezone(zone).date(),
+            previous=_shift_month(month, -1),
+            following=_shift_month(month, +1),
+            horizon=(clock().astimezone(zone)
+                     - timedelta(days=settings.sync_window_back_days)).date(),
+            tz=str(zone),
             flash=_flash(),
         )
 
@@ -1212,6 +1462,52 @@ def _now() -> datetime:
 def _q(value: str) -> str:
     """Make a message safe to hand back through a redirect query string."""
     return quote(" ".join(value.split()), safe="")
+
+
+#: How many child colours the calendar cycles through before repeating. Six is
+#: past any household this is built for; the wrap is there so a seventh kid gets
+#: a colour somebody else has rather than no colour at all.
+_COLOURS = 6
+
+
+def _zone(name: str) -> ZoneInfo:
+    """The household's timezone, or UTC if the setting names one that is gone.
+
+    A tzdata that has dropped a zone must not take the calendar page down —
+    `default_tz` is a free-text setting, and the page's job is to show a
+    schedule, not to adjudicate the zone database.
+    """
+    try:
+        return ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError):
+        return ZoneInfo("UTC")
+
+
+def _month_of(value: str | None, *, zone: ZoneInfo, clock) -> date:
+    """The first of the month a ``YYYY-MM`` parameter names. Today's by default.
+
+    A malformed one falls back rather than refusing: this arrives from a link,
+    and an error page in place of a calendar helps nobody.
+    """
+    if value:
+        try:
+            year, month = (int(part) for part in value.split("-", 1))
+            return date(year, month, 1)
+        except (ValueError, TypeError):
+            pass
+    return clock().astimezone(zone).date().replace(day=1)
+
+
+def _month_bounds(month: date, zone: ZoneInfo) -> tuple[datetime, datetime]:
+    """The month as an absolute half-open span, local midnight to local midnight."""
+    start = datetime(month.year, month.month, 1, tzinfo=zone)
+    following = _shift_month(month, +1)
+    return start, datetime(following.year, following.month, 1, tzinfo=zone)
+
+
+def _shift_month(month: date, by: int) -> date:
+    index = month.year * 12 + (month.month - 1) + by
+    return date(index // 12, index % 12 + 1, 1)
 
 
 def _flash():

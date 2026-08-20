@@ -18,6 +18,7 @@
     <span class="wordmark-sub">console</span>
     <nav class="rail-nav">
       <a href="/">Teams</a>
+      <a href="/calendar">Calendar</a>
       <a href="/onboard">Add a team</a>
       <a href="/review">Review</a>
       <a href="/venues">Venues</a>

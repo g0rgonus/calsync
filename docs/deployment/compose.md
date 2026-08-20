@@ -13,7 +13,7 @@ docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/out" \
 docker compose up -d
 ```
 
-`init-deploy` writes the compose file, `config/radicale/{config,rights}`,
+`init-deploy` writes the compose file, `config/radicale/{config,rights,rights.anonymous}`,
 `config/caddy/Caddyfile` and a `.env` holding three generated secrets:
 `CALSYNC_SECRET_RADICALE_PASSWORD`, `..._READER_PASSWORD` and
 `..._API_TOKEN`. The stack will not start without them — Radicale's container
@@ -66,12 +66,19 @@ goes on a family's devices.
 
 Radicale authenticates against an htpasswd file and cannot read an environment
 variable — no backend it ships does. So its container writes that file itself,
-from `.env`, on every start:
+from `.env`, on every start, and assembles the rights file beside it:
 
 ```sh
 printf 'calsync:%s\ncalreader:%s\n' "$CALSYNC_SECRET_..." "$CALSYNC_SECRET_..." > /tmp/users
-exec /venv/bin/radicale --config /config/config
+cp /config/rights /tmp/rights
+# plus rights.anonymous, when CALSYNC_RADICALE_ANONYMOUS_READ=1
+exec /venv/bin/radicale --config /config/config --rights-file /tmp/rights
 ```
+
+`--rights-file` on the command line rather than a path in `config`, because
+`init-deploy` never overwrites an existing `config/radicale/config` — a
+deployment upgrading into the flag would otherwise set it and watch it do
+nothing.
 
 Three properties follow, and they are the reason it is done this way:
 
@@ -128,6 +135,7 @@ The first three are required.
 | `CALSYNC_SECRET_RADICALE_PASSWORD` | calsync's own account. |
 | `CALSYNC_SECRET_RADICALE_READER_PASSWORD` | The `calreader` account — read-only, for phones and Radicale's web UI. |
 | `CALSYNC_SECRET_API_TOKEN` | The read API's bearer token. |
+| `CALSYNC_RADICALE_ANONYMOUS_READ` | `1` drops the password on reads — subscribe a phone with a bare URL. Writes still need the writer's credential. `radicale.md` §3. |
 | `CALSYNC_API_REPLICAS` | `0` turns the read API off. Defaults to 1. |
 | `CALSYNC_SETTING_RADICALE_URL` | Only to point calsync at a CalDAV server it does not run. |
 | `CALSYNC_SETTING_MATRIX_*`, `CALSYNC_SECRET_MATRIX_ACCESS_TOKEN` | All four or none. Outbound only (`docs/MATRIX.md` §7). |

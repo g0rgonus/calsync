@@ -94,8 +94,31 @@
   <p style="margin:0 0 0.8rem">
     Checked when this page loaded, not read from a cache — a verdict from last
     week says nothing about a feed that has since grown a schedule.
+    <strong>Nothing above was written.</strong> It is a dry run: the feed was
+    fetched and diffed, and the calendar was not touched.
   </p>
   <div class="raw-block">{{ report.line() }}</div>
+
+  <div class="btn-row" style="margin-top:1.2rem">
+% if source.enabled:
+    <form method="post" action="/sources/{{ source.id }}/sync">
+      <button class="btn" type="submit">Sync now</button>
+    </form>
+    <span class="note">
+      Fetches again and writes for real, the same way the poller does — for
+      when you have just answered something and would rather not wait
+      {{ source.poll_interval_s // 60 }} minutes to see it land. The next
+      automatic poll happens on its own schedule regardless.
+    </span>
+% else:
+    <button class="btn" type="button" disabled>Sync now</button>
+    <span class="note">
+      Polling is paused, so there is nothing to sync against. If this season was
+      retired, its upcoming events were taken off the calendar on the way out —
+      resuming and syncing would put them all back.
+    </span>
+% end
+  </div>
 </div>
 
 <h2>Recent polls</h2>

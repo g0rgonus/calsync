@@ -53,7 +53,8 @@ Player360   ─┼─→  calsync  ───→  CalDAV  ───────�
                   render                          └─→ enrichment   ─┘  a human
                     │
                     ├─→ web console   onboard a feed, answer what the parse
-                    │                 could not, approve, configure
+                    │                 could not, approve, configure, and see
+                    │                 the month calsync has written
                     ├─→ read API      bearer token, for agents
                     └─→ Matrix        daily digest, outbound only
 ```
@@ -73,7 +74,7 @@ the delete-then-create this project treats as the dangerous operation.
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/pytest                                # 515 tests, ~5s
+.venv/bin/pytest                                # 520 tests, ~5s
 ```
 
 ```bash

@@ -599,3 +599,175 @@ details.more > summary:hover { color: var(--cone); }
 
 /* A card the flash message is about, jumped to by fragment after a save. */
 .card:target, .sport:target { outline: 2px solid var(--go); outline-offset: 3px; }
+
+/* A button that is present but cannot be pressed — "Sync now" on a paused
+ * team. Shown rather than hidden, because a control that vanishes reads as a
+ * feature that is missing; the note beside it says why. */
+.btn:disabled, .btn:disabled:hover {
+  background: transparent;
+  color: var(--ink-2);
+  border-color: var(--line-soft);
+  cursor: not-allowed;
+}
+
+/* --- the calendar -------------------------------------------------------- */
+
+.cal-bar {
+  display: flex;
+  gap: 0.7rem;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 1.1rem;
+}
+.cal-months { display: flex; gap: 0.4rem; }
+.cal-views, .cal-filter { display: flex; gap: 0.4rem; flex-wrap: wrap; }
+.cal-views { margin-left: auto; }
+.cal-filter { margin: -0.5rem 0 1.2rem; }
+
+/* Segmented control. Lighter than .btn on purpose: switching view or filtering
+ * to one kid changes nothing, and it should not look like the buttons that
+ * write to a calendar. */
+.pill {
+  font-family: var(--display);
+  font-stretch: condensed;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 0.4rem 0.85rem;
+  border: 1px solid var(--line);
+  border-radius: 100px;
+  color: var(--ink-2);
+  text-decoration: none;
+}
+.pill:hover { color: var(--cone); border-color: var(--cone); }
+.pill-on {
+  background: var(--turf);
+  border-color: var(--turf);
+  color: var(--paper);
+}
+.pill-on:hover { color: var(--paper); border-color: var(--turf); }
+@media (prefers-color-scheme: dark) {
+  .pill-on { background: var(--go); border-color: var(--go); color: #08120d; }
+  .pill-on:hover { color: #08120d; }
+}
+
+.cal {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  background: var(--card);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+}
+.cal th {
+  font-family: var(--display);
+  font-stretch: condensed;
+  text-transform: uppercase;
+  letter-spacing: 0.13em;
+  font-size: 0.7rem;
+  color: var(--ink-2);
+  text-align: left;
+  padding: 0.5rem 0.5rem 0.4rem;
+  border-bottom: 1px solid var(--line);
+}
+.cal td {
+  vertical-align: top;
+  height: 6.5rem;
+  padding: 0.35rem 0.35rem 0.5rem;
+  border: 1px solid var(--line-soft);
+}
+.cal-num {
+  font-family: var(--display);
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--ink-2);
+  display: block;
+  margin-bottom: 0.25rem;
+}
+/* Days from the neighbouring months. Kept in the grid so the weeks are whole,
+ * dimmed so the month being read is obvious at a glance. */
+.cal-out { background: var(--line-soft); }
+.cal-out .cal-num { opacity: 0.5; }
+.cal-today { outline: 2px solid var(--go); outline-offset: -2px; }
+.cal-today .cal-num { color: var(--go); }
+
+/* One event in a day cell. The colour bar is per child, so a glance at a week
+ * says who is where without reading a word. */
+.chip {
+  display: block;
+  font-size: 0.76rem;
+  line-height: 1.3;
+  padding: 0.12rem 0.3rem 0.16rem 0.4rem;
+  margin-bottom: 0.16rem;
+  border-left: 3px solid var(--line);
+  border-radius: 2px;
+  color: var(--ink);
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chip:hover { background: var(--line-soft); color: var(--ink); }
+.chip b { font-weight: 700; font-variant-numeric: tabular-nums; }
+.chip-off { opacity: 0.55; text-decoration: line-through; }
+/* Held for review: the same orange that means "a question for you" everywhere
+ * else in the console, because that is exactly what this is. */
+.chip-held { border-left-style: dashed; border-left-color: var(--cone) !important; }
+
+.chip-c0 { border-left-color: #2c7a51; }
+.chip-c1 { border-left-color: #446a8d; }
+.chip-c2 { border-left-color: #a3562b; }
+.chip-c3 { border-left-color: #6b4a86; }
+.chip-c4 { border-left-color: #1f7d80; }
+.chip-c5 { border-left-color: #96144f; }
+@media (prefers-color-scheme: dark) {
+  .chip-c0 { border-left-color: #4cae78; }
+  .chip-c1 { border-left-color: #7fa9ce; }
+  .chip-c2 { border-left-color: #d98a4e; }
+  .chip-c3 { border-left-color: #b092cf; }
+  .chip-c4 { border-left-color: #58c3c6; }
+  .chip-c5 { border-left-color: #e3799f; }
+}
+
+.agenda-day {
+  margin: 1.6rem 0 0.6rem;
+  padding-bottom: 0.3rem;
+  border-bottom: 1px solid var(--line);
+}
+.agenda-today { color: var(--go); }
+.agenda-row {
+  display: flex;
+  gap: 0.7rem;
+  align-items: flex-start;
+  padding: 0.55rem 0.5rem;
+  border-radius: var(--radius);
+}
+.agenda-row:target { outline: 2px solid var(--go); outline-offset: 2px; }
+.agenda-time {
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+  padding-top: 0.1rem;
+  min-width: 3.2rem;
+}
+.agenda-bar {
+  width: 3px;
+  align-self: stretch;
+  border-radius: 2px;
+  border-left: 3px solid var(--line);
+}
+.agenda-body { flex: 1; min-width: 0; }
+.agenda-title { margin: 0 0 0.15rem; font-weight: 600; }
+.struck { text-decoration: line-through; color: var(--ink-2); }
+
+/* Seven columns of chips on a phone is seven columns of ellipses. The cells
+ * give up their fixed height and the chips shrink, which keeps the month
+ * readable as a shape; the agenda is the same data laid out for that width,
+ * and every chip links into it. */
+@media (max-width: 44rem) {
+  .cal td { height: auto; min-height: 3.4rem; }
+  .cal .chip { font-size: 0.66rem; padding-left: 0.25rem; }
+  .cal-views { margin-left: 0; }
+}

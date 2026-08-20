@@ -44,9 +44,12 @@ services:
     environment:
       CALSYNC_SECRET_RADICALE_PASSWORD: ${CALSYNC_SECRET_RADICALE_PASSWORD:-}
       CALSYNC_SECRET_RADICALE_READER_PASSWORD: ${CALSYNC_SECRET_RADICALE_READER_PASSWORD:-}
-    # The users file is derived on every start and lives only in the container.
-    # Two accounts: calsync writes, calreader is read-only and is what goes on a
-    # family's devices.
+      # 1 lets anything that can reach this stack read the calendars with no
+      # password. Writing still needs the writer's credential.
+      CALSYNC_RADICALE_ANONYMOUS_READ: ${CALSYNC_RADICALE_ANONYMOUS_READ:-}
+    # The users and rights files are derived on every start and live only in the
+    # container. Two accounts: calsync writes, calreader is read-only and is
+    # what goes on a family's devices.
     command:
       - sh
       - -c
@@ -56,7 +59,13 @@ services:
         umask 077
         printf 'calsync:%s\ncalreader:%s\n' \
           "$$CALSYNC_SECRET_RADICALE_PASSWORD" "$$CALSYNC_SECRET_RADICALE_READER_PASSWORD" > /tmp/users
-        exec /venv/bin/radicale --config /config/config
+        cp /config/rights /tmp/rights
+        case "$${CALSYNC_RADICALE_ANONYMOUS_READ:-}" in
+          ''|0) ;;
+          1) cat /config/rights.anonymous >> /tmp/rights ;;
+          *) echo "CALSYNC_RADICALE_ANONYMOUS_READ must be 1 or 0" >&2; exit 1 ;;
+        esac
+        exec /venv/bin/radicale --config /config/config --rights-file /tmp/rights
     volumes:
       - radicale-data:/data
       - ./config/radicale:/config:ro

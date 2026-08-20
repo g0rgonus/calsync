@@ -12,13 +12,15 @@ real ``config.apply`` and the real sync loop in dry-run mode.
 from __future__ import annotations
 
 import json
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import unquote, urlencode
 
 import pytest
 
 from calsync import db, repo
+from calsync.fetch import FetchError
 from calsync.secrets import SecretStore
 from calsync.settings import Settings
 from calsync.web import app as web_app
@@ -1197,6 +1199,290 @@ def test_every_route_is_exercised_by_some_test():
     assert not missing, f"routes no test calls: {missing}"
 
 
+# --- the calendar -----------------------------------------------------------
+
+
+def _month_before(month: str) -> str:
+    year, number = (int(part) for part in month.split("-"))
+    return f"{year - 1}-12" if number == 1 else f"{year}-{number - 1:02d}"
+
+
+def _month_after(month: str) -> str:
+    year, number = (int(part) for part in month.split("-"))
+    return f"{year + 1}-01" if number == 12 else f"{year}-{number + 1:02d}"
+
+
+def synced(client, tmp_path, calendar):
+    """A source with a season actually written to `calendar`."""
+    onboard(client)
+    conn = db.open_db(tmp_path / "calsync.db")
+    source = repo.list_sources(conn, enabled_only=False)[0]
+    client.post(f"/sources/{source.id}/sync")
+    return source.id
+
+
+def test_the_calendar_shows_what_was_written(writing, tmp_path):
+    client, calendar = writing
+    synced(client, tmp_path, calendar)
+
+    page = client.get("/calendar?month=2026-03")
+    assert page["status"] == 200
+    assert "March 2026" in page["body"]
+    # Titled the way the calendar has it — composed now, through the same
+    # `normalize/title.py` the event went through on its way out.
+    assert "Parker" in page["body"]
+
+    # Everything that reached the calendar is on some month of this page, and
+    # nothing else is. A count for one month would pass just as well if half the
+    # season had been dropped on a boundary.
+    conn = db.connect(tmp_path / "calsync.db")
+    months = sorted(
+        row["m"] for row in conn.execute(
+            "SELECT DISTINCT substr(starts_at, 1, 7) AS m FROM event_state"
+        )
+    )
+    # A month either side: days are the venue's, so an event stored just after
+    # midnight UTC belongs to the previous month locally.
+    span = [_month_before(months[0]), *months, _month_after(months[-1])]
+    chips = sum(
+        client.get(f"/calendar?month={m}")["body"].count('class="chip')
+        for m in span
+    )
+    assert chips == len(calendar.written)
+
+
+def test_the_calendar_reads_the_receipt_not_the_feed(writing, tmp_path, feed):
+    """`event_content`, the same source the digest and the API read.
+
+    A feed that has since changed — or gone away entirely — must not change what
+    this page says, because it has not changed what is on anybody's phone.
+    """
+    client, calendar = writing
+    synced(client, tmp_path, calendar)
+    before = client.get("/calendar?view=agenda&month=2026-03")["body"]
+
+    feed.error = FetchError("the team app is down")
+    assert client.get("/calendar?view=agenda&month=2026-03")["body"] == before
+    assert feed.fetches, "sanity: the fixture feed is the one being read"
+
+
+def test_the_calendar_offers_both_views(writing, tmp_path):
+    client, calendar = writing
+    synced(client, tmp_path, calendar)
+
+    grid = client.get("/calendar?month=2026-03")["body"]
+    agenda = client.get("/calendar?view=agenda&month=2026-03")["body"]
+    assert "<table class=\"cal\"" in grid and "agenda-row" not in grid
+    assert "agenda-row" in agenda and "<table class=\"cal\"" not in agenda
+    # Every chip in the grid points at its row in the agenda.
+    assert "#ev-0" in grid and 'id="ev-0"' in agenda
+
+
+def test_a_month_with_nothing_in_it_says_which_kind_of_nothing(writing, tmp_path):
+    """Empty because nothing is on, or empty because it aged out of retention.
+
+    They read identically and mean opposite things — the second is not a gap in
+    the calendar, only in what calsync still remembers about it.
+    """
+    client, calendar = writing
+    synced(client, tmp_path, calendar)
+
+    ahead = client.get("/calendar?month=2027-01")["body"]
+    assert "no team has an event" in ahead
+
+    behind = client.get("/calendar?month=2020-01")["body"]
+    assert "retention window" in behind
+    assert "still on the calendar server" in behind
+
+
+def test_a_held_event_is_marked_on_the_calendar(writing, tmp_path):
+    """The enrichment collection is not a family calendar, and the page says so.
+
+    An event calsync could not place is on no-one's phone; showing it beside the
+    ones that are, unmarked, would be the console asserting something false.
+    """
+    client, calendar = writing
+    onboard(client)
+    conn = db.open_db(tmp_path / "calsync.db")
+    source = repo.list_sources(conn, enabled_only=False)[0]
+    # Promote it off staging: staging beats enrichment, so a staged source never
+    # holds anything for review.
+    repo.set_staging(conn, source.id, None)
+    conn.commit()
+    conn.close()
+    client.post(f"/sources/{source.id}/sync")
+
+    conn = db.connect(tmp_path / "calsync.db")
+    held = conn.execute(
+        "SELECT COUNT(*) AS n FROM event_state WHERE collection = 'enrichment'"
+    ).fetchone()["n"]
+    page = client.get("/calendar?view=agenda&month=2026-03")["body"]
+    if held:
+        assert "held for review" in page
+    else:
+        assert "held for review" not in page
+
+
+def test_the_calendar_filters_to_one_child(writing, tmp_path):
+    client, calendar = writing
+    synced(client, tmp_path, calendar)
+
+    page = client.get("/calendar?view=agenda&month=2026-03&child=parker")
+    assert page["status"] == 200
+    assert "Otters Spring 2026" in page["body"]
+
+    conn = db.connect(tmp_path / "calsync.db")
+    conn.execute(
+        "INSERT INTO children (id, name, initial, birth_order) "
+        "VALUES ('mira', 'Mira', 'M', 2)"
+    )
+    conn.commit()
+    other = client.get("/calendar?view=agenda&month=2026-03&child=mira")["body"]
+    assert "Otters Spring 2026" not in other
+    assert "Nothing written for March" in other
+
+
+def test_a_malformed_month_falls_back_rather_than_refusing(writing, tmp_path):
+    """It arrives from a link. An error page in place of a calendar helps nobody."""
+    client, calendar = writing
+    synced(client, tmp_path, calendar)
+
+    page = client.get("/calendar?month=not-a-month")
+    assert page["status"] == 200
+    assert "Stopped" not in page["body"]
+
+
+def test_the_calendar_does_not_claim_to_hold_what_calsync_did_not_write(
+    writing, tmp_path
+):
+    """A page called "Calendar" that shows only calsync's own writes has to say so.
+
+    Hand-created family appointments are never touched (docs/MATCHING.md), which
+    also means they are never seen — and a view that quietly omits half the
+    family's week is one somebody will plan around.
+    """
+    client, calendar = writing
+    synced(client, tmp_path, calendar)
+    page = client.get("/calendar?month=2026-03")["body"]
+    assert "added to the calendar by hand is not here" in page
+
+
+# --- syncing on demand ------------------------------------------------------
+
+
+def test_sync_now_writes_for_real(writing, tmp_path):
+    """The point of the button, and the thing a dry run cannot do.
+
+    Every other number on the source page comes from `sync_source(dry_run=True)`
+    against a target that refuses to be written to. This one has to reach the
+    calendar, so the test checks the calendar rather than a redirect.
+    """
+    client, calendar = writing
+    onboard(client)
+    conn = db.connect(tmp_path / "calsync.db")
+    source_id = repo.list_sources(conn, enabled_only=False)[0].id
+    assert repo.tracked_events(conn, source_id) == 0
+
+    result = client.post(f"/sources/{source_id}/sync")
+    assert result["status"] == 303
+
+    conn = db.connect(tmp_path / "calsync.db")
+    assert calendar.written, "nothing reached the calendar"
+    assert repo.tracked_events(conn, source_id) == len(calendar.written)
+
+
+def test_sync_now_reports_what_it_did(writing, tmp_path):
+    """The report line, not "done". A held guard and a clean poll both redirect."""
+    client, calendar = writing
+    onboard(client)
+    conn = db.connect(tmp_path / "calsync.db")
+    source_id = repo.list_sources(conn, enabled_only=False)[0].id
+
+    where = client.post(f"/sources/{source_id}/sync")["headers"]["Location"]
+    assert "ok=" in where
+    assert "new" in unquote(where), where
+
+
+def test_sync_now_is_refused_for_a_paused_source(writing, tmp_path):
+    """Retiring cancels every upcoming event and then disables the source.
+
+    A sync that ignored that would write the whole season back, which is the
+    console undoing a deliberate act with one click and no warning.
+    """
+    client, calendar = writing
+    onboard(client)
+    conn = db.connect(tmp_path / "calsync.db")
+    source_id = repo.list_sources(conn, enabled_only=False)[0].id
+    client.post(f"/sources/{source_id}/enabled", {"enabled": "0"})
+
+    page = client.post(f"/sources/{source_id}/sync")["body"]
+    assert "paused" in page
+    assert not calendar.written, "a paused source was synced anyway"
+
+
+def test_the_source_page_does_not_offer_to_sync_a_paused_source(writing, tmp_path):
+    client, _calendar = writing
+    onboard(client)
+    conn = db.connect(tmp_path / "calsync.db")
+    source_id = repo.list_sources(conn, enabled_only=False)[0].id
+    assert "/sync" in client.get(f"/sources/{source_id}")["body"]
+
+    client.post(f"/sources/{source_id}/enabled", {"enabled": "0"})
+    page = client.get(f"/sources/{source_id}")["body"]
+    assert f"/sources/{source_id}/sync" not in page
+    assert "disabled" in page, "the button should be shown and dead, not hidden"
+
+
+def test_syncing_everything_covers_every_enabled_source(writing, tmp_path):
+    client, calendar = writing
+    onboard(client)
+    conn = db.connect(tmp_path / "calsync.db")
+    source_id = repo.list_sources(conn, enabled_only=False)[0].id
+
+    assert client.post("/sync")["status"] == 303
+    conn = db.connect(tmp_path / "calsync.db")
+    assert repo.tracked_events(conn, source_id) > 0
+
+
+def test_syncing_with_no_teams_says_so_rather_than_claiming_success(client):
+    where = client.post("/sync")["headers"]["Location"]
+    assert "err=" in where
+    assert "nothing to sync" in unquote(where)
+
+
+def test_a_sync_already_running_is_refused_rather_than_doubled(writing, tmp_path):
+    """Two clicks on a slow feed are two requests: the server is threaded.
+
+    The second must not diff against state the first has not committed, so it
+    is refused with a reason rather than queued behind it.
+    """
+    client, calendar = writing
+    onboard(client)
+    conn = db.connect(tmp_path / "calsync.db")
+    source = repo.list_sources(conn, enabled_only=False)[0]
+
+    started, release = threading.Event(), threading.Event()
+    real_upsert = calendar.upsert
+
+    def slow(event, previous=None):
+        started.set()
+        release.wait(5)
+        return real_upsert(event, previous)
+
+    calendar.upsert = slow
+    first = threading.Thread(
+        target=lambda: client.post(f"/sources/{source.id}/sync"), daemon=True
+    )
+    first.start()
+    assert started.wait(5), "the first sync never reached the calendar"
+
+    second = client.post(f"/sources/{source.id}/sync")
+    release.set()
+    first.join(10)
+
+    assert "already syncing" in second["body"]
+
+
 # --- retiring a season ------------------------------------------------------
 
 
@@ -1225,14 +1511,16 @@ class CollectingTarget:
 
 
 @pytest.fixture
-def retiring(tmp_path, secrets_path, feed):
+def writing(tmp_path, secrets_path, feed):
+    """A console wired to a calendar that records, for the two actions that
+    reach one: retiring a season and syncing on demand."""
     calendar = CollectingTarget()
     app = web_app.create_app(
         tmp_path / "calsync.db",
         secrets=SecretStore(path=secrets_path, environ={}),
         fetcher=feed,
         clock=lambda: NOW,
-        retire_target=calendar,
+        write_target=calendar,
     )
     client = Client(app)
     conn = db.open_db(tmp_path / "calsync.db")
@@ -1256,9 +1544,9 @@ def test_the_source_page_offers_to_retire_the_season(client, tmp_path):
 
 
 def test_retiring_from_the_console_clears_the_calendar_and_stops_polling(
-    retiring, tmp_path
+    writing, tmp_path
 ):
-    client, calendar = retiring
+    client, calendar = writing
     onboard(client)
     conn = db.connect(tmp_path / "calsync.db")
     source_id = repo.list_sources(conn, enabled_only=False)[0].id
@@ -2040,6 +2328,10 @@ def test_init_deploy_writes_a_stack_and_never_clobbers_one(tmp_path):
     assert (out / "docker-compose.yml").is_file()
     assert (out / "config" / "radicale" / "config").is_file()
     assert (out / "config" / "radicale" / "rights").is_file()
+    # The optional half of the rights file. Shipped whether or not the flag that
+    # appends it is set, because a deployment turning anonymous read on later
+    # would otherwise find the file its container reads for missing.
+    assert (out / "config" / "radicale" / "rights.anonymous").is_file()
 
     (out / "config" / "radicale" / "rights").write_text("# edited by hand\n")
     assert main(["init-deploy", str(out)]) == 0

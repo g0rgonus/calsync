@@ -15,7 +15,8 @@ feed URL, confirm three things, and the source is staged; the gate in
 `docs/ONBOARDING.md` §5 is the app's primary screen. `/venues` manages the alias
 table, pins and merges; `/household` edits kids and the sport catalog;
 `/settings` covers the `settings` table, and a team's own fields are on its
-source page. Nothing in the day-to-day path needs sqlite3 any more.
+source page. `/calendar` shows what has actually been written, month grid or
+agenda. Nothing in the day-to-day path needs sqlite3 any more.
 
 **The HTTP API** (`calsync api`, `src/calsync/api/`) serves `GET /v1` (the
 machine-readable contract), `GET /v1/events`, `GET /v1/events/{uid}` and
@@ -69,7 +70,7 @@ so a fresh clone needs:
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/pytest                                    # 502 tests, ~5s
+.venv/bin/pytest                                    # 520 tests, ~5s
 .venv/bin/pytest tests/test_player360.py -k content_hash    # single test
 ```
 
@@ -123,8 +124,8 @@ neither is a convenience:
 stack will not start without are `CALSYNC_SECRET_RADICALE_PASSWORD`,
 `..._READER_PASSWORD` and `..._API_TOKEN`. Radicale cannot read an environment
 variable — none of the eleven auth backends it ships does — so its own container
-writes the htpasswd file from those two values at every start. Three properties
-are the design:
+writes the htpasswd file from those two values at every start, and assembles the
+rights file beside it the same way. Three properties are the design:
 
 - **Derived, never stored.** Rebuilt from `.env` on every start, so it cannot
   drift from the password the poller uses. There is no second copy and nothing
@@ -138,6 +139,22 @@ are the design:
 entrypoint only drops privileges when `$1` is exactly `/venv/bin/radicale`, and
 this stack gives it a shell — without that line Radicale runs as root, and
 nothing else would notice.
+
+**`CALSYNC_RADICALE_ANONYMOUS_READ=1` drops the password on reads**, so a phone
+subscribes to a bare `/cal/calsync/games/` and there is nothing to type or
+re-enter. Off by default and opt-in per deployment: the flag appends
+`rights.anonymous` to the derived rights file, and the published image must not
+change anybody's posture on an upgrade. Writes are unaffected — anonymous `PUT`,
+`MKCALENDAR` and `DELETE` are 401, verified against Radicale 3.7.6 through the
+proxy as well as directly. Two details are easy to get wrong: the rule is
+`user: ^$`, because `from_file` *skips* a rule whose user pattern is empty and
+`.*` would match the writer too; and it is appended rather than pasted in, since
+the first matching section wins. The assembled path is passed as
+`--rights-file` rather than set in `config`, because `init-deploy` never
+overwrites an existing one and an upgrading deployment would otherwise set the
+flag and watch it do nothing. The argument for allowing it at all is that the
+console on the same port already has no login — this adds no new class of
+exposure to a stack behind a tailnet, and a serious one to a stack that is not.
 
 The only secret `.env` cannot hold is a **feed token**: they are pasted per team
 during onboarding and nobody knows them before startup. Those go to
@@ -444,6 +461,35 @@ Decisions that span several files and are easy to undo by accident:
   forms call, so the agent path and the manual path cannot drift. An approved
   venue answer still leaves `pin_confirmed = 0`: approving an alias is not
   vouching for coordinates.
+- **"Sync now" is the console's second write, and it is the real sync loop.**
+  Everything else a source page reports comes from `sync_source(dry_run=True)`
+  against `_NoTarget`, which is what makes the gate trustworthy and also what
+  makes it useless for landing a change: an alias taught at breakfast reaches
+  a phone at the next poll. `POST /sources/<id>/sync` runs the same call the
+  poller runs, against `targeting.build_target` — the seam is `write_target`,
+  shared with retire, because a test that could inject a target for one and not
+  the other would be testing a console nobody runs. It refuses a **disabled**
+  source: retiring cancels every upcoming event and *then* disables, so syncing
+  one would put the season back with one click. It does not run the season-end,
+  review or dispatch passes the poller runs afterwards — those decide whether to
+  switch a source off and whether to page somebody, and neither belongs on a key
+  pressed to watch a change land. Concurrency is handled at two levels and they
+  are not the same: an in-process set stops a double-click, and SQLite's write
+  lock is all there is between the console and the *poller*, which is a separate
+  process — a sync that loses that race reports it and asks for a retry rather
+  than half-writing.
+- **`/calendar` reads the receipt, like the digest and the API.**
+  `event_content` re-titled now, never a re-parse of the feed and never a read
+  back from Radicale — the same refusal `docs/API.md` gives Hermes. Three
+  consequences are load-bearing rather than regrettable: it shows what is on a
+  phone rather than what a feed currently says, a naming-convention change
+  re-renders it without re-fetching, and it **cannot** show a hand-created
+  family appointment. The page says that last one out loud, because a view
+  called "Calendar" that silently omits half a family's week is one somebody
+  will plan around. Days are grouped in the *venue's* timezone, matching
+  `digest.py` and the event bodies. A month below `sync_window_back_days` is
+  empty here and says why: the events are still on the calendar server, which
+  holds the only copy.
 - **Staging beats enrichment.** A source still being onboarded is already held
   somewhere; splitting its events across two holding calendars would make the
   promotion gate harder to read, not safer. `SyncReport.awaiting_review` matches
