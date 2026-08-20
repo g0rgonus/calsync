@@ -95,6 +95,38 @@ collection: calsync(/.*)?
 permissions: R
 ```
 
+### Reading with no password at all
+
+`CALSYNC_RADICALE_ANONYMOUS_READ=1` in `.env` appends
+`config/radicale/rights.anonymous` to the rights file at start, which grants
+read to a request carrying **no credentials**. A phone then subscribes to a bare
+URL — `http://<host>:8730/cal/calsync/games/` — with nothing to type, nothing to
+re-enter when a device is wiped, and nothing to rotate.
+
+What it does not do: writing still needs `calsync`'s own credential, and
+`calreader` is untouched. Verified against Radicale 3.7.6 — anonymous `PUT`,
+`MKCALENDAR` and `DELETE` are all `401`, through the proxy as well as directly.
+
+Three things worth knowing before setting it:
+
+- **It is the whole schedule, to anyone who can reach the port.** That is the
+  same reach the console already has, since the console has no login and is on
+  that port — so this adds no new class of exposure to a stack behind a tailnet,
+  and adds a serious one to a stack that is not. §5 is the assumption.
+- **`user: ^$`, not an empty `user:`.** Radicale's `from_file` backend skips any
+  rule whose user pattern is empty, so the obvious spelling grants nothing and
+  says nothing about it. `.*` works too and is worse: it matches the writer as
+  well, and the first matching section wins.
+- **Order matters.** The anonymous sections go *after* the `calsync` and
+  `calreader` ones. Appending is what guarantees that; do not paste them into
+  the middle of the file.
+
+A `GET` on a collection returns the whole thing as one `text/calendar` document,
+which is what "Add Subscribed Calendar" wants. Radicale re-serializes to build
+it, so it is worth knowing that `LOCATION` and the `X-CALSYNC-*` properties do
+survive that path intact — checked, because R4/R5 are otherwise only tested
+against a single-resource `GET`.
+
 ---
 
 ## 4. Storage
@@ -161,6 +193,14 @@ curl -su "$AUTH" -X PUT "$BASE/games/360Player-event-4823901.ics" \
 curl -su "calreader:<password>" -X PUT "$BASE/games/probe.ics" \
   -H 'Content-Type: text/calendar' --data-binary @sample.ics \
   -o /dev/null -w '%{http_code}\n'
+
+# §3 — with CALSYNC_RADICALE_ANONYMOUS_READ=1 only: a bare read succeeds and a
+# bare write does not. Both, or the check passes on a server that has failed
+# open.
+curl -s "$BASE/games/" -o /dev/null -w '%{http_code}\n'
+curl -s -X PUT "$BASE/games/probe.ics" \
+  -H 'Content-Type: text/calendar' --data-binary @sample.ics \
+  -o /dev/null -w '%{http_code}\n'
 ```
 
 Pass criteria:
@@ -172,6 +212,8 @@ Pass criteria:
 | Read back | `X-CALSYNC-*` present, and `LOCATION` carrying the venue name and street address verbatim |
 | Stale `If-Match` | `412` |
 | Read-only write | `403` |
+| Anonymous read (flag on) | `200` for the `GET`, `401` for the `PUT` |
+| Anonymous read (flag off) | `401` for both |
 
 The `sed` in the read-back step unfolds RFC 5545 line wrapping — the
 structured-location property is long enough to be split across lines, and

@@ -10,9 +10,9 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 mkdir -p config/radicale config/caddy
-cp deploy/radicale/config deploy/radicale/rights config/radicale/
+cp deploy/radicale/config deploy/radicale/rights deploy/radicale/rights.anonymous config/radicale/
 cp deploy/caddy/Caddyfile config/caddy/
-echo "  wrote config/radicale/{config,rights} and config/caddy/Caddyfile"
+echo "  wrote config/radicale/{config,rights,rights.anonymous} and config/caddy/Caddyfile"
 
 # The three secrets the stack will not start without, in .env, which is where a
 # real deployment puts them too. Radicale derives its users file from these on

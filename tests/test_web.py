@@ -2328,6 +2328,10 @@ def test_init_deploy_writes_a_stack_and_never_clobbers_one(tmp_path):
     assert (out / "docker-compose.yml").is_file()
     assert (out / "config" / "radicale" / "config").is_file()
     assert (out / "config" / "radicale" / "rights").is_file()
+    # The optional half of the rights file. Shipped whether or not the flag that
+    # appends it is set, because a deployment turning anonymous read on later
+    # would otherwise find the file its container reads for missing.
+    assert (out / "config" / "radicale" / "rights.anonymous").is_file()
 
     (out / "config" / "radicale" / "rights").write_text("# edited by hand\n")
     assert main(["init-deploy", str(out)]) == 0

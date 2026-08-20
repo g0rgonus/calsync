@@ -40,6 +40,19 @@ writer account is `calsync`, so `/cal` is a prefix of its principal path. Hence
 `/.well-known/caldav` redirects to `/cal/` so that "add an account" works when
 somebody enters the hostname alone.
 
+With `CALSYNC_RADICALE_ANONYMOUS_READ=1` the same path serves a collection to a
+bare `GET` as one `text/calendar` document, which is what a "subscribe to a
+calendar URL" field wants:
+
+```
+http://<host>:8730/cal/calsync/games/
+```
+
+The prefix is not stripped there either, and does not need to be — the rights
+check runs on the path Radicale has already put back together. Writes through
+this path are still `401` without the writer's credential
+(`radicale.md` §3).
+
 ## The API namespace
 
 `/v1` is the mount; `/api/…` is a 308 onto it.

@@ -1,0 +1,25 @@
+# Appended to the rights file at container start when
+# CALSYNC_RADICALE_ANONYMOUS_READ=1. Read-only, and only for a request carrying
+# no credentials at all. docs/deployment/radicale.md §3.
+#
+# `^$` and not an empty `user:` — from_file skips a rule whose user pattern is
+# empty, so the obvious spelling grants nothing and fails silently.
+#
+# After the calsync and calreader rules, never before: from_file returns the
+# first section that matches, and a rule reached earlier would answer for the
+# writer too and take its write permission away.
+
+[anonymous-root]
+user: ^$
+collection:
+permissions: R
+
+[anonymous-home]
+user: ^$
+collection: calsync
+permissions: R
+
+[anonymous-collections]
+user: ^$
+collection: calsync/[^/]+
+permissions: r

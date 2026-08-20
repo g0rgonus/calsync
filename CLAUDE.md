@@ -70,7 +70,7 @@ so a fresh clone needs:
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/pytest                                    # 517 tests, ~5s
+.venv/bin/pytest                                    # 520 tests, ~5s
 .venv/bin/pytest tests/test_player360.py -k content_hash    # single test
 ```
 
@@ -124,8 +124,8 @@ neither is a convenience:
 stack will not start without are `CALSYNC_SECRET_RADICALE_PASSWORD`,
 `..._READER_PASSWORD` and `..._API_TOKEN`. Radicale cannot read an environment
 variable — none of the eleven auth backends it ships does — so its own container
-writes the htpasswd file from those two values at every start. Three properties
-are the design:
+writes the htpasswd file from those two values at every start, and assembles the
+rights file beside it the same way. Three properties are the design:
 
 - **Derived, never stored.** Rebuilt from `.env` on every start, so it cannot
   drift from the password the poller uses. There is no second copy and nothing
@@ -139,6 +139,22 @@ are the design:
 entrypoint only drops privileges when `$1` is exactly `/venv/bin/radicale`, and
 this stack gives it a shell — without that line Radicale runs as root, and
 nothing else would notice.
+
+**`CALSYNC_RADICALE_ANONYMOUS_READ=1` drops the password on reads**, so a phone
+subscribes to a bare `/cal/calsync/games/` and there is nothing to type or
+re-enter. Off by default and opt-in per deployment: the flag appends
+`rights.anonymous` to the derived rights file, and the published image must not
+change anybody's posture on an upgrade. Writes are unaffected — anonymous `PUT`,
+`MKCALENDAR` and `DELETE` are 401, verified against Radicale 3.7.6 through the
+proxy as well as directly. Two details are easy to get wrong: the rule is
+`user: ^$`, because `from_file` *skips* a rule whose user pattern is empty and
+`.*` would match the writer too; and it is appended rather than pasted in, since
+the first matching section wins. The assembled path is passed as
+`--rights-file` rather than set in `config`, because `init-deploy` never
+overwrites an existing one and an upgrading deployment would otherwise set the
+flag and watch it do nothing. The argument for allowing it at all is that the
+console on the same port already has no login — this adds no new class of
+exposure to a stack behind a tailnet, and a serious one to a stack that is not.
 
 The only secret `.env` cannot hold is a **feed token**: they are pasted per team
 during onboarding and nobody knows them before startup. Those go to

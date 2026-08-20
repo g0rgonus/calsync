@@ -525,6 +525,8 @@ def cmd_init_deploy(args) -> int:
         (source / ".env.example", dest / ".env.example"),
         (source / "deploy" / "radicale" / "config", dest / "config" / "radicale" / "config"),
         (source / "deploy" / "radicale" / "rights", dest / "config" / "radicale" / "rights"),
+        (source / "deploy" / "radicale" / "rights.anonymous",
+         dest / "config" / "radicale" / "rights.anonymous"),
         (source / "deploy" / "caddy" / "Caddyfile", dest / "config" / "caddy" / "Caddyfile"),
     ]
 

@@ -16,6 +16,11 @@ htpasswd_encryption = plain
 
 [rights]
 type = from_file
+# This file is the one to edit. The compose stack overrides the path on the
+# command line with an assembled copy — `rights` plus `rights.anonymous` when
+# CALSYNC_RADICALE_ANONYMOUS_READ=1 — because `init-deploy` never overwrites an
+# existing config, and a deployment upgrading into that flag would otherwise
+# find it silently doing nothing.
 file = /config/rights
 
 [storage]
