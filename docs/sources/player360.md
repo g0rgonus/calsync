@@ -143,12 +143,21 @@ So upstream change signals blaze on events that did not change:
 
 ## Trap 2: a cancelled event stays in the feed
 
-**Observed 2026-08-20.** A practice cancelled in the app roughly two hours
-before it started was still in the feed two days later, with every content field
-unchanged. There is no `STATUS`, no `METHOD:CANCEL`, and no marker in `SUMMARY`
-or `DESCRIPTION` — the export does not carry the cancellation in any form, so
-calsync cannot act on it. This corrects an earlier assumption here that a
-cancelled event disappears.
+**Observed 2026-08-20, confirmed against the app.** A practice the app shows as
+"This event has been canceled", with its title struck through, was still in the
+feed two days later with every content field unchanged:
+
+```
+UID:360Player-event-4900741
+SUMMARY:U10DA Practice          <- not marked, not prefixed
+DTSTART:20260820T214500Z
+CATEGORIES:practice
+LAST-MODIFIED:20260820T195521Z  <- the only field that moved
+```
+
+No `STATUS`, no `METHOD:CANCEL`, nothing in `SUMMARY` or `DESCRIPTION`. The
+export does not carry the cancellation in any form, so calsync cannot act on it.
+This corrects an earlier assumption here that a cancelled event disappears.
 
 The only trace is `LAST-MODIFIED`, which moved to 1h50m *before* `DTSTART` while
 the documented churn lands 2–5s *after* `DTEND`. That makes a real edit
