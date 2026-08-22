@@ -22,7 +22,10 @@ import bottle
 from bottle import Bottle, redirect, request, static_file, template
 
 from .. import config as config_mod
-from .. import db, dormancy, enrichment, matrix, notify, repo, retire, sources, targeting
+from .. import (
+    db, dormancy, enrichment, matrix, notify, repo, retire, sources, targeting,
+    zones,
+)
 from ..fetch import FetchError, http_fetch, render_url
 from ..inspection import InspectionError, inspect_feed
 from ..normalize import title as title_norm
@@ -298,6 +301,7 @@ def create_app(
                 sports=repo.list_sports(conn),
                 kinds=sources.available(),
                 default_tz=settings.default_tz,
+                tz_choices=zones.choices(settings.default_tz),
             )
 
     @app.post("/onboard/create")
@@ -315,7 +319,7 @@ def create_app(
                 sport=sport,
                 team_name=_field("team_name").strip(),
                 kind=_field("kind"),
-                tz=(
+                tz=_require_zone(
                     _field("tz").strip()
                     or (previous.tz if previous else "")
                     or Settings.load(conn).default_tz
@@ -714,6 +718,8 @@ def create_app(
             matrix_has_token=secrets.has(matrix.load(conn).secret_ref),
             pushover=notify.load(conn),
             pushover_ready=notify.load(conn).available(secrets),
+            tz_choices=zones.choices(settings.default_tz),
+            tz_loadable=zones.loadable(settings.default_tz),
             api_token_ref=Settings.load(conn).api_token_ref,
             api_has_token=secrets.has(Settings.load(conn).api_token_ref),
             pushed=pushed,
@@ -950,6 +956,8 @@ def create_app(
                         "collection_template", "collection_game_label",
                         "collection_practice_label", "default_tz"):
                 value = _field(key).strip()
+                if key == "default_tz" and value:
+                    _require_zone(value)
                 if value:
                     set_setting(conn, key, value)
             # Blank is a meaningful value here and nowhere else in this form:
@@ -1468,6 +1476,18 @@ def _q(value: str) -> str:
 #: past any household this is built for; the wrap is there so a seventh kid gets
 #: a colour somebody else has rather than no colour at all.
 _COLOURS = 6
+
+
+def _require_zone(name: str) -> str:
+    """Refuse a timezone nothing can load, where the person who typed it is."""
+    if not zones.loadable(name):
+        raise Refused(
+            f"{name!r} is not a timezone name. Pick one from the list — they "
+            "are the IANA names, like 'America/Toronto', and an abbreviation "
+            "like 'EDT' names one side of a daylight-saving switch rather than "
+            "a place."
+        )
+    return name
 
 
 def _zone(name: str) -> ZoneInfo:

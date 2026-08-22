@@ -70,7 +70,7 @@ so a fresh clone needs:
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/pytest                                    # 520 tests, ~5s
+.venv/bin/pytest                                    # 529 tests, ~5s
 .venv/bin/pytest tests/test_player360.py -k content_hash    # single test
 ```
 
@@ -502,6 +502,12 @@ Decisions that span several files and are easy to undo by accident:
   widen `max_disappearance_pct` past 0.5 or the count past 25. Narrowing is free.
   A guard that a web form can switch off in two clicks is not a guard, and the
   invariant above says never raise these to make something pass.
+- **A timezone is picked from a list, never typed** (`zones.py`). A free-text
+  box is how a deployment stored `EDT`, which `ZoneInfo` cannot load, so every
+  local time silently fell back to UTC. Only city zones are offered, because a
+  fixed-offset name loads and is still an hour out for half the year; any
+  loadable name is still accepted, and a stored one that is not loadable is
+  flagged on `/settings` rather than quietly rendering UTC.
 - **Configuration lives in the `settings` table, not in code.** Calendar splitting,
   title format, multi-kid style and safety thresholds are all rows. `tests/test_configurable.py`
   asserts this by configuring a *different* family and expecting their conventions.

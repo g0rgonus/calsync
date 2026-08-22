@@ -174,7 +174,15 @@
       </label>
       <label class="field">
         <span class="label">Timezone</span>
+% if len(tz_choices) > 20:
+        <select name="tz" class="mono" required>
+%   for name in tz_choices:
+          <option value="{{ name }}" {{ 'selected' if name == default_tz else '' }}>{{ name }}</option>
+%   end
+        </select>
+% else:
         <input type="text" name="tz" class="mono" value="{{ default_tz }}" required>
+% end
       </label>
       <label class="field">
         <span class="label">Check every</span>

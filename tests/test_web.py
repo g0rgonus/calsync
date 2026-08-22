@@ -912,6 +912,101 @@ def test_calendar_settings_round_trip(client, tmp_path):
     assert Settings.load(conn).collection_template == "{child}-{type}"
 
 
+def test_the_timezone_is_picked_from_a_list_not_typed(client):
+    """`EDT` got typed into the free-text box this replaces, and stuck.
+
+    It is not an IANA key, so nothing could load it and every local time fell
+    back to UTC — a household on UTC and a household whose timezone is broken
+    looked identical.
+    """
+    page = client.get("/settings")["body"]
+    assert '<select name="default_tz"' in page
+    assert 'name="default_tz" class="mono"\n               value=' not in page
+    assert "America/Toronto" in page
+
+
+def test_the_offered_timezones_all_handle_daylight_saving(client):
+    """City zones only. A fixed-offset name loads and is still wrong for half
+    the year, which is the failure nothing reports until a season boundary."""
+    from calsync import zones
+
+    offered = zones.offered()
+    assert "UTC" in offered
+    assert not [n for n in offered if "/" not in n and n != "UTC"], "an abbreviation"
+    assert not [n for n in offered if n.startswith("Etc/")]
+    assert "America/Toronto" in offered and "America/New_York" in offered
+
+
+def test_a_timezone_nothing_can_load_is_refused_on_the_way_in(client, tmp_path):
+    """Refused where the person who typed it is, not at the next render."""
+    before = Settings.load(db.connect(tmp_path / "calsync.db")).default_tz
+    page = client.post("/settings/calendar", {"default_tz": "EDT"})["body"]
+
+    assert "not a timezone name" in page
+    assert "Traceback" not in page
+    conn = db.connect(tmp_path / "calsync.db")
+    assert Settings.load(conn).default_tz == before, "the bad value was stored"
+
+
+def test_a_real_timezone_is_accepted(client, tmp_path):
+    client.post("/settings/calendar", {"default_tz": "America/Toronto"})
+    conn = db.connect(tmp_path / "calsync.db")
+    assert Settings.load(conn).default_tz == "America/Toronto"
+
+
+def test_a_stored_timezone_nothing_can_load_is_flagged_on_the_page(client, tmp_path):
+    """`CALSYNC_SETTING_DEFAULT_TZ` can still seed one, and a hand-edited row
+    can too. The page has to say so rather than quietly rendering UTC."""
+    conn = db.connect(tmp_path / "calsync.db")
+    conn.execute("UPDATE settings SET value = 'EDT' WHERE key = 'default_tz'")
+    conn.commit()
+
+    page = client.get("/settings")["body"]
+    assert "Nothing can load" in page
+    assert "fall back to UTC" in page
+
+
+def test_a_value_that_is_not_offered_stays_selected(client, tmp_path):
+    """`EST5EDT` handles its switches, so it is accepted but not offered.
+    Rendering the form must not silently move the household off it."""
+    from calsync import zones
+
+    assert "EST5EDT" not in zones.offered()
+    assert zones.choices("EST5EDT")[0] == "EST5EDT"
+
+    conn = db.connect(tmp_path / "calsync.db")
+    conn.execute("UPDATE settings SET value = 'EST5EDT' WHERE key = 'default_tz'")
+    conn.commit()
+    page = client.get("/settings")["body"]
+    assert '<option value="EST5EDT" selected>' in page
+
+
+def test_onboarding_refuses_a_timezone_nothing_can_load(client, tmp_path):
+    result = onboard(client, tz="EDT")
+    assert "not a timezone name" in result["body"]
+
+    conn = db.connect(tmp_path / "calsync.db")
+    assert repo.list_sources(conn, enabled_only=False) == [], "a source was created"
+
+
+def test_onboarding_offers_the_same_list(client):
+    page = client.post("/onboard", {"url": FEED_URL})["body"]
+    assert '<select name="tz"' in page
+    assert "America/Toronto" in page
+
+
+def test_a_new_team_gets_a_timezone_that_resolves(client, tmp_path):
+    """The activity's tz is what every event carries, so a bad one here is the
+    whole season rendered in the wrong zone."""
+    from zoneinfo import ZoneInfo
+
+    onboard(client, tz="America/Toronto")
+    conn = db.connect(tmp_path / "calsync.db")
+    activity = repo.list_activities(conn)[0]
+    assert activity.tz == "America/Toronto"
+    ZoneInfo(activity.tz)
+
+
 def test_a_caldav_password_goes_to_the_secret_store_not_the_database(
     client, tmp_path, secrets_path
 ):

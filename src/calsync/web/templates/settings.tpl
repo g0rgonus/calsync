@@ -83,8 +83,27 @@
       </label>
       <label class="field" style="margin-bottom:0.8rem">
         <span class="label">Default timezone</span>
+% if len(tz_choices) > 20:
+        <select name="default_tz" class="mono">
+%   for name in tz_choices:
+          <option value="{{ name }}" {{ 'selected' if name == settings.default_tz else '' }}>{{ name }}</option>
+%   end
+        </select>
+% else:
         <input type="text" name="default_tz" class="mono"
                value="{{ settings.default_tz }}" autocomplete="off">
+        <span class="choice-note" style="margin-top:0.35rem">
+          This machine has no timezone database, so there is no list to pick
+          from. An IANA name — <span class="raw">America/Toronto</span>.
+        </span>
+% end
+% if not tz_loadable:
+        <span class="choice-note" style="margin-top:0.35rem">
+          <strong>Nothing can load
+          <span class="raw">{{ settings.default_tz }}</span>.</strong>
+          Times fall back to UTC until this is a real zone.
+        </span>
+% end
       </label>
     </div>
 
