@@ -469,3 +469,96 @@ def test_events_ageing_out_of_the_window_are_not_a_mass_cancellation(conn, sourc
     assert report.status == "ok", f"guard tripped on ageing, not cancellation: {report.held}"
     assert report.cancelled == 0
     assert report.skipped_window > 0
+
+
+# --- an edit the feed does not explain ---------------------------------------
+#
+# Observed on 2026-08-20: a practice cancelled in the app was still exported as
+# an ordinary practice, with only LAST-MODIFIED moved. The app knew; the feed
+# never said. docs/sources/player360.md, Trap 2.
+
+EDIT_NOW = datetime(2026, 8, 20, 12, 0, tzinfo=timezone.utc)
+
+
+def _p360(modified, *, start="20260820T214500Z", end="20260820T230000Z"):
+    return "\r\n".join([
+        "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//360Player//EN",
+        "BEGIN:VEVENT", "UID:e1", "SUMMARY:U10DA Practice",
+        f"DTSTART:{start}", f"DTEND:{end}",
+        "LOCATION:Kiln Creek Park\\, 2901 Kiln Creek Pkwy\\, Yorktown VA",
+        "CATEGORIES:practice", f"LAST-MODIFIED:{modified}",
+        "END:VEVENT", "END:VCALENDAR", "",
+    ]).encode()
+
+
+def test_an_edit_the_feed_does_not_explain_is_reported(conn, source, target):
+    """The whole signal: content identical, LAST-MODIFIED moved to before the
+    event. That is the only trace a cancellation leaves."""
+    report = sync_source(conn, source, target, now=EDIT_NOW,
+                         raw=_p360("20260812T214557Z"))
+    assert report.created == 1
+    assert report.edited_upstream == [], "nothing to compare against yet"
+
+    # Cancelled in the app two hours before it starts. Every published field is
+    # unchanged.
+    report = sync_source(conn, source, target, now=EDIT_NOW,
+                         raw=_p360("20260820T195521Z"))
+    assert report.unchanged == 1, "the content really is identical"
+    assert report.edited_upstream == ["e1"]
+    assert "changed upstream unseen" in report.line()
+
+    row = conn.execute(
+        "SELECT upstream_edit_at, cancelled FROM event_state WHERE uid = 'e1'"
+    ).fetchone()
+    assert row["upstream_edit_at"] is not None
+    assert row["cancelled"] == 0, "a timestamp is not grounds for a delete"
+
+
+def test_the_churn_after_an_event_ends_is_not_an_edit(conn, source, target):
+    """Player360 bumps LAST-MODIFIED 2-5s after every DTEND as a matter of
+    course. Without the before-the-event rule this fires on every event on the
+    evening it happened — the noise `content_hash` excludes the field to avoid.
+    """
+    sync_source(conn, source, target, now=EDIT_NOW, raw=_p360("20260812T214557Z"))
+    report = sync_source(conn, source, target, now=EDIT_NOW,
+                         raw=_p360("20260820T230002Z"))     # 2s after DTEND
+
+    assert report.edited_upstream == []
+    row = conn.execute(
+        "SELECT upstream_edit_at, upstream_modified_at FROM event_state WHERE uid = 'e1'"
+    ).fetchone()
+    assert row["upstream_edit_at"] is None, "churn raised a flag"
+    assert row["upstream_modified_at"] is not None, "but it was still recorded"
+
+
+def test_an_edit_that_changes_something_we_read_is_not_unexplained(
+    conn, source, target
+):
+    """A moved event is an ordinary update. The notice is only for edits whose
+    substance the feed withholds."""
+    sync_source(conn, source, target, now=EDIT_NOW, raw=_p360("20260812T214557Z"))
+    report = sync_source(conn, source, target, now=EDIT_NOW,
+                         raw=_p360("20260820T195521Z", start="20260820T203000Z",
+                                   end="20260820T220000Z"))
+
+    assert report.updated == 1
+    assert report.edited_upstream == [], "the feed said what changed"
+
+
+def test_an_unexplained_edit_does_not_rewrite_the_event(conn, source, target, tmp_path):
+    """The invariant this must not break: `content_hash` is the authority and
+    never keys off LAST-MODIFIED, or every event re-pushes as it ends."""
+    sync_source(conn, source, target, now=EDIT_NOW, raw=_p360("20260812T214557Z"))
+    before = conn.execute(
+        "SELECT content_hash FROM event_state WHERE uid = 'e1'").fetchone()[0]
+    written = sorted((tmp_path / "out").rglob("*.ics"))
+    stamps = {p: p.stat().st_mtime_ns for p in written}
+
+    report = sync_source(conn, source, target, now=EDIT_NOW,
+                         raw=_p360("20260820T195521Z"))
+
+    after = conn.execute(
+        "SELECT content_hash FROM event_state WHERE uid = 'e1'").fetchone()[0]
+    assert before == after
+    assert report.created == report.updated == report.refreshed == 0
+    assert {p: p.stat().st_mtime_ns for p in written} == stamps, "the event was rewritten"

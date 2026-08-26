@@ -553,3 +553,78 @@ def test_distinct_venues_stay_distinct_questions(conn, target):
     ]
     assert len(venues) > 1
     assert all(len(t["context"]) == 1 for t in venues)
+
+
+# --- an edit the feed will not explain --------------------------------------
+
+
+def _flag_edit(conn, uid, at="2026-08-20T19:55:21+00:00"):
+    conn.execute("UPDATE event_state SET upstream_edit_at = ? WHERE uid = ?", (at, uid))
+    conn.commit()
+
+
+def _edits(conn, target, push, *, flag=True):
+    from calsync import upstream
+
+    source, report = _poll(conn, target)
+    if flag:
+        uid = conn.execute("SELECT uid FROM event_state LIMIT 1").fetchone()[0]
+        _flag_edit(conn, uid)
+    return upstream.review(conn, source, secrets=Store(),
+                           base_url="http://box:8730", sender=push), source
+
+
+def test_an_unexplained_edit_is_announced_once(conn, target):
+    """Same once-per-set rule as the review queue: the poller runs every twenty
+    minutes, and a push per poll is muted by lunchtime."""
+    from calsync import upstream
+
+    push = Pushover()
+    first, source = _edits(conn, target, push)
+    assert first.edited == 1
+    assert first.notified
+    assert len(push.sent) == 1
+    assert push.sent[0]["url"] == "http://box:8730/review"
+    assert "Spring Squad" in push.sent[0]["title"]
+
+    again = upstream.review(conn, source, secrets=Store(), sender=push)
+    assert not again.notified
+    assert len(push.sent) == 1, "announced twice for the same set"
+
+
+def test_the_message_does_not_claim_the_event_was_cancelled(conn, target):
+    """One of the two observed pre-DTEND edits was not a cancellation, so this
+    must describe what is known and no more."""
+    push = Pushover()
+    _edits(conn, target, push)
+
+    body = push.sent[0]["message"].lower()
+    assert "cancel" in body, "a cancellation is the case worth naming"
+    assert "has been cancelled" not in body and "was cancelled" not in body
+    assert "still on the calendar" in body or "still publishes" in body
+
+
+def test_marking_it_seen_makes_the_next_one_news_again(conn, target):
+    from calsync import repo as _repo
+    from calsync import upstream
+
+    push = Pushover()
+    _, source = _edits(conn, target, push)
+    uid = conn.execute(
+        "SELECT uid FROM event_state WHERE upstream_edit_at IS NOT NULL").fetchone()[0]
+
+    _repo.clear_upstream_edit(conn, uid)
+    upstream.review(conn, source, secrets=Store(), sender=push)
+
+    _flag_edit(conn, uid)
+    outcome = upstream.review(conn, source, secrets=Store(), sender=push)
+    assert outcome.notified
+    assert len(push.sent) == 2
+
+
+def test_nothing_flagged_says_nothing(conn, target):
+    push = Pushover()
+    outcome, _ = _edits(conn, target, push, flag=False)
+    assert outcome.edited == 0
+    assert not outcome.notified
+    assert not push.sent

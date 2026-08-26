@@ -2234,6 +2234,66 @@ def test_clearing_the_enrichment_collection_actually_clears_it(client, tmp_path)
     assert Settings.load(conn).enrichment_collection == ""
 
 
+# --- an edit the feed will not explain --------------------------------------
+
+
+def _flag_edit(tmp_path, uid="x", at="2026-08-20T19:55:21+00:00"):
+    conn = db.connect(tmp_path / "calsync.db")
+    conn.execute("UPDATE event_state SET upstream_edit_at = ? WHERE uid = ?", (at, uid))
+    conn.commit()
+    return conn
+
+
+def test_an_unexplained_edit_is_listed_for_a_human(writing, tmp_path):
+    """It is on the calendar and nothing is held, so it is not a question — but
+    it is the only notice a cancellation gives, so it goes where somebody looks.
+    """
+    client, calendar = writing
+    onboard(client)
+    conn = db.connect(tmp_path / "calsync.db")
+    source_id = repo.list_sources(conn, enabled_only=False)[0].id
+    client.post(f"/sources/{source_id}/sync")
+
+    conn = db.connect(tmp_path / "calsync.db")
+    uid = conn.execute("SELECT uid FROM event_state LIMIT 1").fetchone()[0]
+    _flag_edit(tmp_path, uid)
+
+    page = client.get("/review")["body"]
+    assert "Changed at the source" in page
+    assert "will not guess at a delete" in page
+    assert f"/review/edits/{uid}/seen" in page
+
+
+def test_marking_an_edit_seen_clears_it_and_nothing_else(writing, tmp_path):
+    """Acknowledging is a glance, not a decision. It must not touch the event."""
+    client, calendar = writing
+    onboard(client)
+    conn = db.connect(tmp_path / "calsync.db")
+    source_id = repo.list_sources(conn, enabled_only=False)[0].id
+    client.post(f"/sources/{source_id}/sync")
+
+    conn = db.connect(tmp_path / "calsync.db")
+    uid = conn.execute("SELECT uid FROM event_state LIMIT 1").fetchone()[0]
+    _flag_edit(tmp_path, uid)
+    before = dict(conn.execute(
+        "SELECT collection, cancelled, content_hash FROM event_state WHERE uid = ?",
+        (uid,)).fetchone())
+
+    assert client.post(f"/review/edits/{uid}/seen")["status"] == 303
+
+    conn = db.connect(tmp_path / "calsync.db")
+    row = conn.execute(
+        "SELECT collection, cancelled, content_hash, upstream_edit_at "
+        "FROM event_state WHERE uid = ?", (uid,)).fetchone()
+    assert row["upstream_edit_at"] is None
+    assert {k: row[k] for k in before} == before, "acknowledging changed the event"
+    assert "Changed at the source" not in client.get("/review")["body"]
+
+
+def test_a_clean_review_page_does_not_mention_upstream_edits(client):
+    assert "Changed at the source" not in client.get("/review")["body"]
+
+
 # --- deciding on an answer --------------------------------------------------
 #
 # The only place an answer becomes configuration, and it is reached by a person.
