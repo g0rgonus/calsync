@@ -57,7 +57,7 @@
         <a class="chip chip-c{{ entry['colour'] }} {{ 'chip-off' if entry['cancelled'] else '' }} {{ 'chip-held' if entry['held'] else '' }}"
            href="{{ link(mode='agenda') }}#{{ entry['anchor'] }}"
            title="{{ entry['title'] }}{{ ' · ' + entry['venue'].name if entry['venue'] and entry['venue'].name else '' }}">
-          <b>{{ entry['local'].strftime('%-H:%M') }}</b> {{ entry['title'] }}
+          <b>{{ 'all day' if entry['all_day'] else entry['local'].strftime('%-H:%M') }}</b> {{ entry['title'] }}
         </a>
 %     end
       </td>
@@ -78,7 +78,7 @@
   </h2>
 %   end
   <div class="agenda-row" id="{{ entry['anchor'] }}">
-    <span class="agenda-time">{{ entry['local'].strftime('%-H:%M') }}</span>
+    <span class="agenda-time">{{ 'all day' if entry['all_day'] else entry['local'].strftime('%-H:%M') }}</span>
     <span class="agenda-bar chip-c{{ entry['colour'] }}"></span>
     <div class="agenda-body">
       <p class="agenda-title {{ 'struck' if entry['cancelled'] else '' }}">{{ entry['title'] }}</p>

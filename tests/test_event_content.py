@@ -338,3 +338,39 @@ def test_deleting_a_child_takes_the_content_with_it(conn, source, target):
     repo.delete_child(conn, "jesse")
 
     assert _stored(conn) == {}
+
+
+def test_an_all_day_event_round_trips_through_the_receipt(conn, target):
+    """The receipt has to remember it. A re-read that lost the flag would
+    render the semifinal at midnight, which is the bug this exists to avoid."""
+    from calsync import repo as _repo
+
+    conn.executescript(
+        """
+        INSERT INTO activities (id, child_id, name, sport_id, tz)
+             VALUES ('jesse-soccer-kestrels', 'jesse', 'Kestrels', 'soccer',
+                     'America/New_York');
+        INSERT INTO sources (id, activity_id, kind, shape)
+             VALUES ('tr-kestrels', 'jesse-soccer-kestrels', 'teamreach', 'feed');
+        """
+    )
+    conn.commit()
+    raw = (Path(__file__).parent / "fixtures" / "teamreach_allday_sample.ics").read_bytes()
+    source = _repo.get_source(conn, "tr-kestrels")
+    sync_source(conn, source, target,
+                now=datetime(2026, 9, 1, 12, tzinfo=timezone.utc), raw=raw)
+
+    stored = {
+        item.event.uid: item.event
+        for item in _repo.stored_events(conn, start="2026-01-01", end="2027-06-01")
+    }
+    assert stored["31000002@teamreach"].all_day is True
+    assert stored["31000001@teamreach"].all_day is False
+
+
+def test_all_day_is_part_of_the_stored_content(conn):
+    """So a feed that switches an event from a day to a time is a change the
+    sync loop sees, rather than one it reads past."""
+    from calsync import repo as _repo
+
+    assert "all_day" in _repo.CONTENT_COLUMNS

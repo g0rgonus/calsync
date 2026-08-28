@@ -128,6 +128,12 @@ class Event:
     kit: str | None = None
     arrive_at: datetime | None = None
 
+    #: A date with no time — a tournament day a coach entered before the
+    #: schedule existed. `starts_at` is still an instant, local midnight in the
+    #: activity's timezone, so windowing, ordering and the diff need no special
+    #: case. Only rendering does: writing 00:00 would put "Semifinal Games" at
+    #: midnight and fire its alarm the previous evening.
+    all_day: bool = False
     #: The feed's own LAST-MODIFIED, carried but never trusted for change
     #: detection — `content_hash` remains the authority, and this is excluded
     #: from it. Player360 bumps this 2-5s after an event *ends*, so it is noise

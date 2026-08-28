@@ -358,6 +358,10 @@ def _event_json(conn, item: repo.StoredEvent, settings: Settings) -> dict:
         "activity": {"id": activity.id, "name": activity.name, "sport": activity.sport},
         "kind": "game" if event.is_game else "practice",
         "is_game": event.is_game,
+        # An instant either way — local midnight when all_day — so a consumer
+        # that ignores the flag still sorts and windows correctly. It only
+        # changes how a time should be shown, and whether there is one.
+        "all_day": event.all_day,
         "starts_at": event.starts_at.isoformat(),
         "ends_at": event.ends_at.isoformat(),
         "tz": event.tz,

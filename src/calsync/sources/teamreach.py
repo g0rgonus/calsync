@@ -24,7 +24,8 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from icalendar import Calendar
 
@@ -95,6 +96,23 @@ def _dt(component, key: str) -> datetime | None:
         # the offset, and guessing a zone shifts every render.
         raise FeedError(f"{key} has no timezone: {value!r}")
     return value.astimezone(timezone.utc)
+
+
+def _date(component, key: str) -> date | None:
+    """A `VALUE=DATE` property, which is a date and deliberately not an instant.
+
+    Coaches enter a tournament day this way months before anyone knows the
+    time — "Semifinal Games", "Final Tournament Game". `_dt` returns None for
+    these because `datetime.date` is not a `datetime`; this is what tells them
+    apart from a genuinely absent property.
+    """
+    prop = component.get(key)
+    if prop is None:
+        return None
+    value = prop.dt
+    if isinstance(value, datetime) or not isinstance(value, date):
+        return None
+    return value
 
 
 def clean_venue(raw: str) -> str:
@@ -290,12 +308,47 @@ def parse_feed(
     for component in vevents:
         uid = _text(component, "UID")
         starts_at = _dt(component, "DTSTART")
-        if not uid or starts_at is None:
-            raise FeedError(f"VEVENT in {source_id} missing UID or DTSTART")
+        all_day = False
 
-        ends_at = _dt(component, "DTEND")
-        if ends_at is None:
-            ends_at = starts_at + timedelta(minutes=default_duration_min or 0)
+        if starts_at is None:
+            # A date rather than an instant. Anchored at local midnight in the
+            # activity's timezone so everything downstream — the sync window,
+            # the diff, ordering — sees an ordinary instant, and only the render
+            # has to know. Anchoring in UTC instead would put an event on the
+            # wrong day for anyone west of Greenwich.
+            day = _date(component, "DTSTART")
+            if day is not None:
+                all_day = True
+                starts_at = datetime(
+                    day.year, day.month, day.day, tzinfo=ZoneInfo(activity.tz)
+                )
+
+        if not uid or starts_at is None:
+            # Say which event and what is wrong with it. "missing UID or
+            # DTSTART" sent somebody to the logs for a feed whose UID and
+            # DTSTART were both present and whose DTSTART was a date.
+            raw_start = component.get("DTSTART")
+            detail = (
+                f"DTSTART is {raw_start.to_ical().decode()!r}, which is neither a "
+                "timestamp nor a date" if raw_start is not None else "no DTSTART"
+            ) if uid else "no UID"
+            raise FeedError(
+                f"VEVENT {uid or '<no uid>'} in {source_id} cannot be read: {detail}"
+            )
+
+        if all_day:
+            end_day = _date(component, "DTEND")
+            # DTEND on a DATE value is exclusive (RFC 5545) and TeamReach
+            # publishes it that way — 21st to 22nd is one day, not two.
+            ends_at = (
+                datetime(end_day.year, end_day.month, end_day.day,
+                         tzinfo=ZoneInfo(activity.tz))
+                if end_day is not None else starts_at + timedelta(days=1)
+            )
+        else:
+            ends_at = _dt(component, "DTEND")
+            if ends_at is None:
+                ends_at = starts_at + timedelta(minutes=default_duration_min or 0)
 
         raw_summary = _text(component, "SUMMARY") or ""
         parsed = parse_summary(raw_summary, tokens)
@@ -366,6 +419,7 @@ def parse_feed(
                 home=parsed.home,
                 detail=parsed.event_type,
                 body=body,
+                all_day=all_day,
                 source_id=source_id,
                 source_category=parsed.event_type,
                 content_hash=content_hash(component),

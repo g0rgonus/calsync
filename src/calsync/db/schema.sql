@@ -166,6 +166,9 @@ CREATE TABLE IF NOT EXISTS event_content (
     ends_at         TEXT NOT NULL,
     tz              TEXT NOT NULL,
     is_game         INTEGER NOT NULL,
+    -- A date with no time. `starts_at` on event_state is still an instant
+    -- (local midnight), so only the render differs.
+    all_day         INTEGER NOT NULL DEFAULT 0,
     opponent        TEXT,
     -- Tri-state on purpose: NULL is "not known", which is different from "home".
     -- Some feeds phrase every fixture as "vs", so away is only ever marked when

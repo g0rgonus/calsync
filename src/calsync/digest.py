@@ -78,6 +78,7 @@ class Entry:
     title: str
     venue: str | None
     is_game: bool
+    all_day: bool = False
 
     @property
     def local(self) -> datetime:
@@ -89,7 +90,9 @@ class Entry:
         return self.starts_at.astimezone(ZoneInfo(self.tz))
 
     def line(self) -> str:
-        when = self.local.strftime("%H:%M")
+        # "00:00" would be a time the feed never published — the coach entered a
+        # day because the day is all that is known.
+        when = "all day" if self.all_day else self.local.strftime("%H:%M")
         where = f" · {self.venue}" if self.venue else ""
         return f"{when}  {self.title}{where}"
 
@@ -167,6 +170,7 @@ def collect(conn, *, now: datetime, hours: int = 24) -> Digest:
                 # which is what makes the message agree with it rather than
                 # approximate it.
                 title=title_norm.render(item.event, activity, children, settings),
+                all_day=item.event.all_day,
                 venue=(item.event.venue.name if item.event.venue else None),
                 is_game=item.event.is_game,
             )

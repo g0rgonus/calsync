@@ -34,6 +34,10 @@ ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # v6: which set of review questions has already been pushed, so a queue
     # nobody has got to yet is announced once rather than every twenty minutes.
     ("sources", "review_notified", "TEXT"),
+    # v8: a date with no time. Coaches enter a tournament day months before the
+    # schedule exists, and `schema.sql` only ever CREATEs — so an existing
+    # `event_content` needs this here or every read of it fails.
+    ("event_content", "all_day", "INTEGER NOT NULL DEFAULT 0"),
     # v8: the upstream LAST-MODIFIED we last saw, and whether the last move of
     # it went unexplained. On `event_state`, never `event_content`, because
     # `content_of` is compared field by field to detect a refresh — a churning
