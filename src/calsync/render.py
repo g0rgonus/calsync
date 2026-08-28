@@ -32,6 +32,7 @@ class RenderedEvent:
     url: str | None = None
     alarm_minutes: int | None = None
     is_game: bool = False
+    all_day: bool = False
     cancelled: bool = False
     provenance: dict[str, str] = field(default_factory=dict)
 
@@ -60,9 +61,13 @@ def build_body(
         descriptor = f"{activity.name} ({activity.official_name})"
     lines.append(f"{activity.sport.replace('_', ' ').title()} · {descriptor}")
 
-    local = event.local_start
-    label = "Start" if not event.is_game else "Start"
-    lines.append(f"{label} {local:%H:%M} {local:%Z}")
+    if event.all_day:
+        # No time was published, so stating one would be inventing it. The
+        # coach entered a day because the day is all that is known yet.
+        lines.append("All day — no time published yet")
+    else:
+        local = event.local_start
+        lines.append(f"Start {local:%H:%M} {local:%Z}")
 
     if event.body:
         lines.append(event.body)
@@ -113,13 +118,18 @@ def render(
         starts_at=event.starts_at,
         ends_at=event.ends_at,
         tz=event.tz,
+        all_day=event.all_day,
         body=build_body(event, activity, settings, manage_url=manage_url),
         location_text=location_text,
         venue_name=venue.name if venue else None,
         lat=venue.lat if venue else None,
         lon=venue.lon if venue else None,
         url=event.url,
-        alarm_minutes=alarm_minutes,
+        # No alarm on an all-day event. The activity's game alarm is minutes
+        # before kick-off, and an all-day event's "start" is local midnight —
+        # so a 90-minute alarm fires at 22:30 the previous evening, for an
+        # event whose time nobody knows yet.
+        alarm_minutes=None if event.all_day else alarm_minutes,
         is_game=event.is_game,
         cancelled=cancelled,
         provenance={

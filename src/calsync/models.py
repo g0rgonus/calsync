@@ -128,6 +128,13 @@ class Event:
     kit: str | None = None
     arrive_at: datetime | None = None
 
+    #: A date with no time — a tournament day a coach entered before the
+    #: schedule existed. `starts_at` is still an instant, local midnight in the
+    #: activity's timezone, so windowing, ordering and the diff need no special
+    #: case. Only rendering does: writing 00:00 would put "Semifinal Games" at
+    #: midnight and fire its alarm the previous evening.
+    all_day: bool = False
+
     #: Questions blocking this event's placement (UNKNOWN_TYPE and friends).
     #:
     #: The adapters have always known this per event and thrown it away: an

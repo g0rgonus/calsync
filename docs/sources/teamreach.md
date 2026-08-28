@@ -174,6 +174,26 @@ choose otherwise; it is off by default rather than guessing 60 minutes.
 No `STATUS`, so as with Player360 an event simply vanishes. The disappearance
 guard in `diff.py` is the only protection, and it applies unchanged.
 
+## Trap 8: a tournament day is published as a date, not a time
+
+**Observed 2026-08-28.** Two events in a 21-event feed:
+
+```
+DTSTART;VALUE=DATE:20251021
+DTEND;VALUE=DATE:20251022
+SUMMARY:Semifinal Games
+```
+
+A coach entering a knockout day months before the bracket exists. `DTEND` is
+exclusive, so that is one day. Both carried `TRANSP:TRANSPARENT` and
+`X-MICROSOFT-CDO-BUSYSTATUS:FREE`, neither of which calsync reads.
+
+They used to raise, and the raise took the whole feed with it — nineteen live
+fixtures never reached the calendar because of two the adapter could not read.
+`Event.all_day` now carries them: anchored at local midnight in the activity's
+timezone, written back as `VALUE=DATE`, and with no alarm, since "90 minutes
+before" a day is the previous evening.
+
 ## Open questions
 
 - Does `LAST-MODIFIED` churn on untouched events the way Player360's does? Two

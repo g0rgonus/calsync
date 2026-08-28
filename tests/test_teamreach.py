@@ -420,3 +420,62 @@ def test_the_vocabulary_reaches_the_adapter_through_source_config():
         "teaching the source that a playoff game is a practice changed nothing, "
         "so sources.config still is not reaching the adapter"
     )
+
+
+# --- a day with no time on it -----------------------------------------------
+#
+# Observed on a real feed 2026-08-28: two `DTSTART;VALUE=DATE` events —
+# "Semifinal Games" and "Final Tournament Game" — entered months before anyone
+# knew the kick-off. The adapter raised on them, which killed all 21 events in
+# the feed over the 2 it could not read.
+
+ALLDAY = (Path(__file__).parent / "fixtures" / "teamreach_allday_sample.ics").read_bytes()
+
+
+def test_a_day_with_no_time_does_not_kill_the_feed():
+    """The failure this fixes: two unreadable events took the other nineteen
+    with them, so a live season never reached the calendar at all."""
+    result = parse_feed(ALLDAY, ACTIVITY, source_id="tr-kestrels")
+
+    assert len(result.events) == 3, "an all-day event stopped the parse"
+    assert sum(e.all_day for e in result.events) == 2
+
+
+def test_an_all_day_event_is_anchored_at_local_midnight():
+    """Not UTC midnight. Anchoring in UTC puts the event on the previous day for
+    anyone west of Greenwich — a semifinal on the 16th, shown on the 15th."""
+    from zoneinfo import ZoneInfo
+
+    events = {e.uid: e for e in parse_feed(
+        ALLDAY, ACTIVITY, source_id="tr-kestrels").events}
+    semi = events["31000002@teamreach"]
+
+    assert semi.all_day
+    local = semi.starts_at.astimezone(ZoneInfo(ACTIVITY.tz))
+    assert (local.year, local.month, local.day) == (2026, 10, 17)
+    assert (local.hour, local.minute) == (0, 0)
+    # DTEND on a DATE is exclusive: the 17th to the 18th is one day.
+    assert (semi.ends_at - semi.starts_at).days == 1
+
+
+def test_a_timed_event_in_the_same_feed_is_untouched():
+    events = {e.uid: e for e in parse_feed(
+        ALLDAY, ACTIVITY, source_id="tr-kestrels").events}
+    timed = events["31000001@teamreach"]
+
+    assert not timed.all_day
+    assert timed.starts_at.isoformat() == "2026-09-08T23:00:00+00:00"
+
+
+def test_an_unreadable_event_names_itself_and_the_reason():
+    """"missing UID or DTSTART" sent somebody to the logs for a feed whose UID
+    and DTSTART were both present."""
+    broken = ALLDAY.replace(b"DTSTART;VALUE=DATE:20261017",
+                            b"DTSTART;VALUE=DURATION:PT1H")
+    with pytest.raises(FeedError) as excinfo:
+        parse_feed(broken, ACTIVITY, source_id="tr-kestrels")
+
+    message = str(excinfo.value)
+    assert "31000002@teamreach" in message, "which event?"
+    assert "neither a timestamp nor a date" in message, "what is wrong with it?"
+    assert "missing UID" not in message

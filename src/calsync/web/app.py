@@ -806,6 +806,7 @@ def create_app(
                     "colour": colours[activity.child_id],
                     "venue": item.event.venue,
                     "source_id": item.source_id,
+                    "all_day": item.event.all_day,
                     "cancelled": item.cancelled,
                     "held": bool(settings.enrichment_collection)
                             and item.collection == settings.enrichment_collection,

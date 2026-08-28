@@ -272,8 +272,8 @@ def mark_event_cancelled(conn: sqlite3.Connection, uid: str) -> None:
 #: `observed_at` is deliberately excluded: it says when we last looked, not what
 #: we saw, and including it would make every poll look like a change.
 CONTENT_COLUMNS: tuple[str, ...] = (
-    "ends_at", "tz", "is_game", "opponent", "home", "detail", "body", "url",
-    "kit", "arrive_at", "source_category",
+    "ends_at", "tz", "is_game", "all_day", "opponent", "home", "detail", "body",
+    "url", "kit", "arrive_at", "source_category",
     "venue_raw", "venue_name", "venue_address", "venue_field",
 )
 
@@ -296,6 +296,7 @@ def content_of(event) -> dict:
         "ends_at": event.ends_at.isoformat(),
         "tz": event.tz,
         "is_game": int(event.is_game),
+        "all_day": int(event.all_day),
         "opponent": event.opponent,
         "home": None if event.home is None else int(event.home),
         "detail": event.detail,
@@ -419,6 +420,7 @@ def _stored_event(row: sqlite3.Row) -> StoredEvent:
             starts_at=datetime.fromisoformat(row["starts_at"]),
             ends_at=datetime.fromisoformat(row["ends_at"]),
             is_game=bool(row["is_game"]),
+            all_day=bool(row["all_day"]),
             tz=row["tz"],
             venue=venue,
             opponent=row["opponent"],

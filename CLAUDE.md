@@ -70,7 +70,7 @@ so a fresh clone needs:
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/pytest                                    # 529 tests, ~5s
+.venv/bin/pytest                                    # 537 tests, ~5s
 .venv/bin/pytest tests/test_player360.py -k content_hash    # single test
 ```
 
@@ -508,6 +508,14 @@ Decisions that span several files and are easy to undo by accident:
   fixed-offset name loads and is still an hour out for half the year; any
   loadable name is still accepted, and a stored one that is not loadable is
   flagged on `/settings` rather than quietly rendering UTC.
+- **A date with no time is an event, not a parse error** (`Event.all_day`).
+  Coaches enter tournament days months before a kick-off exists, and two of them
+  in a 21-event feed used to raise and take the other nineteen with them.
+  `starts_at` is still an instant — local midnight in the activity's timezone,
+  never UTC, or the day is wrong west of Greenwich — so windowing, ordering and
+  the diff need no special case. Only the render does: `VALUE=DATE` out, and no
+  alarm, because "90 minutes before" an all-day event is 22:30 the evening
+  before for a time nobody knows yet.
 - **Configuration lives in the `settings` table, not in code.** Calendar splitting,
   title format, multi-kid style and safety thresholds are all rows. `tests/test_configurable.py`
   asserts this by configuring a *different* family and expecting their conventions.

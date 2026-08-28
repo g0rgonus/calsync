@@ -14,7 +14,8 @@ this code:
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from icalendar import Calendar
 
@@ -61,12 +62,25 @@ def _dt(component, key: str) -> datetime | None:
         return None
     value = prop.dt
     if not isinstance(value, datetime):
-        return None  # date-only; Player360 has not been observed to emit these
+        return None  # a date, not an instant — `_date` picks these up
     if value.tzinfo is None:
         # The feed publishes Z-suffixed UTC. A naive value means the parse
         # lost the offset, and guessing a zone here would shift every render.
         raise FeedError(f"{key} has no timezone: {value!r}")
     return value.astimezone(timezone.utc)
+
+
+def _date(component, key: str) -> date | None:
+    """A `VALUE=DATE` property. Not observed on this feed, and handled anyway:
+    the same coach behaviour produced them on TeamReach, and one adapter
+    crashing on what the other supports is a trap rather than a policy."""
+    prop = component.get(key)
+    if prop is None:
+        return None
+    value = prop.dt
+    if isinstance(value, datetime) or not isinstance(value, date):
+        return None
+    return value
 
 
 def content_hash(component) -> str:
@@ -133,8 +147,37 @@ def parse_feed(
         uid = _text(component, "UID")
         starts_at = _dt(component, "DTSTART")
         ends_at = _dt(component, "DTEND")
+        all_day = False
+
+        if starts_at is None:
+            day = _date(component, "DTSTART")
+            if day is not None:
+                # Local midnight in the activity's timezone, so everything
+                # downstream sees an ordinary instant and only the render has
+                # to know. See `Event.all_day`.
+                all_day = True
+                starts_at = datetime(
+                    day.year, day.month, day.day, tzinfo=ZoneInfo(activity.tz)
+                )
+                end_day = _date(component, "DTEND")
+                ends_at = (
+                    datetime(end_day.year, end_day.month, end_day.day,
+                             tzinfo=ZoneInfo(activity.tz))
+                    if end_day is not None else starts_at + timedelta(days=1)
+                )
+
         if not uid or starts_at is None:
-            raise FeedError(f"VEVENT in {source_id} missing UID or DTSTART")
+            # Name the event and the actual problem. "missing UID or DTSTART"
+            # sent somebody to the logs for a feed where both were present.
+            raw_start = component.get("DTSTART")
+            detail = (
+                f"DTSTART is {raw_start.to_ical().decode()!r}, which is neither a "
+                "timestamp nor a date" if raw_start is not None else "no DTSTART"
+            ) if uid else "no UID"
+            raise FeedError(
+                f"VEVENT {uid or '<no uid>'} in {source_id} cannot be read: {detail}"
+            )
+
         if ends_at is None:
             ends_at = starts_at
 
@@ -184,6 +227,7 @@ def parse_feed(
                 url=_text(component, "URL"),
                 source_id=source_id,
                 source_category=cats[0] if cats else None,
+                all_day=all_day,
                 content_hash=content_hash(component),
                 unresolved=tuple(unresolved),
             )

@@ -334,3 +334,56 @@ def test_caldav_reads_an_etag_however_the_transport_cased_it(rendered):
             transport=FakeTransport(FakeResponse(201, {spelling: '"v1"'})),
         )
         assert target.upsert(rendered).etag == '"v1"', f"dropped {spelling}"
+
+
+# --- a day with no time on it -----------------------------------------------
+
+
+def _allday_rendered():
+    from calsync.render import RenderedEvent
+
+    return RenderedEvent(
+        uid="31000002@teamreach",
+        collection="games",
+        title="P ⚽️ Semifinal Games",
+        starts_at=datetime(2026, 10, 17, 4, 0, tzinfo=timezone.utc),
+        ends_at=datetime(2026, 10, 18, 4, 0, tzinfo=timezone.utc),
+        tz="America/New_York",
+        body="All day — no time published yet",
+        all_day=True,
+        is_game=True,
+    )
+
+
+def test_an_all_day_event_is_written_as_dates_not_timestamps():
+    """A client given midnight renders "Semifinal Games, 12:00 AM", which is a
+    time the feed never published."""
+    ics = to_ics(_allday_rendered()).decode()
+
+    assert "DTSTART;VALUE=DATE:20261017" in ics
+    assert "DTEND;VALUE=DATE:20261018" in ics
+    assert "DTSTART:2026" not in ics, "written as a timestamp"
+
+
+def test_an_all_day_event_carries_no_alarm(settings):
+    """The activity's game alarm is minutes before kick-off. On an all-day
+    event "start" is local midnight, so a 90-minute alarm fires at 22:30 the
+    evening before, for an event whose time nobody knows."""
+    from calsync.models import Activity, Child, Event
+    from calsync.render import render
+
+    activity = Activity(id="a", child_id="c", name="Kestrels", sport="soccer",
+                        emoji="⚽️", tz="America/New_York", alarm_game_min=90)
+    child = Child(id="c", name="Parker", initial="P", birth_order=1)
+    event = Event(
+        uid="u", activity_id="a", is_game=True, tz="America/New_York",
+        starts_at=datetime(2026, 10, 17, 4, 0, tzinfo=timezone.utc),
+        ends_at=datetime(2026, 10, 18, 4, 0, tzinfo=timezone.utc),
+        all_day=True, detail="Semifinal Games",
+    )
+    rendered = render(event, activity, [child], settings,
+                      alarm_minutes=activity.alarm_minutes(is_game=True))
+
+    assert rendered.alarm_minutes is None
+    assert "BEGIN:VALARM" not in to_ics(rendered).decode()
+    assert "All day" in rendered.body

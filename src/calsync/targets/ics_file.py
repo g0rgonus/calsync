@@ -29,8 +29,16 @@ def to_vevent(event: RenderedEvent, *, sequence: int = 0) -> VEvent:
     ve = VEvent()
     ve.add("uid", event.uid)
     ve.add("summary", event.title)
-    ve.add("dtstart", event.starts_at)
-    ve.add("dtend", event.ends_at)
+    if event.all_day:
+        # DATE values, not timestamps: the feed published a day and no time, and
+        # a client given midnight renders "Semifinal Games, 12:00 AM". DTEND is
+        # exclusive on a DATE (RFC 5545), which is how the parse stored it.
+        # `icalendar` emits VALUE=DATE for a `date`, so the dates go in as dates.
+        ve.add("dtstart", event.starts_at.date())
+        ve.add("dtend", event.ends_at.date())
+    else:
+        ve.add("dtstart", event.starts_at)
+        ve.add("dtend", event.ends_at)
     ve.add("dtstamp", event.starts_at)
     # Our own sequence, never the upstream one: some publishers bump theirs
     # when an event merely ends, which would notify subscribers about games

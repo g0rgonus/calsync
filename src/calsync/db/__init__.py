@@ -12,7 +12,7 @@ import time
 import sys
 from pathlib import Path
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 
 #: Additive column migrations, applied when absent. `schema.sql` uses
@@ -34,6 +34,10 @@ ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # v6: which set of review questions has already been pushed, so a queue
     # nobody has got to yet is announced once rather than every twenty minutes.
     ("sources", "review_notified", "TEXT"),
+    # v8: a date with no time. Coaches enter a tournament day months before the
+    # schedule exists, and `schema.sql` only ever CREATEs — so an existing
+    # `event_content` needs this here or every read of it fails.
+    ("event_content", "all_day", "INTEGER NOT NULL DEFAULT 0"),
     # v5 adds `event_content`, which is a new table rather than new columns, so
     # `schema.sql`'s CREATE TABLE IF NOT EXISTS covers it and nothing belongs
     # here. Existing rows backfill themselves: the sync loop treats missing
