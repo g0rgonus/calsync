@@ -174,7 +174,31 @@ choose otherwise; it is off by default rather than guessing 60 minutes.
 No `STATUS`, so as with Player360 an event simply vanishes. The disappearance
 guard in `diff.py` is the only protection, and it applies unchanged.
 
-## Trap 8: a tournament day is published as a date, not a time
+## Trap 8: the summary may name only the opponent
+
+**Observed 2026-08-28.** A third convention on this platform, alongside
+"Otters vs Chargers" and "Game vs Cougars":
+
+```
+SUMMARY:vs. Walsingham B
+SUMMARY:@ Covenant Classical
+SUMMARY:@Hampton Roads Academy*
+```
+
+The coach writes from the team's own point of view, so there is no left-hand
+side to match ourselves against. `_VERSUS` requires whitespace *before* the
+marker, so all of these fell through to "a bare label" — eighteen fixtures in a
+live feed filed as practices, each reported as an unrecognised type.
+
+`_LEADING_VERSUS` reads them. `@` states away positively; `vs.` names the
+opponent and claims nothing about hosting, because a feed that phrases every
+fixture that way would otherwise mark every away game home.
+
+`@` may have no space after it. A trailing `*` appears on some fixtures and
+**what it means is not known** — it is stripped, because keeping it makes
+"Ware Academy" and "Ware Academy*" two schools.
+
+## Trap 9: a tournament day is published as a date, not a time
 
 **Observed 2026-08-28.** Two events in a 21-event feed:
 
