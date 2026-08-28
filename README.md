@@ -32,6 +32,12 @@ rather than `404`, because "not yet" and "you have the URL wrong" are different
 answers. [docs/PLAN.md](docs/PLAN.md) is the original architecture and gap
 analysis, kept as written.
 
+The Mac side is built: [`mac/`](mac/README.md) holds `calsync-mirror`, a small
+Swift tool that reads Radicale and writes the family's Apple calendars through
+EventKit. It is a separate program because calsync's responsibility ends at
+Radicale — it holds no iCloud credential, and nothing else writes to those
+calendars.
+
 The Google Calendar target is **withdrawn as a destination**: the payload
 builder is complete and tested, but the OAuth exchange is missing
 ([#1](https://github.com/g0rgonus/calsync/issues/1)), and an entry in a dropdown
