@@ -21,10 +21,12 @@ looks like a typo.
 
 from __future__ import annotations
 
+from .. import __version__
+
 #: Bumped when a shape changes in a way a client could notice. Not the package
 #: version: an agent cares whether the contract moved, not whether a venue
 #: parser was tidied.
-CONTRACT_VERSION = "1.0"
+CONTRACT_VERSION = "1.1"
 
 #: One entry per route the app actually serves, keyed by (method, rule) exactly
 #: as Bottle reports them.
@@ -59,6 +61,23 @@ ENDPOINTS: dict[tuple[str, str], dict] = {
     ("GET", "/v1/events/<uid:path>"): {
         "summary": "One event by uid, unbounded by date.",
         "returns": {"event": "as in /v1/events", "sources": "freshness"},
+    },
+    ("GET", "/v1/review"): {
+        "summary": "How much is waiting on a human, as counts.",
+        "returns": {
+            "held_events": "events sitting in the enrichment calendar",
+            "sources": "array of {source_id, activity, held_events}",
+            "answers_awaiting_decision": "answers given, not yet approved",
+            "upstream_edits": "events a feed rewrote without saying what changed",
+            "needs_attention": "the three above, summed",
+        },
+        "notes": [
+            "Counts only. The questions, and answering them, are in the "
+            "console — this is for something ambient that shows there is work.",
+            "Runs no dry run and fetches no feed, so it is safe to poll. The "
+            "numbers come from what is actually on the calendar, not from a "
+            "fresh parse.",
+        ],
     },
     ("POST", "/v1/tasks/<task_id>/result"): {
         "summary": "Answer a question calsync asked. Stored, never applied.",
@@ -132,6 +151,11 @@ def document() -> dict:
     """The contract, as it will be served."""
     return {
         "contract_version": CONTRACT_VERSION,
+        # The running build, which is a different question from the contract's
+        # shape and is deliberately answered separately. `contract_version`
+        # moves when a client could notice; this moves when anything does, and
+        # it is what identifies a deployment that ships on moving image tags.
+        "version": __version__,
         "service": "calsync",
         "summary": (
             "Read events as structured fields, and answer questions calsync "

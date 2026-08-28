@@ -204,15 +204,45 @@ success is normal and returns `207`.
 
 ## Review
 
+Two different queues share this heading, and only one of them is built.
+
 ```http
-GET  /v1/proposals?state=pending_review
-POST /v1/proposals/{id}/approve     {"edits": {...}}    # ui scope only
-POST /v1/proposals/{id}/reject      {"reason": "..."}
+GET  /v1/review                                        # built
 ```
 
-Approve writes to CalDAV and records who decided and when. Edits made at
-approval are stored as a correction against `(extractor, prompt_version)` —
-that's your regression corpus for prompt changes.
+**How much is waiting on a human, as counts.** It exists so something ambient —
+a menu bar, a dashboard — can show that events are sitting in the enrichment
+calendar without anybody remembering to open the console. Three kinds of waiting
+are counted apart because they are different acts: `held_events` are questions
+nobody has answered, `answers_awaiting_decision` are answers somebody gave that
+need a glance, and `upstream_edits` are events a feed rewrote without saying
+what changed. `needs_attention` is the three summed.
+
+It **runs no dry run and fetches no feed**, so it is safe to poll on a timer.
+The console's `/review` page does run one, because a verdict from last week says
+nothing about a feed that has since been corrected and a person looking at that
+page is about to act on it. A number on a menu bar refreshed every few minutes
+cannot justify fetching every team's feed to render it, so the counts come from
+`event_state` via the same `repo.events_in_collection` the console uses for its
+held count — one definition, for the same reason there is one definition of
+stale.
+
+It reports counts, never the questions. Answering happens in the console, by a
+person; a client that could render the questions would be one step from looking
+like it could resolve them.
+
+```http
+GET  /v1/proposals?state=pending_review                # not built
+POST /v1/proposals/{id}/approve     {"edits": {...}}   # not built
+POST /v1/proposals/{id}/reject      {"reason": "..."}  # not built
+```
+
+A **proposal** is an event extracted from a document rather than read from a
+feed — a different queue from the enrichment one above, and unbuilt because
+nothing stores documents yet. Approve would write to CalDAV and record who
+decided and when. Edits made at approval are stored as a correction against
+`(extractor, prompt_version)` — that's your regression corpus for prompt
+changes.
 
 ---
 

@@ -19,8 +19,14 @@ source page. `/calendar` shows what has actually been written, month grid or
 agenda. Nothing in the day-to-day path needs sqlite3 any more.
 
 **The HTTP API** (`calsync api`, `src/calsync/api/`) serves `GET /v1` (the
-machine-readable contract), `GET /v1/events`, `GET /v1/events/{uid}` and
-`POST /v1/tasks/{id}/result`, behind a bearer token from the secret store. The write endpoint stores an answer and **applies
+machine-readable contract), `GET /v1/events`, `GET /v1/events/{uid}`,
+`GET /v1/review` and `POST /v1/tasks/{id}/result`, behind a bearer token from
+the secret store. `GET /v1/review` reports **counts** of what is waiting on a
+human — held events, answers to approve, unexplained upstream edits — for
+something ambient like the Mac app's menu bar. It runs no dry run and fetches no
+feed, unlike the console's `/review` page, because a number refreshed every few
+minutes cannot justify polling every team's feed; the counts come from
+`repo.events_in_collection`, the console's own definition. The write endpoint stores an answer and **applies
 nothing** — approving happens in the console, by a person. It rests on `event_content`, which records what each event was
 alongside `event_state`'s record of where it went (`docs/API.md`, "What calsync
 remembers"). The write half — documents, proposals, approvals, task tokens,
@@ -57,6 +63,68 @@ caption explaining that it could not work, which was the wrong call: an entry in
 a dropdown reads as a supported choice however the caption is worded. Selecting
 it anyway — an old `target_kind` row, say — gives the reason and the issue link
 rather than "unknown target kind" (`targeting.WITHDRAWN`).
+
+**The Mac side lives in `mac/` and is a separate program on purpose**
+(`mac/README.md`). `calsync-mirror` reads Radicale over plain `GET` and writes
+the family's Apple calendars through EventKit — it is the only thing in this
+repo that holds an iCloud credential, and there is no code path from a poller to
+an `EKEventStore`. Three things decide its shape:
+
+- **It reads Radicale, not `GET /v1/events`.** The API serves the *receipt* —
+  the feed's view — so it carries no composed description, no `"Venue Name,
+  Street Address"` location and no alarm policy. A mirror reading it would
+  re-implement `build_body`, the location composition and the alarm rules in a
+  second language, and all three would drift the first time a template changed.
+  Radicale holds the literal VEVENT, which is the thing being mirrored.
+- **Ownership is a line in the notes**, because EventKit has no settable UID —
+  `calendarItemExternalIdentifier` is read-only and `X-CALSYNC-UID` does not
+  survive into an `EKEvent`. `Managed by calsync — uid:<uid>` is the entire
+  ownership model: an event carrying it may be updated or deleted, an event
+  without one is somebody's haircut. Identity living in the events means there
+  is **no state file** — the predecessor kept one, and losing it recreated every
+  event beside itself.
+- **The same disappearance guard `diff.py` uses**, with the same thresholds,
+  because `CalDavTarget.cancel` is a hard DELETE and absence is the only
+  cancellation signal on this side too. Deletion reaches only marked events, and
+  only forward. Duplicates against hand-made events are **reported, never
+  resolved** — `docs/PLAN.md` §6a cuts the adoption matcher first, and
+  `docs/MATCHING.md` §2's blocking key is all the report needs.
+
+- **A laptop off-site is not an error.** Every collection is read *before* any
+  calendar is opened, so an unreachable run touches no EventKit and prompts for
+  no permission. Transport failures are classified apart from faults and exit
+  **4**, not 1; the read stops after the first unreachable collection (same
+  server, and each one costs a full timeout) but never on a 404, which says
+  nothing about the next collection. `health.json` records only when a read last
+  worked — the one piece of state, of a different kind from the predecessor's
+  identity file, and losing it costs nothing. It keeps the log quiet for a trip
+  away and gets loud past `offlineWarnAfterHours`, because an error every
+  fifteen minutes for a fortnight trains somebody to ignore it. A captive portal
+  answering 200 with HTML is classified as unreachable, not as a fault.
+- **A truncated read throws** (`END:VCALENDAR` required). It parses otherwise,
+  and the events lost off the end look exactly like cancellations — the
+  disappearance guard catches a big truncation and would wave a small one
+  through.
+
+- **The menu bar app is a second front end, never a second implementation.**
+  `Calsync Mirror.app` and the CLI both run `SyncRunner`; two versions of "what
+  does a sync do" would be two things to keep in step, and the one that drifted
+  would be the one that deletes. What the menu *says* is a pure function in
+  `Status.swift`, so the states that matter — held, offline, paused — have
+  assertions rather than being checked by squinting at a menu bar. The app
+  **cannot resolve anything**: status, pause and links out are about that
+  machine, and answering or approving stays in the console where the review gate
+  is. **Pause expires by default**, for the reason `persists_across_seasons`
+  exists — a hold you forget is the calendar going stale for weeks. It is
+  assembled as a bundle by `install.sh` rather than by an Xcode project: the
+  bundle is what makes it an app (name in the permission dialog, bundle id for
+  notifications, `LSUIElement`), and a second build system would be a second
+  thing to keep in step. `NSCalendarsFullAccessUsageDescription` is required —
+  a bundled app that asks for calendar access without it is killed, not refused.
+
+Everything that decides anything is in `CalsyncMirrorCore` with no EventKit in
+it, so every safety rule has a test that needs no Mac and no permission prompt.
+`Tests/.../Fixtures/games.ics` is generated by calsync's own `to_ics`.
 
 The daily digest goes out from the poll loop itself (`cli.py:_maybe_digest`),
 gated on the `digest_send_at` setting, which is empty by default and means
@@ -442,6 +510,11 @@ Decisions that span several files and are easy to undo by accident:
   documented route that does not exist fails. A hand-maintained page describing
   an HTTP API drifts on the first busy afternoon, and a contract that lies is
   worse than none: an agent that trusts it fails in ways nobody can reproduce.
+  It carries `version` (the running build) alongside `contract_version` (the
+  shape) — different questions, and the first is the only way to ask a
+  deployment on a moving image tag what it actually is. `calsync --version` and
+  the console footer answer the same question from the other two surfaces;
+  `tests/test_packaging.py` holds all three to `__version__`.
   It also lists what is specified in `docs/API.md` and not built, and those
   paths answer **501 with the reason**, not 404 — "not yet" and "you have the
   URL wrong" are different answers, and an agent given the second retries

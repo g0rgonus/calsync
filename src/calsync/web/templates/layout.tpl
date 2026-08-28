@@ -35,5 +35,9 @@
 {{! base }}
 </main>
 
+<footer class="foot">
+  <span>calsync {{ version }}</span>
+</footer>
+
 </body>
 </html>

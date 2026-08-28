@@ -771,3 +771,14 @@ details.more > summary:hover { color: var(--cone); }
   .cal .chip { font-size: 0.66rem; padding-left: 0.25rem; }
   .cal-views { margin-left: 0; }
 }
+
+/* Which build this box is running. The image ships on moving tags, so the
+   version is not otherwise answerable from inside a browser. */
+.foot {
+  max-width: 72rem;
+  margin: 2.5rem auto 1.5rem;
+  padding: 0 1.5rem;
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: #8fb3a1;
+}

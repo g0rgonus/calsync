@@ -1,8 +1,14 @@
-"""The version is written once.
+"""The version is written once, and every surface reports that one.
 
 `pyproject.toml` carried a literal and `calsync/__init__.py` carried another.
 They disagreed for the whole of 0.2 — the package said 0.1.0 — because nothing
 imports `__version__` and nothing compared them.
+
+Reporting it matters as much as writing it once. The image ships on moving tags
+(`release`, `latest`, `dev`), so "which build is this deployment running" has no
+answer from inside a container unless the running code says. The CLI is asserted
+here; the API and the console are asserted where their fixtures live, in
+`test_api.py` and `test_web.py`.
 """
 
 from __future__ import annotations
@@ -37,6 +43,29 @@ def test_pyproject_declares_no_version_of_its_own():
         if line.strip().startswith("version =") and "attr" not in line
     ]
     assert not lines, f"version is declared twice: {lines}"
+
+
+def test_the_cli_answers_version_without_a_subcommand():
+    """`--version` must not trip the required-subcommand check.
+
+    The flag exists precisely for the case where somebody is inside a container
+    asking what it is, and `calsync --version` refusing with "the following
+    arguments are required: command" would be the wrong answer to the one
+    question with no other source.
+    """
+    from calsync import cli
+
+    with pytest.raises(SystemExit) as exit_info:
+        cli.build_parser().parse_args(["--version"])
+    assert exit_info.value.code == 0
+
+
+def test_the_cli_reports_the_package_version(capsys):
+    from calsync import cli
+
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(["--version"])
+    assert capsys.readouterr().out.strip() == f"calsync {calsync.__version__}"
 
 
 # --- the deployment assets --------------------------------------------------

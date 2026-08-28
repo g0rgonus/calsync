@@ -23,6 +23,7 @@ from pathlib import Path
 # By name: `.secrets` is a module here and `_secrets` is already a function.
 from secrets import token_urlsafe
 
+from . import __version__
 from . import config as config_mod
 from . import db, repo
 from .secrets import SecretError, SecretStore
@@ -698,6 +699,12 @@ def cmd_status(args) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="calsync", description=__doc__)
     parser.add_argument("--db", default="calsync.db", help="SQLite path (default: calsync.db)")
+    # Before the required subcommand, so `calsync --version` answers rather than
+    # demanding a command. The image ships on moving tags, so "which calsync is
+    # this deployment actually running" is a question with no other answer from
+    # inside a container.
+    parser.add_argument(
+        "--version", action="version", version=f"calsync {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("init-db", help="create or migrate the database").set_defaults(fn=cmd_init_db)
