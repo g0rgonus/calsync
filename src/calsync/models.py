@@ -128,6 +128,14 @@ class Event:
     kit: str | None = None
     arrive_at: datetime | None = None
 
+    #: The feed's own LAST-MODIFIED, carried but never trusted for change
+    #: detection — `content_hash` remains the authority, and this is excluded
+    #: from it. Player360 bumps this 2-5s after an event *ends*, so it is noise
+    #: for all but one purpose: a move of it to *before* the event, with our
+    #: content unchanged, is an upstream edit whose substance the feed does not
+    #: publish. That is how a cancellation reaches us and the only trace of it.
+    upstream_modified_at: datetime | None = None
+
     #: Questions blocking this event's placement (UNKNOWN_TYPE and friends).
     #:
     #: The adapters have always known this per event and thrown it away: an

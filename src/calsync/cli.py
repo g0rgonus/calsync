@@ -27,7 +27,9 @@ from . import config as config_mod
 from . import db, repo
 from .secrets import SecretError, SecretStore
 from .settings import Settings, set_setting
-from . import digest, enrichment, matrix, polling, retire, seasonend, targeting
+from . import (
+    digest, enrichment, matrix, polling, retire, seasonend, targeting, upstream,
+)
 from .sync import sync_source
 from .targets import build
 from .targets.http import HttpTransport
@@ -255,6 +257,24 @@ def cmd_poll(args) -> int:
                     print(f"    could not notify: {problem}", flush=True)
             except Exception as exc:  # noqa: BLE001 — never take the poller down
                 print(f"    review check failed: {exc}", flush=True)
+
+            # A different notice from the one above: nothing is held, the
+            # publisher simply rewrote an event without saying what changed.
+            try:
+                edits = upstream.review(
+                    conn, source, secrets=secrets,
+                    base_url=args.console_url or "",
+                )
+                if edits.notified:
+                    print(f"    {edits.edited} event(s) changed at the source; "
+                          "notified", flush=True)
+                elif edits.edited:
+                    print(f"    {edits.edited} event(s) changed at the source",
+                          flush=True)
+                for problem in edits.errors:
+                    print(f"    could not notify: {problem}", flush=True)
+            except Exception as exc:  # noqa: BLE001 — never take the poller down
+                print(f"    upstream-edit check failed: {exc}", flush=True)
 
             # And the same questions to the room, for whatever is listening.
             # Separate from the push above: different audience, and a room that

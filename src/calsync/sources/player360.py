@@ -185,6 +185,10 @@ def parse_feed(
                 source_id=source_id,
                 source_category=cats[0] if cats else None,
                 content_hash=content_hash(component),
+                # Carried, not hashed. `content_hash` above deliberately omits
+                # it; see `Event.upstream_modified_at` for the one thing it is
+                # good for.
+                upstream_modified_at=_dt(component, "LAST-MODIFIED"),
                 unresolved=tuple(unresolved),
             )
         )

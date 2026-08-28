@@ -70,7 +70,7 @@ so a fresh clone needs:
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/pytest                                    # 529 tests, ~5s
+.venv/bin/pytest                                    # 540 tests, ~5s
 .venv/bin/pytest tests/test_player360.py -k content_hash    # single test
 ```
 
@@ -502,6 +502,17 @@ Decisions that span several files and are easy to undo by accident:
   widen `max_disappearance_pct` past 0.5 or the count past 25. Narrowing is free.
   A guard that a web form can switch off in two clicks is not a guard, and the
   invariant above says never raise these to make something pass.
+- **An edit the feed will not explain is reported, never acted on**
+  (`upstream.py`). Player360 does not export cancellations: an event cancelled
+  in the app goes on being published as an ordinary one, and the only trace is
+  `LAST-MODIFIED` moving to *before* the event where the documented churn lands
+  2-5s after `DTEND`. `sync._note_upstream_edit` flags that — content hash
+  identical, timestamp moved early — and it reaches `/review` and a push. It
+  cannot say a cancellation happened, because one of the two observed
+  pre-`DTEND` edits was not one, so guessing would be a delete decided by
+  inference. `content_hash` still ignores the field entirely; the timestamp
+  lives on `event_state`, never `event_content`, or every event would re-push
+  as it ends.
 - **A timezone is picked from a list, never typed** (`zones.py`). A free-text
   box is how a deployment stored `EDT`, which `ZoneInfo` cannot load, so every
   local time silently fell back to UTC. Only city zones are offered, because a
