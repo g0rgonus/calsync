@@ -39,7 +39,7 @@ SEQUENCE:1785600002
 | Timezone | UTC only | `DTSTART`/`DTEND` are `Z`, no `TZID` |
 | Opponent | **yes, for league matches** | embedded in `SUMMARY` — see below |
 | Child identity | **no** | comes from the feed→child binding, not the feed |
-| Cancellation | **no explicit signal** | no `STATUS`; events presumably vanish |
+| Cancellation | **not published at all** | no `STATUS`, and the event does *not* vanish — observed, see Trap 2 |
 
 ## Decisions this settles
 
@@ -141,11 +141,32 @@ So upstream change signals blaze on events that did not change:
   event bumps its sequence as it ends and subscribers on the shared calendar
   get change notifications for games that already happened.
 
-## Trap 2: cancellation is silent
+## Trap 2: a cancelled event stays in the feed
 
-There's no `STATUS:CANCELLED`. A cancelled event presumably just **disappears
-from the feed**, which makes disappearance our only cancellation signal — and
-that is dangerous against a shared family calendar.
+**Observed 2026-08-20, confirmed against the app.** A practice the app shows as
+"This event has been canceled", with its title struck through, was still in the
+feed two days later with every content field unchanged:
+
+```
+UID:360Player-event-4900741
+SUMMARY:U10DA Practice          <- not marked, not prefixed
+DTSTART:20260820T214500Z
+CATEGORIES:practice
+LAST-MODIFIED:20260820T195521Z  <- the only field that moved
+```
+
+No `STATUS`, no `METHOD:CANCEL`, nothing in `SUMMARY` or `DESCRIPTION`. The
+export does not carry the cancellation in any form, so calsync cannot act on it.
+This corrects an earlier assumption here that a cancelled event disappears.
+
+The only trace is `LAST-MODIFIED`, which moved to 1h50m *before* `DTSTART` while
+the documented churn lands 2–5s *after* `DTEND`. That makes a real edit
+distinguishable from the churn — but not identifiable: of the two pre-`DTEND`
+edits in the sample, only one was a cancellation, so it says "the coach changed
+something" and never what. It is not grounds for a delete.
+
+Disappearance therefore remains the only cancellation signal calsync has, and it
+is dangerous against a shared family calendar even so.
 
 A fetch that returns `200` with a truncated, empty, or wrong-scope body looks
 identical to "the whole season was cancelled."
@@ -253,8 +274,8 @@ Same treatment as the iCloud app-specific password.
    per-event child inference, and that's the property doing the work.
 4. Full `CATEGORIES` vocabulary beyond `match` / `practice`.
 5. Does the token expire?
-6. Confirm cancellation behavior by watching a real one — this is the only
-   trap above that's inferred rather than observed.
+6. **Resolved 2026-08-20, and not as assumed:** a cancelled event stays in the
+   feed unchanged. Trap 2.
 7. **Resolved:** `U10PL PSL Match vs Harbour FC U10` is the ICS `SUMMARY` —
    confirmed in Apple Calendar rendering the subscribed feed. Opponent parsing
    is free; no API or scrape needed.
