@@ -21,6 +21,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import bottle
 from bottle import Bottle, redirect, request, static_file, template
 
+from .. import __version__
 from .. import config as config_mod
 from .. import (
     db, dormancy, enrichment, matrix, notify, repo, retire, sources, targeting,
@@ -1479,6 +1480,9 @@ def _sample_title(settings) -> str:
 
 def render(view: str, **context) -> str:
     context.setdefault("flash", None)
+    # Every page, so the answer to "which version is this box running" is on
+    # whatever page somebody is already looking at.
+    context.setdefault("version", __version__)
     return template(view, template_lookup=[str(VIEWS)], **context)
 
 

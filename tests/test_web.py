@@ -2491,3 +2491,31 @@ def test_init_deploy_writes_a_stack_and_never_clobbers_one(tmp_path):
     (out / "config" / "radicale" / "rights").write_text("# edited by hand\n")
     assert main(["init-deploy", str(out)]) == 0
     assert (out / "config" / "radicale" / "rights").read_text() == "# edited by hand\n"
+
+
+# --- which build is this box running ----------------------------------------
+
+
+def test_every_page_says_which_version_it_is(client):
+    """On the shared layout, not on one page.
+
+    The image ships on moving tags, so a browser is often the only thing in
+    front of somebody wondering what a deployment actually is. Putting it on
+    whatever page they are already looking at is the difference between an
+    answer and a shell in a container.
+    """
+    import calsync
+
+    for path in ("/", "/venues", "/household", "/settings", "/review"):
+        body = client.get(path)["body"]
+        assert f"calsync {calsync.__version__}" in body, f"no version on {path}"
+
+
+def test_the_version_is_not_hardcoded_in_the_template(client):
+    """A literal in the layout is the drift this whole file exists to prevent."""
+    from pathlib import Path
+
+    import calsync
+
+    layout = (Path(calsync.__file__).parent / "web" / "templates" / "layout.tpl")
+    assert calsync.__version__ not in layout.read_text()
