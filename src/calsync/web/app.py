@@ -908,6 +908,12 @@ def create_app(
                 # separately from the questions because they are a different
                 # act: answering is work, deciding is a glance.
                 pending=repo.list_tasks(conn, state=repo.ANSWERED),
+                # Not a question, and nothing is held: the publisher rewrote
+                # these and did not say what changed. Listed here because this
+                # is the page somebody already checks, and because the one
+                # observed instance was a cancellation nobody would otherwise
+                # hear about (docs/sources/player360.md, Trap 2).
+                edited=repo.pending_upstream_edits(conn),
                 venues=repo.list_venues(conn),
                 flash=_flash(),
             )
@@ -943,6 +949,18 @@ def create_app(
             conn.commit()
         redirect("/review?ok=" + _q(
             f"Approved — {did}. The next poll re-renders and releases the events."))
+
+    @app.post("/review/edits/<uid:path>/seen")
+    def edit_seen(uid):
+        """Somebody looked at the app and knows what changed now.
+
+        Clears the flag and nothing else. Whatever the edit was, acting on it —
+        cancelling the event, correcting a time — is a thing calsync cannot
+        infer and will not guess at.
+        """
+        with connect() as conn:
+            repo.clear_upstream_edit(conn, uid)
+        redirect("/review?ok=" + _q("Marked as seen."))
 
     @app.get("/settings")
     def settings_page():

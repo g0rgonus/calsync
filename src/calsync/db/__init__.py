@@ -38,6 +38,15 @@ ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # schedule exists, and `schema.sql` only ever CREATEs — so an existing
     # `event_content` needs this here or every read of it fails.
     ("event_content", "all_day", "INTEGER NOT NULL DEFAULT 0"),
+    # v8: the upstream LAST-MODIFIED we last saw, and whether the last move of
+    # it went unexplained. On `event_state`, never `event_content`, because
+    # `content_of` is compared field by field to detect a refresh — a churning
+    # timestamp there would re-push every event as it ends, which is the exact
+    # reason `content_hash` excludes it (docs/sources/player360.md, Trap 1).
+    ("event_state", "upstream_modified_at", "TEXT"),
+    ("event_state", "upstream_edit_at", "TEXT"),
+    # v8: which set of unexplained edits has already been announced.
+    ("sources", "edits_notified", "TEXT"),
     # v5 adds `event_content`, which is a new table rather than new columns, so
     # `schema.sql`'s CREATE TABLE IF NOT EXISTS covers it and nothing belongs
     # here. Existing rows backfill themselves: the sync loop treats missing

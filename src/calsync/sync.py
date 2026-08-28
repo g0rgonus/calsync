@@ -51,6 +51,13 @@ class SyncReport:
     #: `event_content` entirely. Counted apart from `updated` because `updated`
     #: means the feed changed and these are precisely the ones where it did not.
     refreshed: int = 0
+    #: Events the feed rewrote without changing anything calsync can read — its
+    #: LAST-MODIFIED moved to *before* the event, where the documented churn
+    #: lands after it, while the content hash stayed identical. That is how a
+    #: Player360 cancellation reaches us: the app knows, the export does not say
+    #: (docs/sources/player360.md, Trap 2). Reported, never acted on — the feed
+    #: does not say *what* changed, and guessing "cancelled" would be a delete.
+    edited_upstream: list[str] = field(default_factory=list)
     #: Events held off the real calendar because calsync could not tell which
     #: one they belong in. Not an error and not a guard trip — a question
     #: waiting for an answer, counted so the poller says so out loud.
@@ -100,6 +107,8 @@ class SyncReport:
             parts.append(f"{self.refreshed} refreshed")
         if self.awaiting_review:
             parts.append(f"{self.awaiting_review} awaiting review")
+        if self.edited_upstream:
+            parts.append(f"{len(self.edited_upstream)} changed upstream unseen")
         if self.skipped_window:
             parts.append(f"{self.skipped_window} outside window")
         if self.staged_to:
@@ -165,6 +174,37 @@ def _enrich_venue(conn, event: Event) -> bool:
             )
             return True
     return False
+
+
+def _note_upstream_edit(conn, event: Event, state, report: SyncReport) -> None:
+    """Did the feed rewrite this event without saying what changed?
+
+    Only reached for events whose content hash is identical, so whatever moved
+    is something the export does not publish. Two conditions beyond that, and
+    both are load-bearing:
+
+    - **The new LAST-MODIFIED is before the event ends.** Player360 bumps it
+      2-5s *after* every DTEND as a matter of course, so without this the check
+      would fire on every event the evening it happened — the exact noise
+      `content_hash` excludes the field to avoid.
+    - **We had a previous value to compare.** The first poll to see an event
+      learns its timestamp; it has not observed a change.
+
+    Recorded, never acted on. The feed does not say what changed, and the one
+    observed instance was a cancellation — which makes guessing a delete.
+    """
+    seen = event.upstream_modified_at
+    if seen is None:
+        return
+    stamp = seen.isoformat()
+    if stamp == state.upstream_modified_at:
+        return
+    unexplained = (
+        state.upstream_modified_at is not None and seen < event.ends_at
+    )
+    repo.note_upstream(conn, event.uid, seen=stamp, unexplained=unexplained)
+    if unexplained:
+        report.edited_upstream.append(event.uid)
 
 
 def _guard_thresholds(source: repo.Source, settings: Settings) -> tuple[float, int]:
@@ -320,6 +360,7 @@ def sync_source(
         state = states.get(event.uid)
         if state is None or state.cancelled:
             continue
+        _note_upstream_edit(conn, event, state, report)
         belongs = collection_for(
             event, activity, primary_child, settings,
             override=source.staging_collection,
@@ -362,6 +403,10 @@ def sync_source(
             content_hash=event.content_hash or "",
             remote_etag=ref.etag,
             starts_at=event.starts_at.isoformat(),
+            upstream_modified_at=(
+                event.upstream_modified_at.isoformat()
+                if event.upstream_modified_at else None
+            ),
         )
         # Placement and content are recorded together, behind the same barrier:
         # both describe a write the target has just accepted, and a copy of the

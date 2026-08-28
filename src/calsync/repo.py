@@ -179,6 +179,10 @@ class EventState:
     remote_etag: str | None
     starts_at: str
     cancelled: bool
+    #: The feed's LAST-MODIFIED as of the last poll that looked, and whether the
+    #: last move of it went unexplained. See `Event.upstream_modified_at`.
+    upstream_modified_at: str | None = None
+    upstream_edit_at: str | None = None
 
 
 def event_states(conn: sqlite3.Connection, source_id: str) -> dict[str, EventState]:
@@ -197,6 +201,8 @@ def event_states(conn: sqlite3.Connection, source_id: str) -> dict[str, EventSta
             remote_etag=r["remote_etag"],
             starts_at=r["starts_at"],
             cancelled=bool(r["cancelled"]),
+            upstream_modified_at=r["upstream_modified_at"],
+            upstream_edit_at=r["upstream_edit_at"],
         )
         for r in conn.execute("SELECT * FROM event_state WHERE source_id = ?", (source_id,))
     }
@@ -212,6 +218,7 @@ def record_event_state(
     content_hash: str,
     remote_etag: str | None,
     starts_at: str,
+    upstream_modified_at: str | None = None,
 ) -> None:
     """Record a successful write. Call this only *after* the target accepted it.
 
@@ -221,13 +228,24 @@ def record_event_state(
     ``cancelled`` resets to 0: an event that comes back after being cancelled
     upstream is live again, and its row has to say so or the next diff will
     treat it as new.
+
+    ``upstream_modified_at`` is stored here as well as in `note_upstream` so
+    that an event has a known timestamp from the poll that created it. Without
+    that, the first unexplained edit after creation is the one that teaches the
+    baseline instead of being reported — and a cancellation two days into a
+    season would go unmentioned.
+
+    ``upstream_edit_at`` is deliberately cleared: this write means the feed said
+    what changed, so any outstanding "something changed and we cannot see what"
+    has been answered by the change itself.
     """
     conn.execute(
         """
         INSERT INTO event_state
             (uid, source_id, collection, remote_id, content_hash, remote_etag,
-             starts_at, cancelled, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 0, datetime('now'))
+             starts_at, cancelled, updated_at, upstream_modified_at,
+             upstream_edit_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 0, datetime('now'), ?, NULL)
         ON CONFLICT(uid) DO UPDATE SET
             source_id    = excluded.source_id,
             collection   = excluded.collection,
@@ -236,9 +254,12 @@ def record_event_state(
             remote_etag  = excluded.remote_etag,
             starts_at    = excluded.starts_at,
             cancelled    = 0,
-            updated_at   = excluded.updated_at
+            updated_at   = excluded.updated_at,
+            upstream_modified_at = excluded.upstream_modified_at,
+            upstream_edit_at     = NULL
         """,
-        (uid, source_id, collection, remote_id, content_hash, remote_etag, starts_at),
+        (uid, source_id, collection, remote_id, content_hash, remote_etag,
+         starts_at, upstream_modified_at),
     )
 
 
@@ -479,6 +500,50 @@ def stored_event(conn: sqlite3.Connection, uid: str) -> StoredEvent | None:
     """One event by uid, unbounded by date — you already know which one you want."""
     row = conn.execute(_STORED_SQL + " WHERE s.uid = ?", (uid,)).fetchone()
     return _stored_event(row) if row else None
+
+
+def note_upstream(
+    conn: sqlite3.Connection, uid: str, *, seen: str, unexplained: bool
+) -> None:
+    """Record the LAST-MODIFIED this poll saw, and flag an unexplained move.
+
+    Separate from `record_event_state` because it applies to events that were
+    *not* written: the whole point is an event whose content did not change.
+    """
+    conn.execute(
+        "UPDATE event_state SET upstream_modified_at = ?"
+        + (", upstream_edit_at = ?" if unexplained else "")
+        + " WHERE uid = ?",
+        (seen, seen, uid) if unexplained else (seen, uid),
+    )
+
+
+def clear_upstream_edit(conn: sqlite3.Connection, uid: str) -> None:
+    """Somebody looked. The timestamp stays; the flag does not."""
+    conn.execute("UPDATE event_state SET upstream_edit_at = NULL WHERE uid = ?", (uid,))
+    conn.commit()
+
+
+def pending_upstream_edits(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Events the feed quietly rewrote, newest edit first.
+
+    `url` comes from `event_content` because it is what the feed published, and
+    for Player360 it is a link to the event in the app — which is the only place
+    the substance of the edit exists.
+    """
+    return list(conn.execute(
+        """
+        SELECT s.uid, s.source_id, s.starts_at, s.collection, s.cancelled,
+               s.upstream_edit_at, c.url, c.detail, c.venue_name, c.is_game,
+               a.name AS activity_name, a.emoji AS activity_emoji
+          FROM event_state s
+          JOIN sources src ON src.id = s.source_id
+          JOIN activities a ON a.id = src.activity_id
+     LEFT JOIN event_content c ON c.uid = s.uid
+         WHERE s.upstream_edit_at IS NOT NULL AND s.cancelled = 0
+      ORDER BY s.upstream_edit_at DESC, s.starts_at
+        """
+    ))
 
 
 def venue_ref(conn: sqlite3.Connection, *candidates: str | None) -> sqlite3.Row | None:

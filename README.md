@@ -74,7 +74,7 @@ the delete-then-create this project treats as the dangerous operation.
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/pytest                                # 537 tests, ~5s
+.venv/bin/pytest                                # 548 tests, ~5s
 ```
 
 ```bash
