@@ -13,6 +13,7 @@ from bottle import Bottle, HTTPResponse, request, response
 
 from .. import db, enrichment, repo
 from ..normalize import title as title_norm
+from ..routing import slugify
 from ..secrets import SecretError, SecretStore
 from ..settings import Settings
 from . import contract
@@ -168,6 +169,67 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None) -> Bo
                     "sources": _sources_json(conn, [item], now=clock()),
                 }
             )
+
+    @app.get("/v1/review")
+    def review_queue():
+        """How much is waiting on a human, as counts.
+
+        This exists so something ambient — a menu bar, a dashboard — can show
+        that events are sitting in the enrichment calendar without anybody
+        remembering to open the console.
+
+        **It runs no dry run, and touches no feed.** The console's `/review`
+        page does, because a verdict from last week says nothing about a feed
+        that has since been corrected, and a person looking at that page is
+        about to act on it. This is polled on a timer instead, so a live parse
+        here would mean fetching every team's feed every few minutes to render a
+        number. The counts come from `event_state` — the same
+        `repo.events_in_collection` the console uses for its held count — which
+        answers "what is actually in that calendar right now" and needs no
+        network at all.
+
+        It reports counts rather than the questions themselves. Answering
+        happens in the console, by a person, and a client that could render the
+        questions would be one step from looking like it could resolve them
+        (docs/API.md, "the review gate is structural").
+        """
+        with connect() as conn:
+            settings = Settings.load(conn)
+            collection = (
+                slugify(settings.enrichment_collection)
+                if settings.enrichment_collection else ""
+            )
+
+            per_source = []
+            held_total = 0
+            for source in repo.list_sources(conn, enabled_only=True):
+                held = repo.events_in_collection(conn, source.id, collection)
+                if not held:
+                    continue
+                activity = repo.get_activity(conn, source.activity_id)
+                held_total += held
+                per_source.append({
+                    "source_id": source.id,
+                    "activity": {"id": activity.id, "name": activity.name},
+                    "held_events": held,
+                })
+
+            # Three different kinds of waiting, counted apart because they are
+            # different acts: answering a question is work, deciding on an
+            # answer somebody already gave is a glance, and an unexplained
+            # upstream edit is neither — it is a thing to go and look at.
+            answered = repo.list_tasks(conn, state=repo.ANSWERED)
+            edits = repo.pending_upstream_edits(conn)
+
+            return _dump({
+                "held_events": held_total,
+                "sources": per_source,
+                "answers_awaiting_decision": len(answered),
+                "upstream_edits": len(edits),
+                "needs_attention": held_total + len(answered) + len(edits),
+                "enrichment_collection": collection,
+                "resolved_in": "the console, at /review — not through this API",
+            })
 
     @app.post("/v1/tasks/<task_id>/result")
     def answer_task(task_id):

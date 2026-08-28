@@ -585,6 +585,22 @@ def test_the_contract_is_served_and_names_what_it_serves(client):
     assert reply["json"]["contract_version"]
 
 
+def test_the_contract_names_the_running_build(client):
+    """Distinct from `contract_version`, and both are needed.
+
+    `contract_version` moves when a client could notice a shape change; this
+    moves whenever anything does. An agent debugging a deployment that ships on
+    moving image tags needs the second, and there is no other way to ask a
+    running calsync what it is.
+    """
+    import calsync
+
+    body = client.get("/v1")["json"]
+    assert body["version"] == calsync.__version__
+    assert body["contract_version"] != body["version"], (
+        "the contract's shape and the build are different questions")
+
+
 def test_the_contract_carries_the_answer_shapes(client):
     """So a client corrects itself from the contract, not from a rejection."""
     shapes = client.get("/v1")["json"]["answer_shapes"]
@@ -633,3 +649,147 @@ def test_the_catch_all_does_not_shadow_a_real_route(client):
 def test_reading_the_contract_still_needs_the_token(client):
     """It describes a private system, and the auth hook covers every route."""
     assert client.get("/v1", token=None)["status"] == 401
+
+
+# --- the review queue -------------------------------------------------------
+#
+# Counts for something ambient — a menu bar — so that events sitting in the
+# enrichment calendar are visible without anybody remembering to open the
+# console.
+
+
+def _hold(db_path, count, collection="enrichment"):
+    """Move `count` synced events into the enrichment calendar."""
+    conn = db.connect(db_path)
+    uids = [r["uid"] for r in conn.execute(
+        "SELECT uid FROM event_state ORDER BY uid LIMIT ?", (count,))]
+    conn.executemany(
+        "UPDATE event_state SET collection = ? WHERE uid = ?",
+        [(collection, uid) for uid in uids])
+    conn.commit()
+    conn.close()
+    return uids
+
+
+def test_a_quiet_queue_reports_zero_rather_than_omitting_the_fields(client):
+    body = client.get("/v1/review")["json"]
+    assert body["needs_attention"] == 0
+    assert body["held_events"] == 0
+    assert body["sources"] == []
+    assert body["answers_awaiting_decision"] == 0
+    assert body["upstream_edits"] == 0
+
+
+def test_held_events_are_counted_and_attributed_to_their_activity(client, db_path):
+    _hold(db_path, 3)
+    body = client.get("/v1/review")["json"]
+    assert body["held_events"] == 3
+    assert body["needs_attention"] == 3
+    assert [s["source_id"] for s in body["sources"]] == ["p360-jesse-vanguard"]
+    assert body["sources"][0]["held_events"] == 3
+    assert body["sources"][0]["activity"]["name"] == "Vanguard"
+
+
+def test_a_source_with_nothing_held_is_left_out_entirely(client, db_path):
+    _hold(db_path, 1)
+    body = client.get("/v1/review")["json"]
+    assert all(s["held_events"] > 0 for s in body["sources"])
+
+
+def test_the_count_follows_the_calendar_not_a_fresh_parse(client, db_path):
+    """The number is what is actually in that calendar right now.
+
+    `repo.events_in_collection` is the console's own definition, and using it
+    here is the point: a digest, a console and an API disagreeing about how many
+    events are waiting would each be a different wrong answer.
+    """
+    _hold(db_path, 2)
+    assert client.get("/v1/review")["json"]["held_events"] == 2
+
+    conn = db.connect(db_path)
+    conn.execute("UPDATE event_state SET collection = 'games' "
+                 "WHERE collection = 'enrichment'")
+    conn.commit()
+    conn.close()
+    assert client.get("/v1/review")["json"]["held_events"] == 0
+
+
+def test_a_cancelled_event_is_not_still_waiting_on_anybody(client, db_path):
+    uids = _hold(db_path, 2)
+    conn = db.connect(db_path)
+    conn.execute("UPDATE event_state SET cancelled = 1 WHERE uid = ?", (uids[0],))
+    conn.commit()
+    conn.close()
+    assert client.get("/v1/review")["json"]["held_events"] == 1
+
+
+def test_an_answer_waiting_on_a_decision_is_counted_apart_from_a_question(
+    client, db_path
+):
+    """Answering is work; deciding on an answer somebody gave is a glance."""
+    conn = db.connect(db_path)
+    repo.record_task(
+        conn, task_id="t1", source_id="p360-jesse-vanguard", kind="resolve_activity",
+        type="resolve_activity", context=("Skills Session",), candidates=("practice",),
+        dispatched_at=NOW.isoformat())
+    conn.commit()
+    body = client.get("/v1/review")["json"]
+    assert body["answers_awaiting_decision"] == 0, "dispatched is not yet answered"
+
+    conn.execute("UPDATE tasks SET state = ?, answer = ?, answered_by = ? WHERE id = 't1'",
+                 (repo.ANSWERED, json.dumps({"is_game": False}), "hermes/1.4"))
+    conn.commit()
+    conn.close()
+    body = client.get("/v1/review")["json"]
+    assert body["answers_awaiting_decision"] == 1
+    assert body["needs_attention"] == 1
+
+
+def test_an_unexplained_upstream_edit_is_something_to_go_and_look_at(client, db_path):
+    conn = db.connect(db_path)
+    uid = conn.execute("SELECT uid FROM event_state LIMIT 1").fetchone()["uid"]
+    conn.execute("UPDATE event_state SET upstream_edit_at = ? WHERE uid = ?",
+                 (NOW.isoformat(), uid))
+    conn.commit()
+    conn.close()
+    body = client.get("/v1/review")["json"]
+    assert body["upstream_edits"] == 1
+    assert body["needs_attention"] == 1
+
+
+def test_the_three_kinds_of_waiting_sum(client, db_path):
+    _hold(db_path, 2)
+    conn = db.connect(db_path)
+    repo.record_task(
+        conn, task_id="t1", source_id="p360-jesse-vanguard", kind="resolve_venue",
+        type="resolve_venue", context=("Kingsmere",), candidates=(),
+        dispatched_at=NOW.isoformat())
+    conn.execute("UPDATE tasks SET state = ? WHERE id = 't1'", (repo.ANSWERED,))
+    uid = conn.execute(
+        "SELECT uid FROM event_state WHERE collection != 'enrichment' "
+        "LIMIT 1").fetchone()["uid"]
+    conn.execute("UPDATE event_state SET upstream_edit_at = ? WHERE uid = ?",
+                 (NOW.isoformat(), uid))
+    conn.commit()
+    conn.close()
+
+    body = client.get("/v1/review")["json"]
+    assert (body["held_events"], body["answers_awaiting_decision"],
+            body["upstream_edits"]) == (2, 1, 1)
+    assert body["needs_attention"] == 4
+
+
+def test_a_deployment_with_no_enrichment_calendar_holds_nothing(client, db_path):
+    """Enrichment is switchable off, and then nothing is ever held."""
+    _hold(db_path, 3)
+    conn = db.connect(db_path)
+    set_setting(conn, "enrichment_collection", "")
+    conn.commit()
+    conn.close()
+    body = client.get("/v1/review")["json"]
+    assert body["held_events"] == 0
+    assert body["enrichment_collection"] == ""
+
+
+def test_the_queue_needs_the_token_like_everything_else(client):
+    assert client.get("/v1/review", token=None)["status"] == 401
