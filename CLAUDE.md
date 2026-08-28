@@ -70,7 +70,7 @@ so a fresh clone needs:
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/pytest                                    # 548 tests, ~5s
+.venv/bin/pytest                                    # 555 tests, ~5s
 .venv/bin/pytest tests/test_player360.py -k content_hash    # single test
 ```
 
@@ -563,11 +563,16 @@ family calendar, so treat them as contracts, not defaults:
   round-trip that Radicale silently truncated at the comma in `geo:lat,lon`,
   producing a confident pin at longitude 0 instead of a working address. Do not
   reintroduce it. `venues.lat/lon` still exist and are import-only.
-- **Feeds have no format — coaches type them.** Three TeamReach teams on the same
-  platform in the same season use three incompatible SUMMARY conventions, and
-  differ in which fields they populate at all. Adapters read by *strategy* (try
-  each known shape, take whichever fires, report the misses) rather than by
-  format. A parser that assumes one convention silently mangles the others.
+- **Feeds have no format — coaches type them.** TeamReach teams on the same
+  platform in the same season use incompatible SUMMARY conventions and differ in
+  which fields they populate at all. Three shapes are known — both teams named
+  ("Otters vs Chargers"), a type prefix ("Game vs Cougars"), and the opponent
+  alone from our own point of view ("vs. Walsingham B", "@ Covenant Classical") —
+  and the third arrived after the other two were built, filing every fixture in
+  a live feed as a practice until it was read. A fourth will turn up. Adapters
+  read by *strategy* (try each known shape, take whichever fires, report the
+  misses) rather than by format. A parser that assumes one convention silently
+  mangles the others.
 - **A model is the last tier of venue resolution, never the first.** The
   `venue_aliases` table resolves known venues with no call, no latency and no
   variance; a model is only for the residual, and its answer is written back as

@@ -48,6 +48,16 @@ _SEPARATOR = re.compile(r"\s*-\s*")
 #: names a venue, not an opponent, and treating it as a fixture would invent one.
 _VERSUS = re.compile(r"\s+(?:vs\.?|v\.)\s+|\s+@\s+", re.IGNORECASE)
 
+#: The same markers *leading* the summary, which names only the opponent:
+#: "vs. Walsingham B", "@ Covenant Classical", "@Hampton Roads Academy". A third
+#: convention on this platform — the coach writes from the team's own point of
+#: view, so there is no left-hand side to match ourselves against.
+#:
+#: `@` takes no following space because one feed omits it. `vs` requires a dot
+#: or a space after it, or this would eat the first word of a team called
+#: something like "Vsetin".
+_LEADING_VERSUS = re.compile(r"^(?:(?P<away>@)\s*|vs\.\s*|vs\s+|v\.\s*)", re.IGNORECASE)
+
 #: Leading words that name an event type rather than a team, so they can be
 #: lifted off the left of a "vs" without being mistaken for an opponent.
 _TYPE_PREFIX = re.compile(
@@ -190,6 +200,17 @@ class SummaryParse:
     unidentified: bool = False
 
 
+def _clean_opponent(name: str) -> str | None:
+    """Trim punctuation a coach appends to a team name.
+
+    One feed marks some fixtures with a trailing asterisk — "Ware Academy*" —
+    and what it means is not recorded anywhere. Keeping it would mint two
+    opponents for one school, so it comes off; if it turns out to carry meaning,
+    that is a finding for the source doc, not a reason to keep half a name.
+    """
+    return name.strip().rstrip("*").strip() or None
+
+
 def _matches_us(text: str, tokens: tuple[str, ...]) -> bool:
     """Whole-word, case-insensitive match against our own team's names."""
     cleaned = _WS.sub(" ", text).strip().casefold()
@@ -214,6 +235,26 @@ def parse_summary(summary: str, tokens: tuple[str, ...] = ()) -> SummaryParse:
     text = _WS.sub(" ", (summary or "").strip())
     if not text:
         return SummaryParse()
+
+    # --- shape 0: the marker leads, so the summary names only them ---------
+    #
+    # "vs. Walsingham B" is a fixture as plainly as "Otters vs Walsingham B",
+    # and it was read as a bare label — which made every game in one feed file
+    # as a practice, with the whole string reported as an unknown type.
+    lead = _LEADING_VERSUS.match(text)
+    if lead:
+        rest = text[lead.end():].strip()
+        venue_text = None
+        if "-" in rest:
+            rest, _, trailing = rest.partition("-")
+            rest, venue_text = rest.strip(), trailing.strip() or None
+        opponent = _clean_opponent(rest)
+        if opponent:
+            # "@" positively states away. "vs." does not state home — some
+            # feeds phrase every fixture that way — so it stays None, which
+            # renders with the home marker without claiming anything.
+            home = False if lead.group("away") else None
+            return SummaryParse(None, opponent, home, venue_text)
 
     parts = _VERSUS.split(text, maxsplit=1)
 

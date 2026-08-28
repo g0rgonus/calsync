@@ -479,3 +479,78 @@ def test_an_unreadable_event_names_itself_and_the_reason():
     assert "31000002@teamreach" in message, "which event?"
     assert "neither a timestamp nor a date" in message, "what is wrong with it?"
     assert "missing UID" not in message
+
+
+# --- a third convention: the summary names only them ------------------------
+#
+# Observed 2026-08-28. A coach writing from the team's own point of view —
+# "vs. Walsingham B", "@ Covenant Classical" — so there is no left-hand side to
+# match ourselves against. `_VERSUS` requires whitespace *before* the marker, so
+# every one of these fell through to "a bare label": all eighteen fixtures in a
+# live feed filed as practices, each reported as an unrecognised type.
+
+
+def test_a_summary_that_names_only_the_opponent_is_a_fixture():
+    """The failure this fixes: a season of games filed as practices."""
+    for summary, opponent in (
+        ("vs. Walsingham B", "Walsingham B"),
+        ("vs Summit Christian", "Summit Christian"),
+        ("@ Covenant Classical", "Covenant Classical"),
+        ("v. Ware Academy", "Ware Academy"),
+    ):
+        parsed = parse_summary(summary, tokens=("OLMC",))
+        assert parsed.opponent == opponent, summary
+        assert classify(parsed.event_type, has_opponent=bool(parsed.opponent)) is True
+        assert not parsed.unidentified
+
+
+def test_a_leading_at_states_away_and_a_leading_vs_states_nothing():
+    """"@" means at their place, which is positively known. "vs." only names
+    the opponent — some feeds phrase every fixture that way, so claiming home
+    from it would be the guess `normalize/title.py` refuses to make."""
+    assert parse_summary("@ Covenant Classical").home is False
+    assert parse_summary("vs. Walsingham B").home is None
+
+
+def test_the_at_sign_does_not_need_a_space_after_it():
+    """One feed writes "@Hampton Roads Academy"."""
+    parsed = parse_summary("@Hampton Roads Academy")
+    assert parsed.opponent == "Hampton Roads Academy"
+    assert parsed.home is False
+
+
+def test_a_trailing_asterisk_does_not_mint_a_second_opponent():
+    """One feed marks some fixtures with one and records nowhere what it means.
+    Kept, it makes "Ware Academy" and "Ware Academy*" two different schools."""
+    assert parse_summary("@Ware Academy*").opponent == "Ware Academy"
+    assert parse_summary("vs. Ware Academy").opponent == "Ware Academy"
+
+
+def test_a_team_whose_name_starts_with_vs_is_not_eaten():
+    """"vs" needs a dot or a space after it, or the shape swallows a word."""
+    parsed = parse_summary("Vsetin Juniors vs Marbury", tokens=("Vsetin Juniors",))
+    assert parsed.opponent == "Marbury"
+    assert parsed.home is True
+
+
+def test_the_other_two_conventions_still_parse():
+    """This shape is checked first, so it must not intercept the others."""
+    both_named = parse_summary("Otters vs Chargers", tokens=("Otters",))
+    assert (both_named.opponent, both_named.home) == ("Chargers", True)
+
+    type_prefixed = parse_summary("Game vs Cougars")
+    assert (type_prefixed.event_type, type_prefixed.opponent) == ("Game", "Cougars")
+
+    bare = parse_summary("First Practice")
+    assert bare.opponent is None
+    assert classify(bare.event_type) is False
+
+
+def test_an_opponent_only_feed_parses_end_to_end():
+    """Through `parse_feed`, not just the string parser."""
+    result = parse_feed(ALLDAY, ACTIVITY, source_id="tr-kestrels")
+    fixture = {e.uid: e for e in result.events}["31000001@teamreach"]
+
+    assert fixture.is_game
+    assert fixture.opponent == "Marbury Athletic"
+    assert result.diagnostics.get("unidentified", []) == []
