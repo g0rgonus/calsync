@@ -39,6 +39,71 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$HERE/.build/release/CalsyncMirrorMenu" "$APP/Contents/MacOS/Calsync Mirror"
 
+# --- the app icon ----------------------------------------------------------
+#
+# The same drawing the console serves as its favicon, rasterised here rather
+# than committed as a second binary that would drift from it the first time the
+# mark is touched. Reaching across into the Python package is a build-time read
+# of one asset, not a coupling between two programs that are separate on
+# purpose — nothing at runtime knows this file exists.
+#
+# Without it the app is a blank page in Finder, in Login Items, and — the one
+# that actually matters — in the calendar permission dialog, where an unnamed
+# blank sheet asking for every event you own is a thing a sensible person says
+# no to.
+#
+# qlmanage, sips and iconutil are all stock, so none of this is a new
+# dependency. Three details are not obvious:
+#
+#   - The dark rule is stripped before rendering. QuickLook honours
+#     prefers-color-scheme, so without that the icon would come out whichever
+#     colour the appearance setting happened to be at install time, and nobody
+#     would ever connect the two.
+#   - Every size renders through its own filename. QuickLook caches thumbnails
+#     by path and will otherwise hand back the first size it made for all ten.
+#   - The whole step is optional. A blank icon is cosmetic; failing the install
+#     over one would cost you the sync, which is not.
+#
+# The menu bar status item keeps its SF Symbol, and must. A template image is
+# the only thing that renders correctly in both a light and a dark menu bar,
+# and this icns has no business anywhere near it.
+ICON_SRC="$HERE/../src/calsync/web/static/icon.svg"
+ICON_PLIST=""
+if [ -f "$ICON_SRC" ] && command -v qlmanage >/dev/null 2>&1; then
+    ICON_TMP="$(mktemp -d)"
+    ICONSET="$ICON_TMP/calsync.iconset"
+    mkdir -p "$ICONSET"
+    sed '/prefers-color-scheme/d' "$ICON_SRC" > "$ICON_TMP/mark.svg"
+
+    icon_ok=1
+    for spec in 16:icon_16x16 32:icon_16x16@2x 32:icon_32x32 64:icon_32x32@2x \
+                128:icon_128x128 256:icon_128x128@2x 256:icon_256x256 \
+                512:icon_256x256@2x 512:icon_512x512 1024:icon_512x512@2x; do
+        px="${spec%%:*}"
+        cp "$ICON_TMP/mark.svg" "$ICON_TMP/$px.svg"
+        rm -f "$ICON_TMP/$px.svg.png"
+        qlmanage -t -s "$px" -o "$ICON_TMP" "$ICON_TMP/$px.svg" >/dev/null 2>&1 || true
+        # The SVG carries a viewBox and no width/height precisely so this fills
+        # the box it is given; check rather than trust, because an off-size
+        # member is what iconutil refuses on.
+        if [ "$(sips -g pixelWidth "$ICON_TMP/$px.svg.png" 2>/dev/null \
+                | awk '/pixelWidth/ {print $2}')" != "$px" ]; then
+            icon_ok=0
+            break
+        fi
+        cp "$ICON_TMP/$px.svg.png" "$ICONSET/${spec##*:}.png"
+    done
+
+    if [ "$icon_ok" = 1 ] && iconutil -c icns "$ICONSET" \
+            -o "$APP/Contents/Resources/calsync.icns" >/dev/null 2>&1; then
+        ICON_PLIST="    <key>CFBundleIconFile</key>          <string>calsync</string>"
+    else
+        echo "  (could not build the app icon — the app still works, it will"
+        echo "   just show as a blank page in Finder)"
+    fi
+    rm -rf "$ICON_TMP"
+fi
+
 cat > "$APP/Contents/Info.plist" <<PLISTEOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -52,6 +117,7 @@ cat > "$APP/Contents/Info.plist" <<PLISTEOF
     <key>CFBundleShortVersionString</key><string>$VERSION</string>
     <key>CFBundleVersion</key>           <string>$VERSION</string>
     <key>LSMinimumSystemVersion</key>    <string>14.0</string>
+$ICON_PLIST
 
     <!-- No Dock icon and no menu bar of its own: this is a status item. -->
     <key>LSUIElement</key>               <true/>
