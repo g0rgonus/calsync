@@ -1,7 +1,7 @@
 import Foundation
 
 /// One Radicale collection mirrored into one Apple calendar.
-public struct Pair: Codable, Equatable {
+public struct Pair: Codable, Equatable, Hashable {
     public var collection: String
     public var calendar: String
 

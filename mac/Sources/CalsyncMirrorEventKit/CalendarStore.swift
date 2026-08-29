@@ -36,6 +36,56 @@ public final class CalendarStore {
 
     public init() {}
 
+    /// What the settings window may offer as a destination, and whether it is
+    /// allowed to know.
+    ///
+    /// `granted` is carried alongside the titles rather than left implicit,
+    /// because "no calendars" and "not allowed to look" are the same empty list
+    /// and completely different situations. A picker that is empty because the
+    /// permission dialog has not happened yet, with nothing saying so, is one
+    /// somebody stares at.
+    public struct CalendarChoices {
+        public var titles: [String]
+        public var granted: Bool
+
+        public init(titles: [String], granted: Bool) {
+            self.titles = titles
+            self.granted = granted
+        }
+    }
+
+    /// Whether EventKit will answer at all. Deliberately a *query*, not a
+    /// request: opening a window is not a reason to put a permission dialog in
+    /// front of somebody, and the design is that the first run which touches a
+    /// calendar is the one that asks.
+    public static var isAuthorized: Bool {
+        EKEventStore.authorizationStatus(for: .event) == .fullAccess
+    }
+
+    /// Every calendar this tool could write to, by title.
+    ///
+    /// Only writable ones: a subscribed or holiday calendar is not a
+    /// destination, and `calendar(titled:)` would refuse it later anyway — one
+    /// refusal at save time beats a run that fails every fifteen minutes.
+    ///
+    /// Titles, because a title is the whole of what `Pair.calendar` holds and
+    /// what `calendar(titled:)` matches on. Two calendars in different accounts
+    /// can share one, in which case the store takes the first and this list
+    /// shows it once; that ambiguity predates the picker and is not something a
+    /// dropdown can resolve.
+    public func choices() -> CalendarChoices {
+        guard Self.isAuthorized else {
+            return CalendarChoices(titles: [], granted: false)
+        }
+        let writable = store.calendars(for: .event)
+            .filter(\.allowsContentModifications)
+            .map(\.title)
+        let unique = Array(Set(writable)).sorted {
+            $0.localizedStandardCompare($1) == .orderedAscending
+        }
+        return CalendarChoices(titles: unique, granted: true)
+    }
+
     public func requestAccess() async throws {
         let granted = try await store.requestFullAccessToEvents()
         guard granted else { throw StoreError.accessDenied }

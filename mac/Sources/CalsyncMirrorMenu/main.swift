@@ -51,6 +51,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var syncing = false
     /// So a held run or a long outage is announced once, not every interval.
     var announced: String?
+    /// Held across openings: closing a window must not throw away the one
+    /// object that owns it, and reopening should be the same window.
+    var settings: SettingsWindow?
 
     let formatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -222,8 +225,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             entry.target = self
             menu.addItem(entry)
         }
-        menu.addItem(item("Open Console…", #selector(openConsole)))
-        menu.addItem(item("Open Config…", #selector(openConfig)))
+        let console = item("Open Console…", #selector(openConsole))
+        if config?.consoleReviewURL == nil {
+            // It used to be here and silently do nothing, which is the worst of
+            // the three options — the console URL is derived from `apiURL`, and
+            // without one there is nowhere to go. Say so, with Settings on the
+            // next line.
+            console.action = nil
+            console.isEnabled = false
+            menu.addItem(console)
+            let why = NSMenuItem(
+                title: "  needs a calsync API address", action: nil, keyEquivalent: "")
+            why.isEnabled = false
+            menu.addItem(why)
+        } else {
+            menu.addItem(console)
+        }
+        menu.addItem(item("Settings…", #selector(openSettings), key: ","))
         menu.addItem(.separator())
         let version = NSMenuItem(
             title: "Calsync Mirror \(Build.version)", action: nil,
@@ -255,8 +273,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSWorkspace.shared.open(url)
     }
 
-    @objc func openConfig() {
-        NSWorkspace.shared.open(Config.defaultPath)
+    /// The window, not the file. `NSWorkspace.open` on a `.json` hands it to
+    /// whatever claimed the extension — Xcode, here — and the raw file is one
+    /// button inside the window for the times that is genuinely what you want.
+    @objc func openSettings() {
+        if settings == nil {
+            settings = SettingsWindow { [weak self] in self?.configChanged() }
+        }
+        settings?.show()
+    }
+
+    /// Pick up a saved config without a restart.
+    ///
+    /// Re-read from disk rather than taking the window's value: the file is the
+    /// record, and a config the app holds that differs from the one on disk is
+    /// the sort of divergence that only shows up as "it worked until I
+    /// restarted it". The timer is rescheduled because `syncIntervalMinutes`
+    /// may have moved, and a `Timer` already scheduled at the old interval
+    /// keeps that interval for ever otherwise.
+    func configChanged() {
+        let hadNothingToRunOn = config == nil
+        do {
+            config = try Config.load(from: Config.defaultPath)
+            // Launching without a usable config leaves that failure in
+            // `outcome`, and it is now historical. Cleared only in that case:
+            // a failure from an actual run is about the run, and saving a
+            // setting is not evidence it went away.
+            if hadNothingToRunOn { outcome = .never }
+            Log.say("config reloaded; syncing every \(config?.syncIntervalMinutes ?? 15)m")
+        } catch {
+            Log.say("ERROR could not re-read \(Config.defaultPath.path): \(error)")
+        }
+        scheduleTimer()
+        refresh()
     }
 
     @objc func quit() { NSApp.terminate(nil) }
