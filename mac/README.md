@@ -319,7 +319,8 @@ becomes the handling for the times the tailnet itself is down.
 
 ## Version
 
-`0.1.0`, written in exactly one place — `Sources/CalsyncMirrorCore/Version.swift`.
+`0.2.0`, written in exactly one place — `Sources/CalsyncMirrorCore/Version.swift`.
+
 `install.sh` asks the built binary (`calsync-mirror --version`) rather than
 carrying its own literal, so the number in `Info.plist` cannot disagree with the
 number the tool reports. Same rule as `calsync.__version__`, and for the same

@@ -26,7 +26,8 @@ from .. import __version__
 #: Bumped when a shape changes in a way a client could notice. Not the package
 #: version: an agent cares whether the contract moved, not whether a venue
 #: parser was tidied.
-CONTRACT_VERSION = "1.1"
+CONTRACT_VERSION = "1.2"
+
 
 #: One entry per route the app actually serves, keyed by (method, rule) exactly
 #: as Bottle reports them.
