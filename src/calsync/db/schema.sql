@@ -76,6 +76,9 @@ CREATE TABLE IF NOT EXISTS activities (
     season_end      TEXT,
     alarm_game_min      INTEGER NOT NULL DEFAULT 90,
     alarm_practice_min  INTEGER NOT NULL DEFAULT 30,
+    -- Minutes before kick-off the team expects you at the ground, 0 for a team
+    -- that does not ask. Drives the synthetic warm-up event (`warmup.py`).
+    warmup_minutes      INTEGER NOT NULL DEFAULT 0,
     enabled         INTEGER NOT NULL DEFAULT 1
 );
 CREATE INDEX IF NOT EXISTS activities_child ON activities(child_id);
@@ -180,6 +183,12 @@ CREATE TABLE IF NOT EXISTS event_content (
     kit             TEXT,
     arrive_at       TEXT,
     source_category TEXT,
+    -- The game this warm-up sits in front of, NULL for everything a feed
+    -- actually published. Structural rather than rendered, so it belongs here:
+    -- without it nothing reading this table back can tell a warm-up from a
+    -- practice, and it would be titled as one.
+    warmup_for      TEXT,
+
     venue_raw       TEXT,
     venue_name      TEXT,
     venue_address   TEXT,

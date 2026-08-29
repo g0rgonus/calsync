@@ -221,7 +221,27 @@
       </div>
     </div>
 
+    <div class="row">
+      <label class="field" style="margin-bottom:0.8rem;flex:0 1 12rem">
+        <span class="label">Be at the ground early by</span>
+        <input type="number" name="warmup_minutes" min="0"
+               value="{{ activity.warmup_minutes }}">
+      </label>
+      <div class="field" style="margin-bottom:0.8rem">
+        <span class="label">&nbsp;</span>
+        <span class="note">
+          Minutes. Above zero, every game gets a warm-up event in front of it —
+          same place, ending at kick-off, filed with the practices rather than
+          the games. It takes the game alarm above, so the reminder to leave is
+          timed off the warm-up rather than off kick-off. No coach publishes
+          this in a feed, so it has to be said once here. Zero switches it off,
+          and the warm-ups are removed on the next poll.
+        </span>
+      </div>
+    </div>
+
     <button class="btn" type="submit">Save {{ activity.name }}</button>
+
   </form>
 </div>
 

@@ -52,8 +52,13 @@ activities:
     alarm_policy:
       game: 90m                  # away games need travel time
       practice: 30m
+    warmup: 45m                  # be at the ground this far before kick-off.
+                                 # Puts a warm-up event in front of every game,
+                                 # same place, filed with the practices. Omit
+                                 # or 0m for a team that does not ask.
 
   - id: parker-swim
+
     child: parker
     name: TODO                   # team/squad name, human-readable
     official_name: TODO

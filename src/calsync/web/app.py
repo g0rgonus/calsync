@@ -405,7 +405,10 @@ def create_app(
                                           default=90),
                     alarm_practice_min=_whole("practice alarm",
                                               _field("alarm_practice_min"), default=30),
+                    warmup_minutes=_whole("warm-up", _field("warmup_minutes"),
+                                          default=0),
                 )
+
             except ValueError as exc:
                 raise Refused(str(exc)) from exc
         redirect(f"{back}?ok=" + _q("Team saved. The next poll re-parses the feed."))
@@ -729,7 +732,13 @@ def create_app(
             check=check,
             calendar_check=calendar_check,
             flash=_flash(),
+            # Which section's save is being confirmed, "" for a plain visit.
+            # Only ever compared against the literals in `SETTINGS_SECTIONS`,
+            # never rendered, so an unrecognised value simply confirms nothing
+            # in particular rather than reaching the page.
+            at=request.query.get("at", ""),
         )
+
 
     # --- the calendar ------------------------------------------------------
 
@@ -991,7 +1000,7 @@ def create_app(
             if password:
                 secrets.put(_field("radicale_secret_ref").strip() or "radicale_password",
                             password)
-        redirect("/settings?ok=" + _q("Calendar settings saved."))
+        _saved("calendar", "Calendar settings saved.")
 
     @app.post("/settings/titles")
     def save_title_settings():
@@ -1001,8 +1010,15 @@ def create_app(
                 value = _field(key).strip()
                 if value:
                     set_setting(conn, key, value)
-        redirect("/settings?ok=" + _q("Title settings saved. Every event re-renders "
-                                      "on the next sync — no re-fetch needed."))
+            # Blankable, unlike the rest: an empty warm-up template is a
+            # meaningful choice — it falls back to the title template — where an
+            # empty title template would render every event as nothing at all,
+            # which is why the loop above refuses to store one.
+            set_setting(conn, "warmup_title_template",
+                        _field("warmup_title_template").strip())
+
+        _saved("titles", "Title settings saved. Every event re-renders on the "
+                         "next sync — no re-fetch needed.")
 
     @app.post("/settings/seasons")
     def save_season_settings():
@@ -1017,7 +1033,7 @@ def create_app(
                     "the shut-off has to come after the nudge, or a season would "
                     "be switched off before anybody was told about it"
                 )
-        redirect("/settings?ok=" + _q("Season settings saved."))
+        _saved("seasons", "Season settings saved.")
 
     @app.post("/settings/notifications")
     def save_notification_settings():
@@ -1030,7 +1046,7 @@ def create_app(
                                (user_ref, _field("pushover_user"))):
                 if value:
                     secrets.put(ref, value)
-        redirect("/settings?ok=" + _q("Notification settings saved."))
+        _saved("notifications", "Notification settings saved.")
 
     @app.post("/settings/api")
     def save_api_settings():
@@ -1047,7 +1063,7 @@ def create_app(
             token = _field("api_token")
             if token:
                 secrets.put(ref, token)
-        redirect("/settings?ok=" + _q("API settings saved."))
+        _saved("api", "API settings saved.")
 
     @app.post("/settings/notifications/test")
     def test_notification():
@@ -1077,7 +1093,7 @@ def create_app(
                 value = _field(key).strip()
                 if value:
                     set_setting(conn, key, _bounded(key, value))
-        redirect("/settings?ok=" + _q("Safety settings saved."))
+        _saved("safety", "Safety settings saved.")
 
     @app.post("/settings/matrix")
     def save_matrix_settings():
@@ -1105,7 +1121,8 @@ def create_app(
             token = _field("matrix_access_token")
             if token:
                 secrets.put(ref, token)
-        redirect("/settings?ok=" + _q("Matrix settings saved. Check them below."))
+        _saved("matrix", "Matrix settings saved. Check them below.")
+
 
     @app.post("/settings/calendar/verify")
     def verify_calendar_settings():
@@ -1493,6 +1510,32 @@ def _now() -> datetime:
 def _q(value: str) -> str:
     """Make a message safe to hand back through a redirect query string."""
     return quote(" ".join(value.split()), safe="")
+
+
+#: The settings page's sections, in the order they appear. The ids are anchors
+#: in `settings.tpl`, so a name here that is not a heading there sends a save to
+#: the top of the page — which is the behaviour this exists to remove.
+SETTINGS_SECTIONS = (
+    "calendar", "titles", "safety", "seasons", "notifications", "api", "matrix",
+)
+
+
+def _saved(section: str, message: str):
+    """Confirm a settings save *where it happened*, not at the top of the page.
+
+    The settings page is one long column of seven independent forms, and every
+    one of them used to redirect to a bare `/settings` — so saving the Matrix
+    room at the bottom threw you back past six sections you were not editing,
+    with a banner at the top confirming something now off-screen. The fragment
+    puts the page back where you were; `at` is what tells the template to draw
+    the confirmation beside that form instead.
+
+    Deliberately not JavaScript. The console has none, and a redirect the
+    browser already knows how to honour needs nothing to keep in step.
+    """
+    assert section in SETTINGS_SECTIONS, f"unknown settings section {section!r}"
+    redirect(f"/settings?ok={_q(message)}&at={section}#{section}")
+
 
 
 #: How many child colours the calendar cycles through before repeating. Six is

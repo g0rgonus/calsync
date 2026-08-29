@@ -369,7 +369,9 @@ POST /v1/events/query
                     "sport": "swim" },
       "kind": "practice",
       "is_game": false,
+      "warmup_for": null,
       "starts_at": "2026-09-14T17:30:00-04:00",
+
       "tz": "America/New_York",
       "venue": { "id": 12, "canonical_name": "Brookvale Aquatic Center",
                  "raw": "Aquatic Ctr Main", "pin_confirmed": true },

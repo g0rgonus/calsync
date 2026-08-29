@@ -586,7 +586,27 @@ Decisions that span several files and are easy to undo by accident:
   inference. `content_hash` still ignores the field entirely; the timestamp
   lives on `event_state`, never `event_content`, or every event would re-push
   as it ends.
-- **A timezone is picked from a list, never typed** (`zones.py`). A free-text
+- **A warm-up is a shadow of its game, not evidence from a feed** (`warmup.py`).
+  No coach publishes "be there 45 minutes early" — it is said once a season and
+  never exported — so calsync synthesizes one event per game from
+  `activities.warmup_minutes`, ending at kick-off, at the same venue. `is_game`
+  is False, which is the single field that files it with the practices. Its UID
+  is derived from the game's, so it is created, moved and cancelled exactly when
+  the game is. The part that is easy to undo by accident: `diff_poll` is told
+  **not to count it** toward the disappearance guard (`counts_as_evidence`). A
+  derived event carries no independent evidence about whether a fetch can be
+  trusted, and counting it doubles every disappearance in a games-only feed —
+  tripping at two real cancellations a threshold measured against four, and
+  making "switch warm-ups off" look like the catastrophe the guard exists to
+  refuse. Only the counting is filtered; a tripped guard still withholds every
+  cancellation, which is what stops a game and its warm-up being resolved
+  differently. The warm-up takes the *game's* alarm rather than the practice
+  one — it is the thing you leave the house for — and the game keeps its own,
+  so the two fire far enough apart to mean different things. The game also
+  learns its own `arrive_at`, so its body states the arrival time whether or not
+  you are looking at the warm-up.
+- **A timezone is picked from a list, never typed** (`zones.py`).
+ A free-text
   box is how a deployment stored `EDT`, which `ZoneInfo` cannot load, so every
   local time silently fell back to UTC. Only city zones are offered, because a
   fixed-offset name loads and is still an hour out for half the year; any

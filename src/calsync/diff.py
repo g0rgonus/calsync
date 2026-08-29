@@ -11,6 +11,7 @@ fetch and a wiped family calendar.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -61,13 +62,29 @@ def diff_poll(
     now: datetime,
     max_pct: float = MAX_DISAPPEARANCE_PCT,
     max_count: int = MAX_DISAPPEARANCE_COUNT,
+    counts_as_evidence: Callable[[str], bool] | None = None,
 ) -> Diff:
     """Compare a poll against ``{uid: content_hash}`` of what we already have.
 
     Only *future* known events count toward disappearance: past events aging
     out of the feed's rolling window is normal and must never look like a
     cancellation.
+
+    ``counts_as_evidence`` decides which uids the guard's arithmetic is measured
+    over; everything counts by default. It exists for events calsync *derived*
+    rather than read — a warm-up (`warmup.py`) is a deterministic function of
+    its game, so it appears and vanishes exactly when the game does and carries
+    no independent evidence about whether this fetch can be trusted. Counting it
+    would double every disappearance in a games-only feed, tripping at two real
+    cancellations a threshold measured against four, and would make switching
+    the feature off — a whole season of synthetic events going at once — look
+    like the catastrophe this guard exists to refuse.
+
+    Only the *counting* is filtered. Withholding is not: a tripped guard still
+    holds every cancellation in the poll, which is what keeps a game and its
+    warm-up from being resolved differently.
     """
+    counts = counts_as_evidence or (lambda uid: True)
     result = Diff()
     incoming_by_uid = {e.uid: e for e in incoming}
 
@@ -105,17 +122,19 @@ def diff_poll(
     if not missing:
         return result
 
-    tracked = len(known)
-    over_count = len(missing) > max_count
-    over_pct = tracked > 0 and (len(missing) / tracked) > max_pct
+    tracked = sum(1 for uid in known if counts(uid))
+    vanished = [uid for uid in missing if counts(uid)]
+    over_count = len(vanished) > max_count
+    over_pct = tracked > 0 and (len(vanished) / tracked) > max_pct
 
     if over_count or over_pct:
-        pct = (len(missing) / tracked * 100) if tracked else 0
+        pct = (len(vanished) / tracked * 100) if tracked else 0
         result.anomaly = (
-            f"{len(missing)} of {tracked} tracked events ({pct:.0f}%) vanished "
+            f"{len(vanished)} of {tracked} tracked events ({pct:.0f}%) vanished "
             f"from the feed in one poll — holding all cancellations pending "
             f"confirmation"
         )
+
         result.anomaly_kind = "disappearance"
         return result
 

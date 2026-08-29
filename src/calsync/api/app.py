@@ -418,8 +418,18 @@ def _event_json(conn, item: repo.StoredEvent, settings: Settings) -> dict:
         "uid": event.uid,
         "child": {"id": child.id, "name": child.name},
         "activity": {"id": activity.id, "name": activity.name, "sport": activity.sport},
+        # Binary, as documented. A warm-up reports "practice" here because that
+        # is genuinely which of the two it is and which calendar it lands in;
+        # `warmup_for` below is how a consumer tells it from a real practice,
+        # added rather than widening `kind` because this field is specified and
+        # a contract that quietly grows a third value is one that lies.
         "kind": "game" if event.is_game else "practice",
         "is_game": event.is_game,
+        # The game this event is the warm-up for, null for everything a feed
+        # published. calsync synthesized it from the team's `warmup_minutes`;
+        # no upstream ever sent it.
+        "warmup_for": event.warmup_for,
+
         # An instant either way — local midnight when all_day — so a consumer
         # that ignores the flag still sorts and windows correctly. It only
         # changes how a time should be shown, and whether there is one.

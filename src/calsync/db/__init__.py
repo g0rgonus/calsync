@@ -12,7 +12,7 @@ import time
 import sys
 from pathlib import Path
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 
 #: Additive column migrations, applied when absent. `schema.sql` uses
@@ -47,6 +47,14 @@ ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("event_state", "upstream_edit_at", "TEXT"),
     # v8: which set of unexplained edits has already been announced.
     ("sources", "edits_notified", "TEXT"),
+    # v9: minutes before kick-off this team wants you at the ground, 0 for a
+    # team that does not ask. On `activities` because it is a coach's rule
+    # rather than a household's — see `warmup.py`.
+    ("activities", "warmup_minutes", "INTEGER NOT NULL DEFAULT 0"),
+    # v9: the game a synthetic warm-up sits in front of. Structural, not
+    # rendered — it decides which title template the event takes and which
+    # alarm, so `/calendar` and the API cannot reconstruct one without it.
+    ("event_content", "warmup_for", "TEXT"),
     # v5 adds `event_content`, which is a new table rather than new columns, so
     # `schema.sql`'s CREATE TABLE IF NOT EXISTS covers it and nothing belongs
     # here. Existing rows backfill themselves: the sync loop treats missing
@@ -116,6 +124,12 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "enrichment_collection": "enrichment",
     # Title rendering. Empty fields collapse, so no dangling separators.
     "title_template": "{kids} {emoji} {detail}",
+    # The same, for the warm-up `warmup.py` puts before a game. A separate
+    # template rather than a suffix on the one above, because the two are not
+    # variations of one convention: a household that titles games "{detail}"
+    # alone still wants its warm-ups to say which fixture they belong to.
+    "warmup_title_template": "{kids} {emoji} {detail} warm-up",
+
     "multi_kid_style": "initials",   # initials | names
     "all_kids_label": "Kids",
     "all_kids_threshold": "3",
