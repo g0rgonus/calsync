@@ -1,4 +1,7 @@
-% rebase('layout.tpl', title='Settings', flash=flash, narrow=True)
+% setdefault('at', '')
+% rebase('layout.tpl', title='Settings',
+%        flash=(None if at else flash), narrow=True)
+
 % setdefault('check', None)
 
 % setdefault('calendar_check', None)
@@ -12,7 +15,8 @@
   here is specific to one family.
 </p>
 
-<h2>Where events go</h2>
+<h2 id="calendar">Where events go</h2>
+% include('_saved.tpl', flash=flash, at=at, section='calendar')
 <div class="card">
   <form method="post" action="/settings/calendar">
     <label class="field" style="margin-bottom:0.8rem">
@@ -145,7 +149,8 @@
 % end
 </div>
 
-<h2>How titles read</h2>
+<h2 id="titles">How titles read</h2>
+% include('_saved.tpl', flash=flash, at=at, section='titles')
 <div class="card">
   <p class="note" style="margin-top:0">
     The title is rendered at write time, never stored — so changing this
@@ -228,7 +233,8 @@
   </form>
 </div>
 
-<h2>Safety</h2>
+<h2 id="safety">Safety</h2>
+% include('_saved.tpl', flash=flash, at=at, section='safety')
 <div class="card">
   <p class="note" style="margin-top:0">
     Cancellation is only ever signalled by an event <em>disappearing</em> from a
@@ -267,7 +273,8 @@
   </form>
 </div>
 
-<h2>End of season</h2>
+<h2 id="seasons">End of season</h2>
+% include('_saved.tpl', flash=flash, at=at, section='seasons')
 <div class="card">
   <p class="note" style="margin-top:0">
     A rec team's feed does not stop working when the season ends — the app goes
@@ -297,7 +304,8 @@
   </form>
 </div>
 
-<h2>Notifications</h2>
+<h2 id="notifications">Notifications</h2>
+% include('_saved.tpl', flash=flash, at=at, section='notifications')
 <div class="card">
   <p class="note" style="margin-top:0">
     Pushover, for the handful of things a year that need you rather than merely
@@ -346,7 +354,8 @@
 % end
 </div>
 
-<h2>Read API</h2>
+<h2 id="api">Read API</h2>
+% include('_saved.tpl', flash=flash, at=at, section='api')
 <div class="card">
   <div class="banner banner-info" style="margin-bottom:1.2rem">
     <strong>Reads only.</strong>
@@ -381,7 +390,8 @@
   </form>
 </div>
 
-<h2>Matrix</h2>
+<h2 id="matrix">Matrix</h2>
+% include('_saved.tpl', flash=flash, at=at, section='matrix')
 <div class="card">
   <div class="banner banner-info" style="margin-bottom:1.2rem">
     <strong>calsync talks; nothing listens.</strong>

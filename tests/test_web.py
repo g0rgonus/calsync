@@ -2519,3 +2519,71 @@ def test_the_version_is_not_hardcoded_in_the_template(client):
 
     layout = (Path(calsync.__file__).parent / "web" / "templates" / "layout.tpl")
     assert calsync.__version__ not in layout.read_text()
+
+
+# --- settings: a save comes back to where it happened ------------------------
+
+
+def _location(response) -> str:
+    return response["headers"]["Location"]
+
+
+SAVES = [
+    ("/settings/calendar", {"collection_template": "{type}"}, "calendar"),
+    ("/settings/titles", {"title_template": "{kids} {emoji} {detail}"}, "titles"),
+    ("/settings/safety", {"max_disappearance_count": "3"}, "safety"),
+    ("/settings/seasons", {"season_nudge_days": "30"}, "seasons"),
+    ("/settings/notifications", {"pushover_token_ref": "pushover_token"},
+     "notifications"),
+    ("/settings/api", {"api_token_ref": "api_token"}, "api"),
+    ("/settings/matrix", {"matrix_room_id": "!room:example.org"}, "matrix"),
+]
+
+
+@pytest.mark.parametrize("path,form,section", SAVES)
+def test_a_save_returns_to_its_own_section(client, path, form, section):
+    """Seven forms on one long page, and every one of them used to redirect to
+    a bare `/settings` — so saving the Matrix room at the bottom threw you back
+    past six sections you were not editing."""
+    response = client.post(path, form)
+    assert response["status"] in (302, 303)
+    location = _location(response)
+    assert location.endswith(f"#{section}"), location
+    assert f"at={section}" in location
+
+
+@pytest.mark.parametrize("path,form,section", SAVES)
+def test_every_section_the_handlers_name_is_a_real_anchor(client, path, form, section):
+    """A section id that is not a heading sends the save to the top of the page,
+    which is the behaviour this whole change exists to remove — and it would do
+    it silently."""
+    client.post(path, form)
+    assert f'id="{section}"' in client.get("/settings")["body"]
+
+
+def test_the_confirmation_is_drawn_beside_the_form_not_at_the_top(client):
+    body = client.get("/settings?ok=Matrix+settings+saved.&at=matrix")["body"]
+    banner = body.index("Matrix settings saved.")
+    assert banner > body.index('id="matrix"'), (
+        "the confirmation should sit inside the section that produced it"
+    )
+
+
+def test_only_one_confirmation_is_drawn(client):
+    """The top-of-page banner has to stand down when a section drew its own, or
+    the page confirms one action twice."""
+    body = client.get("/settings?ok=Matrix+settings+saved.&at=matrix")["body"]
+    assert body.count("Matrix settings saved.") == 1
+
+
+def test_a_save_that_names_no_section_still_confirms_at_the_top(client):
+    """Nothing redirects here any more, but a confirmation must never be lost
+    merely because it did not say where it came from."""
+    body = client.get("/settings?ok=Something+happened.")["body"]
+    assert "Something happened." in body
+    assert body.index("Something happened.") < body.index('id="calendar"')
+
+
+def test_an_unknown_section_confirms_nothing_rather_than_500ing(client):
+    body = client.get("/settings?ok=Saved.&at=nonsense")["body"]
+    assert "Saved." not in body
