@@ -17,8 +17,21 @@ import re
 
 # "U10PL PSL Match vs Harbour FC U10"
 #   team ─┘   league ┘ type ┘     └─ opponent
+#
+# The separator is `vs` **or** `@`, and which one appeared is the only thing in
+# this feed that states home or away. An away fixture reads "U10DA TASL Match @
+# Chesapeake United SC"; before `@` was accepted here the whole string fell
+# through to the token stripper, so the opponent was never recovered and the
+# title rendered the coach's raw text.
+#
+# `@` takes no required space after it and `vs` does, for the reason the
+# TeamReach adapter records: one feed writes "@Hampton Roads Academy", while a
+# spaceless `vs` would eat the first word of a club called something like
+# "Vsetin".
 LEAGUE_MATCH = re.compile(
-    r"^(?P<team>\S+)\s+(?P<league>\S+)\s+Match\s+vs\.?\s+(?P<opponent>.+?)\s*$",
+    r"^(?P<team>\S+)\s+(?P<league>\S+)\s+Match\s+"
+    r"(?:(?P<away>@)\s*|vs\.?\s+|v\.\s*)"
+    r"(?P<opponent>.+?)\s*$",
     re.IGNORECASE,
 )
 
@@ -63,19 +76,28 @@ def strip_age_suffix(opponent: str, age_group: str | None) -> str:
 
 
 def parse(summary: str, *, tokens: tuple[str, ...] = (),
-          age_group: str | None = None) -> tuple[str | None, str | None]:
-    """Return ``(opponent, detail)``.
+          age_group: str | None = None
+          ) -> tuple[str | None, str | None, bool | None]:
+    """Return ``(opponent, detail, home)``.
 
-    Exactly one of the two is meaningful per event: a league match yields an
-    opponent and no detail, everything else yields a detail and no opponent.
+    Exactly one of opponent and detail is meaningful per event: a league match
+    yields an opponent and no detail, everything else yields a detail and no
+    opponent.
+
+    ``home`` is ``False`` only when the summary says so with an `@`, and
+    ``None`` otherwise — including for a `vs`, which this feed writes regardless
+    of where the fixture is played. That asymmetry is the whole point: `@` is
+    the coach stating the fixture is away, which is knowledge, while `vs` is a
+    default and says nothing. Never return ``True`` here; being at the home
+    ground is a fact about the venue, and `venue.matches_home` owns it.
     """
     summary = _collapse(summary or "")
     if not summary:
-        return None, None
+        return None, None, None
 
     match = LEAGUE_MATCH.match(summary)
     if match:
         opponent = strip_age_suffix(_collapse(match.group("opponent")), age_group)
-        return (opponent or None), None
+        return (opponent or None), None, (False if match.group("away") else None)
 
-    return None, (strip_known_tokens(summary, tokens) or None)
+    return None, (strip_known_tokens(summary, tokens) or None), None

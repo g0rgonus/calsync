@@ -63,7 +63,19 @@ def test_team_name_comes_from_the_calendar_name(otters, wrens, tempest):
 def test_player360_publishes_a_generic_calendar_name(vanguard):
     """Marked "generic" in the table — the operator has to name that one."""
     assert vanguard.calendar_name == "360Player Event calendar"
-    assert vanguard.team_token is None
+
+
+def test_a_league_match_proposes_the_team_and_not_the_whole_left_side(vanguard):
+    """"U10PL PSL Match vs Harbour FC U10" names the team, league and type.
+
+    Splitting on the separator alone took all three as our name, and two such
+    fixtures clear the frequency bar — so a real Player360 feed proposed
+    "U10PL PSL Match" as the team. `U10PL` is the part that is actually ours,
+    and it is the token `strip_known_tokens` needs to turn "U10PL Practice"
+    into "Practice".
+    """
+    assert vanguard.team_token == "U10PL"
+    assert all("Match" not in t.token for t in vanguard.tokens)
 
 
 def test_every_feed_yields_season_bounds(otters, wrens, tempest, vanguard):
@@ -150,7 +162,8 @@ def test_a_us_vs_them_feed_reads_its_fixtures_without_any_configuration(otters):
 
 
 def test_player360_classifies_on_categories(vanguard):
-    assert vanguard.reads_as_games == 2
+    # Two league matches and the festival; CATEGORIES is the whole rule here.
+    assert vanguard.reads_as_games == 3
     assert vanguard.reads_as_practices == 2
 
 

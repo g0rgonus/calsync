@@ -69,10 +69,11 @@ FESTIVAL = "360Player-event-4716716"
 MINICAMP = "360Player-event-4801206"
 PRACTICE = "360Player-event-4801208"
 MATCH = "360Player-event-4823901"
+AWAY_MATCH = "360Player-event-4823977"
 
 
 def test_all_events_parsed(result):
-    assert len(result.events) == 4
+    assert len(result.events) == 5
 
 
 def test_is_game_comes_from_categories(by_uid):
@@ -123,6 +124,40 @@ def test_no_coordinates_are_invented(by_uid):
 def test_home_away_derived_from_venue_not_the_vs_string(by_uid):
     # SUMMARY always reads "vs"; Thistledown Park is the home ground.
     assert by_uid[MATCH].home is True
+
+
+def test_an_away_match_is_read_from_the_at_marker(by_uid):
+    """A third SUMMARY shape: "U10PL PSL Match @ Kestrel Town SC".
+
+    Observed live on a Rush U10DA feed, where every away fixture reads this way.
+    The pattern required `vs`, so the whole string fell through to the token
+    stripper: no opponent was recovered, home/away was never set, and the title
+    rendered the coach's raw text — "James ⚽️ U10DA TASL Match @ Chesapeake
+    United SC" instead of "James ⚽️ @ Chesapeake United SC".
+    """
+    event = by_uid[AWAY_MATCH]
+    assert event.opponent == "Kestrel Town SC"
+    assert event.detail is None
+    assert event.is_game is True
+
+
+def test_the_at_marker_is_what_makes_it_away(by_uid):
+    """`@` outranks the venue check, because only `@` states the fixture.
+
+    The venue here is not the home ground, so both agree — but the marker is
+    what carries it, and many activities have no `home_venue` configured at all,
+    which leaves the venue check answering None forever.
+    """
+    assert by_uid[AWAY_MATCH].home is False
+
+
+def test_a_vs_match_still_defers_to_the_venue(by_uid):
+    """`vs` says nothing: this feed writes it regardless of where it is played.
+
+    Reading it as "home" would mark every away fixture on a feed that only ever
+    writes `vs` — which is the trap `venue.matches_home` was written around.
+    """
+    assert by_uid[MATCH].home is True, "Thistledown Park is the home ground"
 
 
 def test_description_dropped_when_it_duplicates_summary(by_uid):
@@ -229,7 +264,10 @@ def test_diff_classifies_new_changed_and_unchanged(result):
     d = diff_poll(result.events, known, now=NOW)
     assert [e.uid for e in d.created] == [FESTIVAL]
     assert [e.uid for e in d.updated] == [MATCH]
-    assert len(d.unchanged) == 2
+    # Everything the fixture holds bar the one created and the one changed.
+    # Derived rather than a literal, so growing the fixture does not fail a
+    # test that is really asserting "the rest were left alone".
+    assert len(d.unchanged) == len(result.events) - 2
     assert d.cancelled == []
 
 
@@ -246,7 +284,7 @@ def test_mass_disappearance_is_held_not_processed(result):
     d = diff_poll([], known, now=NOW)
     assert d.is_anomalous
     assert d.cancelled == []          # nothing is deleted
-    assert re.search(r"4 of 4", d.anomaly)
+    assert re.search(rf"{len(known)} of {len(known)}", d.anomaly)
 
 
 def test_guard_trips_on_count_even_when_percentage_is_low(result):
