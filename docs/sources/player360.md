@@ -66,11 +66,40 @@ U10PL PSL Match vs Harbour FC U10
  team  league type      opponent
 ```
 
-So `SUMMARY` is not one format but at least two, and parsing is worth doing:
+So `SUMMARY` is not one format but at least two, and parsing is worth doing.
+
+**The separator is `vs` or `@`, and it is the only thing here that states home
+or away.** An away fixture reads:
 
 ```
-^(?<team>\S+)\s+(?<league>\S+)\s+Match\s+vs\.?\s+(?<opponent>.+)$
+U10DA TASL Match @ Chesapeake United SC
+└─┬─┘ └─┬─┘ └─┬─┘ └──────────┬─────────┘
+ team  league type        opponent
 ```
+
+Observed live on a Rush U10DA feed, where every away fixture is written this
+way. Requiring `vs` sent all of them through the token stripper instead: no
+opponent was recovered, `home` was never set, and the title rendered the coach's
+raw text — `James ⚽️ U10DA TASL Match @ Chesapeake United SC` rather than
+`James ⚽️ @ Chesapeake United SC`.
+
+```
+^(?<team>\S+)\s+(?<league>\S+)\s+Match\s+(?:(?<away>@)\s*|vs\.?\s+|v\.\s*)(?<opponent>.+)$
+```
+
+**`@` means away; `vs` means nothing.** This feed writes `vs` regardless of
+where a fixture is played, which is why `venue.matches_home` exists and why it
+returns `None` rather than `False` when it cannot tell. An `@` is different: it
+is the coach stating the fixture is away, so it is knowledge and it outranks the
+venue check — which many activities cannot use anyway, having no `home_venue`
+configured. The parser never returns `home=True`; being at the home ground is a
+fact about the venue, and the venue owns it.
+
+**The left side is not a team name.** `U10PL PSL Match` is team, league and
+type, and onboarding proposed the whole string as *our* team until
+`inspection.fixture_sides` was taught this shape — two league matches are enough
+to clear its frequency bar. The team is the first token, `U10PL`, which is also
+the token that turns `U10PL Practice` into `Practice`.
 
 On a match, use the captured opponent. On a miss, **strip known tokens** —
 `name`, `official_name`, `aliases`, `age_group`, `league` — from `SUMMARY` and

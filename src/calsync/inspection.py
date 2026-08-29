@@ -38,6 +38,7 @@ from datetime import datetime, timezone
 
 from icalendar import Calendar
 
+from .normalize import summary as summary_norm
 from .normalize import venue as venue_norm
 from .sources import player360, teamreach
 
@@ -205,6 +206,18 @@ def fixture_sides(summary: str) -> tuple[str, str] | None:
     is not evidence either way.
     """
     text = _WS.sub(" ", (summary or "").strip())
+
+    # A Player360 league match names the team, the league and the word "Match"
+    # on its left — "U10PL PSL Match vs Harbour FC U10". Splitting on the
+    # separator alone takes all three as our team name, and two such fixtures
+    # are enough to clear the frequency bar, so onboarding proposed "U10PL PSL
+    # Match" as the team. The shape is already parsed in normalize/summary.py;
+    # asking it first means one definition of this format rather than two.
+    league = summary_norm.LEAGUE_MATCH.match(text)
+    if league:
+        left, right = league.group("team").strip(), league.group("opponent").strip()
+        return (left, right) if left and right else None
+
     parts = teamreach._VERSUS.split(text, maxsplit=1)
     if len(parts) != 2:
         return None

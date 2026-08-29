@@ -198,12 +198,18 @@ def parse_feed(
                 unresolved.append(models.UNKNOWN_CATEGORY)
 
         raw_summary = _text(component, "SUMMARY") or ""
-        opponent, detail = summary_norm.parse(
+        opponent, detail, stated_home = summary_norm.parse(
             raw_summary, tokens=tokens, age_group=activity.age_group
         )
 
         venue: Venue | None = venue_norm.parse(_text(component, "LOCATION"))
-        home = venue_norm.matches_home(venue, activity.home_venue)
+        # The summary wins when it says anything, because only `@` says
+        # anything: it is the coach stating this fixture is away, where the
+        # venue check infers it from a configured ground that many activities
+        # do not have set at all. Falling back keeps every feed that writes
+        # "vs" regardless behaving exactly as before.
+        venue_home = venue_norm.matches_home(venue, activity.home_venue)
+        home = stated_home if stated_home is not None else venue_home
 
         # League matches repeat SUMMARY verbatim in DESCRIPTION; carrying that
         # through would put the title in the body of every game.
