@@ -117,6 +117,7 @@ def get_activity(conn: sqlite3.Connection, activity_id: str) -> Activity:
         aliases=aliases,
         alarm_game_min=row["alarm_game_min"],
         alarm_practice_min=row["alarm_practice_min"],
+        warmup_minutes=row["warmup_minutes"],
     )
 
 
@@ -294,7 +295,7 @@ def mark_event_cancelled(conn: sqlite3.Connection, uid: str) -> None:
 #: we saw, and including it would make every poll look like a change.
 CONTENT_COLUMNS: tuple[str, ...] = (
     "ends_at", "tz", "is_game", "all_day", "opponent", "home", "detail", "body",
-    "url", "kit", "arrive_at", "source_category",
+    "url", "kit", "arrive_at", "source_category", "warmup_for",
     "venue_raw", "venue_name", "venue_address", "venue_field",
 )
 
@@ -326,6 +327,11 @@ def content_of(event) -> dict:
         "kit": event.kit,
         "arrive_at": event.arrive_at.isoformat() if event.arrive_at else None,
         "source_category": event.source_category,
+        # Which game this is the warm-up for, and NULL for every event a feed
+        # published. Structural rather than rendered, so it does not offend the
+        # no-title rule above: nothing reading this table back could otherwise
+        # tell a warm-up from a practice, and would title it as one.
+        "warmup_for": event.warmup_for,
         "venue_raw": venue.raw if venue else None,
         "venue_name": venue.name if venue else None,
         "venue_address": venue.address if venue else None,
@@ -456,7 +462,9 @@ def _stored_event(row: sqlite3.Row) -> StoredEvent:
             arrive_at=(
                 datetime.fromisoformat(row["arrive_at"]) if row["arrive_at"] else None
             ),
+            warmup_for=row["warmup_for"],
         ),
+
         source_id=row["source_id"],
         activity_id=row["activity_id"],
         child_id=row["child_id"],
@@ -1031,6 +1039,7 @@ def update_activity(
     home_venue_id: int | None,
     alarm_game_min: int,
     alarm_practice_min: int,
+    warmup_minutes: int = 0,
 ) -> None:
     """Edit the fields of a team that change how its events read and parse.
 
@@ -1041,19 +1050,27 @@ def update_activity(
 
     ``home_venue_id`` is the only thing that can mark a game as away, since some
     feeds phrase every fixture as "vs" regardless.
+
+    ``warmup_minutes`` puts a synthetic event that far in front of every game
+    (`warmup.py`). Raising or lowering it rewrites those events on the next
+    poll; setting it to 0 cancels them.
     """
     if not name.strip():
         raise ValueError("a team needs a name")
+    if warmup_minutes < 0:
+        raise ValueError("a warm-up cannot start after the game does")
     conn.execute(
         """
         UPDATE activities SET name = ?, emoji = ?, official_name = ?,
                short_name = ?, league = ?, age_group = ?, home_venue_id = ?,
-               alarm_game_min = ?, alarm_practice_min = ?
+               alarm_game_min = ?, alarm_practice_min = ?, warmup_minutes = ?
          WHERE id = ?
         """,
         (name.strip(), emoji, official_name, short_name, league, age_group,
-         home_venue_id, alarm_game_min, alarm_practice_min, activity_id),
+         home_venue_id, alarm_game_min, alarm_practice_min, warmup_minutes,
+         activity_id),
     )
+
     conn.commit()
 
 

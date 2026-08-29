@@ -38,6 +38,11 @@ class Activity:
     #: Away games need travel time; practices are usually local.
     alarm_game_min: int = 90
     alarm_practice_min: int = 30
+    #: Minutes before kick-off the team expects you at the ground, or 0 for a
+    #: team that does not ask. Per team rather than instance-wide because it is
+    #: a coach's rule, not a household's: one club wants 45 minutes and the
+    #: rec team down the road wants none. See `warmup.py`.
+    warmup_minutes: int = 0
 
     def alarm_minutes(self, *, is_game: bool) -> int:
         return self.alarm_game_min if is_game else self.alarm_practice_min
@@ -127,6 +132,11 @@ class Event:
     content_hash: str | None = None
     kit: str | None = None
     arrive_at: datetime | None = None
+    #: The UID of the game this warm-up sits in front of, or None for every
+    #: event a feed actually published. Set only by `warmup.expand`. It is what
+    #: makes a synthetic event legible downstream — which title template to use,
+    #: which alarm to take, and whether the diff's guard should count it.
+    warmup_for: str | None = None
 
     #: A date with no time — a tournament day a coach entered before the
     #: schedule existed. `starts_at` is still an instant, local midnight in the
@@ -161,6 +171,23 @@ class Event:
     def needs_enrichment(self) -> bool:
         """Should this be held off the real calendar until somebody answers?"""
         return bool(self.unresolved)
+
+    @property
+    def is_warmup(self) -> bool:
+        return self.warmup_for is not None
+
+    @property
+    def alarms_as_game(self) -> bool:
+        """Take the game's alarm rather than the practice one?
+
+        A warm-up is not a game, but it is the thing you leave the house for —
+        so the reminder that matters is the game's travel-time one, timed off
+        the warm-up. The game keeps its own alarm as well: the two fire far
+        enough apart to mean different things, where a practice alarm on a
+        warm-up would land minutes from the game's and read as a duplicate.
+        """
+        return self.is_game or self.is_warmup
+
 
     def __post_init__(self) -> None:
         # Absolute instants only. A naive datetime here means an adapter lost

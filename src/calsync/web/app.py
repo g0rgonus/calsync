@@ -405,7 +405,10 @@ def create_app(
                                           default=90),
                     alarm_practice_min=_whole("practice alarm",
                                               _field("alarm_practice_min"), default=30),
+                    warmup_minutes=_whole("warm-up", _field("warmup_minutes"),
+                                          default=0),
                 )
+
             except ValueError as exc:
                 raise Refused(str(exc)) from exc
         redirect(f"{back}?ok=" + _q("Team saved. The next poll re-parses the feed."))
@@ -1001,6 +1004,13 @@ def create_app(
                 value = _field(key).strip()
                 if value:
                     set_setting(conn, key, value)
+            # Blankable, unlike the rest: an empty warm-up template is a
+            # meaningful choice — it falls back to the title template — where an
+            # empty title template would render every event as nothing at all,
+            # which is why the loop above refuses to store one.
+            set_setting(conn, "warmup_title_template",
+                        _field("warmup_title_template").strip())
+
         redirect("/settings?ok=" + _q("Title settings saved. Every event re-renders "
                                       "on the next sync — no re-fetch needed."))
 

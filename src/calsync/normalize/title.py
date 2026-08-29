@@ -59,7 +59,15 @@ def render(
     event: Event, activity: Activity, children: list[Child], settings: Settings
 ) -> str:
     emoji = activity.emoji or ""
-    rendered = settings.title_template.format(
+    # A warm-up takes its own template. It is a different kind of thing from
+    # the fixture it precedes — "be at the ground" rather than "we are playing
+    # these people" — and a household that titles games by opponent alone still
+    # needs its warm-ups to say which fixture they belong to. Falls back rather
+    # than rendering an empty title if the row was blanked out.
+    template = settings.title_template
+    if event.is_warmup and settings.warmup_title_template.strip():
+        template = settings.warmup_title_template
+    rendered = template.format(
         kids=render_kids(children, settings),
         emoji=emoji,
         detail=render_detail(event, settings),

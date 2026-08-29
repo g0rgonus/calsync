@@ -183,8 +183,8 @@ def apply(conn, data: dict) -> list[str]:
             INSERT INTO activities
                 (id, child_id, name, sport_id, emoji, official_name, short_name,
                  league, age_group, home_venue_id, tz, season_start, season_end,
-                 alarm_game_min, alarm_practice_min, enabled)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 alarm_game_min, alarm_practice_min, warmup_minutes, enabled)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(id) DO UPDATE SET
                 child_id=excluded.child_id, name=excluded.name,
                 sport_id=excluded.sport_id, emoji=excluded.emoji,
@@ -194,6 +194,7 @@ def apply(conn, data: dict) -> list[str]:
                 season_start=excluded.season_start, season_end=excluded.season_end,
                 alarm_game_min=excluded.alarm_game_min,
                 alarm_practice_min=excluded.alarm_practice_min,
+                warmup_minutes=excluded.warmup_minutes,
                 enabled=excluded.enabled
             """,
             (
@@ -212,7 +213,11 @@ def apply(conn, data: dict) -> list[str]:
                 str(season.get("end")) if season.get("end") else None,
                 parse_duration(alarms.get("game", "90m"), default_unit="m") // 60,
                 parse_duration(alarms.get("practice", "30m"), default_unit="m") // 60,
+                # Minutes before kick-off the team wants you there, 0 for a team
+                # that does not ask (`warmup.py`).
+                parse_duration(str(activity.get("warmup", "0m")), default_unit="m") // 60,
                 int(activity.get("enabled", 1)),
+
             ),
         )
         for alias in activity.get("aliases") or []:

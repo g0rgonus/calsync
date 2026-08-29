@@ -68,9 +68,20 @@ def build_body(
     else:
         local = event.local_start
         lines.append(f"Start {local:%H:%M} {local:%Z}")
+        if event.is_warmup:
+            # `ends_at` is the kick-off — that is how a warm-up is built.
+            # Stated because the reason this event exists is the one that
+            # follows it, and somebody reading it on a phone should not have to
+            # go and find the other event to learn when they are playing. Kept
+            # inside this branch because `local` only exists here, and a
+            # warm-up is never all-day: `warmup.expand` skips a game with no
+            # published kick-off to count backwards from.
+            lines.append(f"Game starts {event.ends_at.astimezone(local.tzinfo):%H:%M}")
 
     if event.body:
+
         lines.append(event.body)
+
     if event.kit:
         lines.append(f"Kit: {event.kit}")
     if event.arrive_at:

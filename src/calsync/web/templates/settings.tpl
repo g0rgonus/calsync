@@ -1,5 +1,6 @@
 % rebase('layout.tpl', title='Settings', flash=flash, narrow=True)
 % setdefault('check', None)
+
 % setdefault('calendar_check', None)
 % setdefault('pushed', None)
 
@@ -170,9 +171,23 @@
       </span>
     </label>
 
+    <label class="field" style="margin-bottom:0.8rem">
+      <span class="label">…and the warm-up before a game</span>
+      <input type="text" name="warmup_title_template" class="mono"
+             value="{{ settings.warmup_title_template }}" autocomplete="off">
+      <span class="choice-note" style="margin-top:0.35rem">
+        Same fields. Only used by teams with a warm-up time set on their own
+        page — a warm-up is a different kind of thing from the fixture it
+        precedes, so it gets its own line rather than a suffix on the one above.
+        Left blank, warm-ups fall back to the template above and read as if they
+        were the game.
+      </span>
+    </label>
+
     <div class="row">
       <label class="field" style="margin-bottom:0.8rem">
         <span class="label">Two kids render as</span>
+
         <select name="multi_kid_style">
 % for style, note in (('initials', 'initials — P+J'), ('names', 'names — Parker+Jesse')):
           <option value="{{ style }}" {{ 'selected' if settings.multi_kid_style == style else '' }}>{{ note }}</option>
