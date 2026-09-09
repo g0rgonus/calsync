@@ -120,12 +120,12 @@ final class ReconcileTests: XCTestCase {
 
     // MARK: - Timezones
 
-    /// `EKEvent.timeZone == nil` is a **floating** event: EventKit keeps wall
-    /// clock instead of an instant, so the event moves whenever the Mac does.
     /// calsync writes `DTSTART:…Z` and names no zone, so before this was fixed
-    /// every timed event the mirror wrote was floating — and a trip from
-    /// Eastern to Pacific re-anchored all 64 of them three hours out, then
-    /// pushed that to everyone sharing the calendar.
+    /// every timed event reached EventKit with `timeZone == nil`, and the start
+    /// such an event reports back is not stable across a change of device zone.
+    /// A trip from Eastern to Pacific made 64 of 67 events compare unequal to a
+    /// Radicale that had not been written to in two days, and the mirror
+    /// rewrote every one of them to the values it already held.
     func testTimedEventNeverGetsANilZone() {
         let event = desired("a", at: future(3))
         XCTAssertNil(event.timeZoneID, "the fixture format names no zone")

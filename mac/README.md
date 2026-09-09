@@ -174,10 +174,11 @@ under a user and Radicale answers 403 at the root. If the deployment runs
 `CALSYNC_RADICALE_ANONYMOUS_READ=1`, no username or password is needed at all.
 
 `homeTimeZone` is the zone a timed event is filed under. calsync writes
-`DTSTART:...Z` and names no zone at all, and an `EKEvent` with **no** zone is a
-*floating* event — EventKit keeps wall clock rather than an instant, so it moves
-whenever this Mac does. This does not decide when an event happens; any concrete
-zone stores the same instant. It decides what Calendar.app shows as the event's
+`DTSTART:...Z` and names no zone at all, and the start an `EKEvent` with **no**
+zone reports back is not stable across a change of device zone — so travelling
+made the mirror disagree with Radicale about every event and rewrite all of
+them. This does not decide when an event happens; any concrete zone stores the
+same instant. It decides what Calendar.app shows as the event's
 zone, and picking the household's own beats the `GMT` it falls back to. City
 names only: `EDT` does not load, and a fixed offset is an hour out for half the
 year. All-day events stay floating on purpose, which is why a tournament day
