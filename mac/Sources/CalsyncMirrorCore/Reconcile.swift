@@ -132,14 +132,28 @@ public enum Reconcile {
     /// across unchanged turns every tournament day into a two-day event.
     ///
     /// The other is that **a timed event must never be left without a zone.**
-    /// `EKEvent.timeZone == nil` is a *floating* event: EventKit stores wall
-    /// clock rather than an instant, so the event silently moves whenever the
-    /// Mac does. calsync writes `DTSTART:…Z`, which names no zone, so every
-    /// timed event this tool mirrored was floating — and flying from Eastern
-    /// to Pacific on 2026-09-07 re-anchored all 64 of them three hours out and
-    /// pushed that to everyone sharing the calendar. Any concrete zone fixes
-    /// it, because the instant is then stored as an instant; a real zone from
-    /// `TZID` is nicer to read in Calendar.app, and UTC is the floor.
+    /// calsync writes `DTSTART:…Z`, which names none, so before this every
+    /// timed event reached EventKit with `timeZone == nil` — and the start such
+    /// an event reports back is not stable across a change of device zone.
+    ///
+    /// What that cost, measured rather than assumed: flying Eastern to Pacific
+    /// on 2026-09-07 made 64 of 67 events compare unequal to Radicale on the
+    /// next run, and every one was rewritten. Radicale had not been written to
+    /// for two days (`getlastmodified` on both collections), so nothing
+    /// upstream had moved — the mirror was rewriting events to the values they
+    /// already held.
+    ///
+    /// It is churn, **not** corruption. The stored instants were right
+    /// throughout: on the day, the same event read 13:00 on a Mac in Pacific
+    /// and 16:00 on one in Eastern, which is one instant shown in two zones and
+    /// is precisely what a floating event cannot do. Do not let this comment
+    /// grow back into a story about wrong times on a phone; the defect is that
+    /// **every timezone change rewrites the whole calendar**, and a mass
+    /// rewrite of a calendar other people subscribe to is not free.
+    ///
+    /// Any concrete zone settles it. A real zone from `TZID` would be nicer to
+    /// read in Calendar.app; `homeTimeZone` picks what is shown; UTC is the
+    /// floor.
     ///
     /// All-day events stay `nil` on purpose: they are floating *by
     /// definition*, and pinning one to a zone is how a tournament day shows up

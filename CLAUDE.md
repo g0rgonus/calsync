@@ -83,16 +83,27 @@ an `EKEventStore`. Three things decide its shape:
   without one is somebody's haircut. Identity living in the events means there
   is **no state file** — the predecessor kept one, and losing it recreated every
   event beside itself.
-- **A timed event is never written without a timezone.** `EKEvent.timeZone ==
-  nil` is a *floating* event: EventKit keeps wall clock rather than an instant,
-  so the event moves whenever the Mac does. calsync writes `DTSTART:...Z` and
-  names no zone, so every timed event this mirrored was floating until
-  `Reconcile.fields` started supplying one — and flying Eastern → Pacific
-  re-anchored all 64 three hours out, then pushed that to everyone sharing the
-  calendar. Any concrete zone stores the right instant; `config.homeTimeZone`
-  only decides what Calendar.app *says*, and a `TZID` from the feed would win if
-  calsync emitted one. All-day events stay floating, which is correct — pinning
-  one to a zone puts a tournament on the wrong date for a travelling parent.
+- **A timed event is never written without a timezone**, because the start an
+  `EKEvent` with `timeZone == nil` reports back is not stable across a change of
+  device zone. calsync writes `DTSTART:...Z` and names no zone, so every timed
+  event reached EventKit that way until `Reconcile.fields` started supplying
+  one. Flying Eastern → Pacific on 2026-09-07 then made 64 of 67 events compare
+  unequal and be rewritten — to the values they already held, since
+  `getlastmodified` shows Radicale had not been written to for two days.
+
+  **This is churn, not corruption, and the distinction is the point.** The
+  stored instants were right throughout: the same event read 13:00 on a Mac in
+  Pacific and 16:00 on one in Eastern, one instant in two zones, which is
+  exactly what a floating event cannot do. The first account of this said the
+  wrong times had been pushed to everyone on the shared calendars; that was
+  inferred from the 64 updates and is not what happened. The real defect is that
+  **every timezone change rewrote the entire calendar**, and a mass rewrite of a
+  calendar the grandparents subscribe to is not free.
+
+  Any concrete zone settles it; `config.homeTimeZone` only decides what
+  Calendar.app *says*, and a `TZID` from the feed would win if calsync emitted
+  one. All-day events stay floating, which is correct — pinning one to a zone
+  puts a tournament on the wrong date for a travelling parent.
   `Reconcile.matches` compares the zone by **resolved `TimeZone`, never by
   string**: Foundation normalises `UTC` to `GMT`, and a string comparison would
   find a difference no write can remove and rewrite every event on every run.
