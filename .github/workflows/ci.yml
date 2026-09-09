@@ -40,6 +40,31 @@ jobs:
       - run: pip install -e '.[dev]'
       - run: pytest -q
 
+      # The Mac mirror reads Radicale directly, so `to_vevent`'s output is its
+      # input format — and `games.ics` is a *committed* copy of that output.
+      # Nothing else notices when the two part company: the fixture goes stale,
+      # and the Swift tests go on passing against it, certifying a format the
+      # server no longer emits. That is not hypothetical. The fixture spent
+      # months asserting `DTSTART;TZID=...` against a serializer that has only
+      # ever written `DTSTART:...Z`, which is why every mirrored event was
+      # created with no timezone and moved when the laptop did.
+      #
+      # This runs here rather than in a Swift job because the drift is on the
+      # *Python* side. `swift test` on a macOS runner would go green on a stale
+      # fixture, which is the whole failure.
+      - name: The Mac mirror's fixture still matches this serializer
+        run: |
+          python mac/Tests/CalsyncMirrorCoreTests/Fixtures/generate.py
+          if ! git diff --exit-code -- mac/Tests/CalsyncMirrorCoreTests/Fixtures/games.ics; then
+            echo "::error::calsync's serialization moved; mac/.../games.ics is stale."
+            echo "The diff above is what the mirror would now be reading and is not"
+            echo "tested for. Regenerate it, then read the Swift tests it breaks —"
+            echo "they encode what the parser believes, and one of the two is wrong:"
+            echo "  .venv/bin/python mac/Tests/CalsyncMirrorCoreTests/Fixtures/generate.py"
+            echo "  (cd mac && swift test)"
+            exit 1
+          fi
+
   acceptance:
     name: acceptance (live Radicale)
     runs-on: ubuntu-latest
