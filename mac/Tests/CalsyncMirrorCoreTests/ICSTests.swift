@@ -104,6 +104,60 @@ final class ICSTests: XCTestCase {
         XCTAssertFalse(text.contains("DTSTART;TZID="), "calsync does not emit TZID")
     }
 
+    /// A 17:45 practice is still 17:45 after the clocks go back.
+    ///
+    /// There is no recurrence anywhere in this system — calsync emits no
+    /// `RRULE` and this parser reads none — so every practice is a standalone
+    /// VEVENT carrying its own absolute instant, and the feed does the
+    /// wall-clock-to-UTC conversion per event with the offset in force on that
+    /// date. The UTC value therefore *steps* by an hour across the boundary in
+    /// order to hold local time still. These two are the real values a live
+    /// Radicale served on 2026-09-08, either side of 1 November.
+    ///
+    /// Worth keeping because the fix that made this test's neighbours pass —
+    /// giving a timed event a zone — must not be mistaken for storing wall
+    /// clock. `startDate` stays the instant; the zone is metadata. If anyone
+    /// ever adds `RRULE` support that stops being true and occurrences get
+    /// expanded in the zone, which is when this file needs re-reading.
+    func testLocalTimeSurvivesTheDSTChange() throws {
+        let doc = """
+        BEGIN:VCALENDAR\r
+        VERSION:2.0\r
+        BEGIN:VEVENT\r
+        UID:before-dst\r
+        SUMMARY:James ⚽️ Practice\r
+        DTSTART:20261029T214500Z\r
+        DTEND:20261029T230000Z\r
+        END:VEVENT\r
+        BEGIN:VEVENT\r
+        UID:after-dst\r
+        SUMMARY:James ⚽️ Practice\r
+        DTSTART:20261102T224500Z\r
+        DTEND:20261102T235959Z\r
+        END:VEVENT\r
+        END:VCALENDAR\r
+        """
+        let events = try ICS.parseCalendar(doc)
+        XCTAssertEqual(events.count, 2)
+
+        var newYork = Calendar(identifier: .gregorian)
+        newYork.timeZone = TimeZone(identifier: "America/New_York")!
+
+        for event in events {
+            // Through `fields`, not straight off the parse: the zone this now
+            // supplies must not shift the instant it is attached to.
+            let start = Reconcile.fields(for: event).start
+            let parts = newYork.dateComponents([.hour, .minute], from: start)
+            XCTAssertEqual(parts.hour, 17, "\(event.uid) is not at 17:45 New York time")
+            XCTAssertEqual(parts.minute, 45, event.uid)
+        }
+
+        // The hour of daylight saving, visible: same local time, instants an
+        // hour apart in the week-and-a-bit between them.
+        let gap = events[1].start.timeIntervalSince(events[0].start)
+        XCTAssertEqual(gap, 4 * 86400 + 3600, accuracy: 1)
+    }
+
     func testDurationForms() {
         XCTAssertEqual(ICS.parseDuration("-PT90M"), -5400)
         XCTAssertEqual(ICS.parseDuration("-PT1H30M"), -5400)
