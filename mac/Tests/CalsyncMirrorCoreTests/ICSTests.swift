@@ -1,9 +1,17 @@
 import XCTest
 @testable import CalsyncMirrorCore
 
-/// The fixture is produced by calsync's own `targets/ics_file.py:to_ics`, not
-/// hand-written here. A hand-written one tests the parser against the author's
-/// belief about the format, which is the belief most likely to be wrong.
+/// The fixture is produced by calsync's own pipeline — `Event` through
+/// `render()` through `targets/ics_file.py:to_ics` — not hand-written here. A
+/// hand-written one tests the parser against the author's belief about the
+/// format, which is the belief most likely to be wrong.
+///
+/// That claim used to be half true and cost a season of correct times. The
+/// serializer was real, but `generate.py` fed it a `RenderedEvent` it built
+/// itself with a zoned `starts_at`, which no adapter produces — so the fixture
+/// carried `DTSTART;TZID=...` and these tests certified a format Radicale has
+/// never served. The seam is the *input*, which is why the generator now starts
+/// from an `Event`.
 final class ICSTests: XCTestCase {
 
     func fixture() throws -> String {
@@ -32,7 +40,10 @@ final class ICSTests: XCTestCase {
         XCTAssertEqual(event.start, zoned(2026, 9, 12, 14, 0))
         XCTAssertEqual(event.end, zoned(2026, 9, 12, 15, 30))
         XCTAssertFalse(event.isAllDay)
-        XCTAssertEqual(event.timeZoneID, "America/New_York")
+        // calsync writes UTC and names no zone. Asserted rather than merely
+        // tolerated, because this is the fact `Reconcile.fields` has to defend
+        // against: carried through to EventKit as-is it means a floating event.
+        XCTAssertNil(event.timeZoneID)
         XCTAssertFalse(event.cancelled)
         XCTAssertEqual(event.sourceID, "p360-otters")
         XCTAssertEqual(event.activityID, "otters")
@@ -82,6 +93,69 @@ final class ICSTests: XCTestCase {
             event.start, calendar.date(from: DateComponents(year: 2026, month: 10, day: 3)))
         XCTAssertEqual(
             event.end, calendar.date(from: DateComponents(year: 2026, month: 10, day: 4)))
+    }
+
+    /// The shape the whole timezone defect turned on. If calsync ever starts
+    /// naming a zone this fails, which is the notification we want — the
+    /// mirror's behaviour differs between the two forms.
+    func testTimedEventsAreWrittenInUTCWithNoTZID() throws {
+        let text = try fixture()
+        XCTAssertTrue(text.contains("DTSTART:20260912T180000Z"), "expected a UTC DTSTART")
+        XCTAssertFalse(text.contains("DTSTART;TZID="), "calsync does not emit TZID")
+    }
+
+    /// A 17:45 practice is still 17:45 after the clocks go back.
+    ///
+    /// There is no recurrence anywhere in this system — calsync emits no
+    /// `RRULE` and this parser reads none — so every practice is a standalone
+    /// VEVENT carrying its own absolute instant, and the feed does the
+    /// wall-clock-to-UTC conversion per event with the offset in force on that
+    /// date. The UTC value therefore *steps* by an hour across the boundary in
+    /// order to hold local time still. These two are the real values a live
+    /// Radicale served on 2026-09-08, either side of 1 November.
+    ///
+    /// Worth keeping because the fix that made this test's neighbours pass —
+    /// giving a timed event a zone — must not be mistaken for storing wall
+    /// clock. `startDate` stays the instant; the zone is metadata. If anyone
+    /// ever adds `RRULE` support that stops being true and occurrences get
+    /// expanded in the zone, which is when this file needs re-reading.
+    func testLocalTimeSurvivesTheDSTChange() throws {
+        let doc = """
+        BEGIN:VCALENDAR\r
+        VERSION:2.0\r
+        BEGIN:VEVENT\r
+        UID:before-dst\r
+        SUMMARY:James ⚽️ Practice\r
+        DTSTART:20261029T214500Z\r
+        DTEND:20261029T230000Z\r
+        END:VEVENT\r
+        BEGIN:VEVENT\r
+        UID:after-dst\r
+        SUMMARY:James ⚽️ Practice\r
+        DTSTART:20261102T224500Z\r
+        DTEND:20261102T235959Z\r
+        END:VEVENT\r
+        END:VCALENDAR\r
+        """
+        let events = try ICS.parseCalendar(doc)
+        XCTAssertEqual(events.count, 2)
+
+        var newYork = Calendar(identifier: .gregorian)
+        newYork.timeZone = TimeZone(identifier: "America/New_York")!
+
+        for event in events {
+            // Through `fields`, not straight off the parse: the zone this now
+            // supplies must not shift the instant it is attached to.
+            let start = Reconcile.fields(for: event).start
+            let parts = newYork.dateComponents([.hour, .minute], from: start)
+            XCTAssertEqual(parts.hour, 17, "\(event.uid) is not at 17:45 New York time")
+            XCTAssertEqual(parts.minute, 45, event.uid)
+        }
+
+        // The hour of daylight saving, visible: same local time, instants an
+        // hour apart in the week-and-a-bit between them.
+        let gap = events[1].start.timeIntervalSince(events[0].start)
+        XCTAssertEqual(gap, 4 * 86400 + 3600, accuracy: 1)
     }
 
     func testDurationForms() {

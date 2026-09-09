@@ -13,10 +13,15 @@ public struct ExistingEvent: Equatable {
     public var isAllDay: Bool
     public var location: String?
     public var notes: String?
+    /// The zone EventKit holds this event in. `nil` means a **floating**
+    /// event, which is the one value that must never be written for a timed
+    /// event — see `Reconcile.fields`.
+    public var timeZoneID: String?
 
     public init(
         identifier: String, title: String, start: Date, end: Date,
-        isAllDay: Bool = false, location: String? = nil, notes: String? = nil
+        isAllDay: Bool = false, location: String? = nil, notes: String? = nil,
+        timeZoneID: String? = nil
     ) {
         self.identifier = identifier
         self.title = title
@@ -25,6 +30,7 @@ public struct ExistingEvent: Equatable {
         self.isAllDay = isAllDay
         self.location = location
         self.notes = notes
+        self.timeZoneID = timeZoneID
     }
 
     /// Whose event this is. `nil` means a person made it, and this tool may
@@ -110,15 +116,37 @@ public enum Reconcile {
     /// value by less. Comparing exactly would rewrite every event on every run.
     static let dateTolerance: TimeInterval = 1.0
 
+    /// The zone a timed event falls back to when the VEVENT names none.
+    ///
+    /// It has to be *some* real zone, and which one barely matters — see
+    /// `fields` for why anything is better than nothing.
+    public static let fallbackZoneID = "UTC"
+
     /// Translate a parsed VEVENT into the fields EventKit should hold.
     ///
-    /// The one conversion that matters is the all-day end. RFC 5545 DTEND on a
-    /// DATE is **exclusive** — a single-day event ends on the following day —
-    /// while EventKit's `endDate` for an all-day event is the last day
-    /// *inclusive*. Copying the value across unchanged turns every tournament
-    /// day into a two-day event.
+    /// Two conversions matter.
+    ///
+    /// The all-day end: RFC 5545 DTEND on a DATE is **exclusive** — a
+    /// single-day event ends on the following day — while EventKit's `endDate`
+    /// for an all-day event is the last day *inclusive*. Copying the value
+    /// across unchanged turns every tournament day into a two-day event.
+    ///
+    /// The other is that **a timed event must never be left without a zone.**
+    /// `EKEvent.timeZone == nil` is a *floating* event: EventKit stores wall
+    /// clock rather than an instant, so the event silently moves whenever the
+    /// Mac does. calsync writes `DTSTART:…Z`, which names no zone, so every
+    /// timed event this tool mirrored was floating — and flying from Eastern
+    /// to Pacific on 2026-09-07 re-anchored all 64 of them three hours out and
+    /// pushed that to everyone sharing the calendar. Any concrete zone fixes
+    /// it, because the instant is then stored as an instant; a real zone from
+    /// `TZID` is nicer to read in Calendar.app, and UTC is the floor.
+    ///
+    /// All-day events stay `nil` on purpose: they are floating *by
+    /// definition*, and pinning one to a zone is how a tournament day shows up
+    /// on the wrong date for a travelling parent.
     public static func fields(
-        for event: ParsedEvent, calendar: Calendar = .current
+        for event: ParsedEvent, calendar: Calendar = .current,
+        fallbackZoneID: String = Reconcile.fallbackZoneID
     ) -> DesiredFields {
         var end = event.end
         if event.isAllDay {
@@ -137,7 +165,7 @@ public enum Reconcile {
             // "90 minutes before" local midnight fires at 22:30 the evening
             // before for a time nobody knows yet. Belt and braces.
             alarmOffsetSeconds: event.isAllDay ? nil : event.alarmOffsetSeconds,
-            timeZoneID: event.timeZoneID
+            timeZoneID: event.isAllDay ? nil : (event.timeZoneID ?? fallbackZoneID)
         )
     }
 
@@ -149,12 +177,25 @@ public enum Reconcile {
             (a ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
                 == (b ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         }
+        // Resolved zones, never the strings. Foundation normalises aliases —
+        // `TimeZone(identifier: "UTC")` has the identifier `"GMT"` — so a
+        // string comparison would find a difference that no write can ever
+        // remove, and rewrite every event on every run. That is a worse
+        // failure than the floating one this comparison exists to catch.
+        func sameZone(_ a: String?, _ b: String?) -> Bool {
+            switch (a, b) {
+            case (nil, nil): return true
+            case (let x?, let y?): return TimeZone(identifier: x) == TimeZone(identifier: y)
+            default: return false
+            }
+        }
         return existing.title == desired.title
             && sameDate(existing.start, desired.start)
             && sameDate(existing.end, desired.end)
             && existing.isAllDay == desired.isAllDay
             && sameText(existing.location, desired.location)
             && sameText(existing.notes, desired.notes)
+            && sameZone(existing.timeZoneID, desired.timeZoneID)
     }
 
     /// Decide what to do, without doing any of it.
@@ -169,7 +210,8 @@ public enum Reconcile {
         existing: [ExistingEvent],
         now: Date,
         guardPolicy: DisappearanceGuard = DisappearanceGuard(),
-        calendar: Calendar = .current
+        calendar: Calendar = .current,
+        fallbackZoneID: String = Reconcile.fallbackZoneID
     ) -> MirrorPlan {
         var plan = MirrorPlan()
 
@@ -192,7 +234,8 @@ public enum Reconcile {
 
         var seen = Set<String>()
         for event in live {
-            let fields = fields(for: event, calendar: calendar)
+            let fields = fields(
+                for: event, calendar: calendar, fallbackZoneID: fallbackZoneID)
             seen.insert(event.uid)
             if let match = managed[event.uid] {
                 if matches(match, fields) {

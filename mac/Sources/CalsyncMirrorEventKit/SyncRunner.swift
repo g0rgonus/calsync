@@ -102,7 +102,8 @@ public final class SyncRunner {
                 }
                 let plan = Reconcile.plan(
                     desired: windowed, existing: existing, now: now,
-                    guardPolicy: config.policy, calendar: calendar)
+                    guardPolicy: config.policy, calendar: calendar,
+                    fallbackZoneID: config.fallbackZoneID)
 
                 summary.lines.append(
                     "  read \(windowed.count) from Radicale, "

@@ -13,7 +13,7 @@
 /// `CalsyncMirror`, and a Core type sharing that name is shadowed inside it —
 /// silently resolving to the wrong thing rather than failing loudly.
 public enum Build {
-    public static let version = "0.2.0"
+    public static let version = "0.3.0"
 
     public static let name = "calsync-mirror"
 }

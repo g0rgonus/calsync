@@ -24,6 +24,7 @@ final class SettingsWindow: NSObject, NSWindowDelegate {
 
     private var window: NSWindow?
     private var text: [ConfigField: NSTextField] = [:]
+    private var zone: NSPopUpButton!
     private var rows: [PairRow] = []
     private var rowStack: NSStackView!
     private var accessNotice: NSTextField!
@@ -149,6 +150,11 @@ final class SettingsWindow: NSObject, NSWindowDelegate {
                                hint: "events vanishing in one run")),
             ("Mirror from", field(.windowBackDays, width: 70, hint: "days back")),
             ("…to", field(.windowForwardDays, width: 70, hint: "days ahead")),
+            ("Times with no zone", zonePicker(
+                hint: "calsync writes UTC, so this is the zone Calendar shows. "
+                    + "It never changes when an event happens — it stops events "
+                    + "floating, which is what makes them drift when this Mac "
+                    + "travels.")),
         ]), note: "Absence is the only cancellation signal here — a partial read looks "
             + "exactly like a called-off season. These may be tightened freely and "
             + "cannot be widened past "
@@ -210,6 +216,32 @@ final class SettingsWindow: NSObject, NSWindowDelegate {
             grid.addRow(with: [NSTextField(labelWithString: label), control])
         }
         return grid
+    }
+
+    /// Zones are picked, never typed — calsync's `zones.py` rule, for its
+    /// reason: free text is how a deployment stores `EDT`, which does not load.
+    /// City zones only, because a fixed-offset name loads and is still an hour
+    /// out for half the year. A zone already on disk is kept even if it is not
+    /// in the list, so opening this window never quietly rewrites the file.
+    private func zonePicker(hint: String) -> NSView {
+        let popup = NSPopUpButton()
+        popup.translatesAutoresizingMaskIntoConstraints = false
+        popup.widthAnchor.constraint(equalToConstant: 240).isActive = true
+        let cities = TimeZone.knownTimeZoneIdentifiers
+            .filter { $0.contains("/") && !$0.hasPrefix("Etc/") }
+            .sorted()
+        popup.addItems(withTitles: [Reconcile.fallbackZoneID] + cities)
+        zone = popup
+
+        let row = NSStackView(views: [popup])
+        row.orientation = .horizontal
+        row.alignment = .firstBaseline
+        row.spacing = 8
+        let label = wrapping(hint, width: 260)
+        label.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        label.textColor = .secondaryLabelColor
+        row.addArrangedSubview(label)
+        return row
     }
 
     private func field(
@@ -428,6 +460,15 @@ final class SettingsWindow: NSObject, NSWindowDelegate {
         text[.maxDisappearanceCount]?.stringValue = draft.maxDisappearanceCount
         text[.windowBackDays]?.stringValue = draft.windowBackDays
         text[.windowForwardDays]?.stringValue = draft.windowForwardDays
+        // A stored name the list does not offer is added rather than dropped:
+        // the file is the authority, and a picker that silently reset it would
+        // change the config just by being opened.
+        let stored = draft.homeTimeZone.isEmpty
+            ? Reconcile.fallbackZoneID : draft.homeTimeZone
+        if zone.itemTitles.firstIndex(of: stored) == nil {
+            zone.addItem(withTitle: stored)
+        }
+        zone.selectItem(withTitle: stored)
         for pair in draft.pairs { addRow(pair) }
     }
 
@@ -445,6 +486,8 @@ final class SettingsWindow: NSObject, NSWindowDelegate {
         draft.maxDisappearanceCount = text[.maxDisappearanceCount]?.stringValue ?? ""
         draft.windowBackDays = text[.windowBackDays]?.stringValue ?? ""
         draft.windowForwardDays = text[.windowForwardDays]?.stringValue ?? ""
+        let picked = zone.titleOfSelectedItem ?? Reconcile.fallbackZoneID
+        draft.homeTimeZone = picked == Reconcile.fallbackZoneID ? "" : picked
         draft.pairs = rows.map(\.pair)
         return draft
     }

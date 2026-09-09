@@ -271,4 +271,65 @@ final class ConfigDraftTests: XCTestCase {
         // apply: the caller never gets a value to write.
         XCTAssertThrowsError(try draft { $0.maxDisappearancePct = "1.0" }.resolve())
     }
+
+    // MARK: - Home timezone
+
+    /// The `EDT` trap, which is why `zones.py` refuses free text: it does not
+    /// load, and accepting it would file every event under GMT with nothing
+    /// saying so.
+    func testAnAbbreviationIsRefusedNotSilentlyIgnored() {
+        var draft = ConfigDraft(Config.sample)
+        draft.homeTimeZone = "EDT"
+        XCTAssertThrowsError(try draft.resolve()) { error in
+            let refused = error as? ConfigRefused
+            XCTAssertEqual(refused?.problems.map(\.field), [.homeTimeZone])
+            XCTAssertTrue(refused?.description.contains("America/New_York") ?? false)
+        }
+    }
+
+    func testACityZoneIsKept() throws {
+        var draft = ConfigDraft(Config.sample)
+        draft.homeTimeZone = "America/New_York"
+        XCTAssertEqual(try draft.resolve().homeTimeZone, "America/New_York")
+    }
+
+    /// Blank is an opinion nobody has, not a refusal — the same tolerance every
+    /// other field extends.
+    func testBlankFallsBackWithoutComplaining() throws {
+        var draft = ConfigDraft(Config.sample)
+        draft.homeTimeZone = "   "
+        let resolved = try draft.resolve()
+        XCTAssertNil(resolved.homeTimeZone)
+        XCTAssertEqual(resolved.fallbackZoneID, Reconcile.fallbackZoneID)
+    }
+
+    /// Read on the sync path, so a name that stopped resolving degrades rather
+    /// than stopping the mirror. The refusal happens on the way in instead.
+    func testAnUnloadableStoredZoneDoesNotBreakSyncing() {
+        var config = Config.sample
+        config.homeTimeZone = "Mars/Olympus_Mons"
+        XCTAssertEqual(config.fallbackZoneID, Reconcile.fallbackZoneID)
+    }
+
+    func testTheConfiguredZoneReachesTheWrittenEvent() {
+        var config = Config.sample
+        config.homeTimeZone = "America/New_York"
+        let event = ParsedEvent(
+            uid: "a", summary: "Game", start: Date(), end: Date().addingTimeInterval(5400))
+        XCTAssertNil(event.timeZoneID)
+        let fields = Reconcile.fields(for: event, fallbackZoneID: config.fallbackZoneID)
+        XCTAssertEqual(fields.timeZoneID, "America/New_York")
+    }
+
+    /// A config written before this field existed still loads. A tool that
+    /// refuses to start because it gained a setting stops syncing on upgrade.
+    func testAnOlderConfigStillLoads() throws {
+        let json = """
+        {"radicaleURL": "http://x:5232/calsync",
+         "pairs": [{"collection": "games", "calendar": "Kid Activities"}]}
+        """
+        let config = try JSONDecoder().decode(Config.self, from: Data(json.utf8))
+        XCTAssertNil(config.homeTimeZone)
+        XCTAssertEqual(config.fallbackZoneID, Reconcile.fallbackZoneID)
+    }
 }
