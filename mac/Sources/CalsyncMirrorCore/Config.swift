@@ -40,6 +40,18 @@ public struct Config: Codable, Equatable {
     /// menu simply has no review badge, and the mirror is unaffected.
     public var apiURL: String?
     public var apiToken: String?
+    /// The zone a timed event is filed under when the VEVENT names none —
+    /// which, today, is every one of them: calsync writes `DTSTART:…Z`.
+    ///
+    /// It is **not** what decides the time. Any concrete zone stores the same
+    /// instant, and the whole job here is to be concrete: a nil zone is a
+    /// floating EventKit event, which re-anchors to wherever the Mac is. What
+    /// this changes is what Calendar.app *says* the event's zone is, which is
+    /// the household's home zone, not GMT.
+    ///
+    /// Unset means `Reconcile.fallbackZoneID`. Once calsync emits `TZID` the
+    /// venue's own zone wins and this is never reached.
+    public var homeTimeZone: String?
 
     public init(
         radicaleURL: String,
@@ -54,7 +66,8 @@ public struct Config: Codable, Equatable {
         offlineWarnAfterHours: Double = 48,
         syncIntervalMinutes: Int = 15,
         apiURL: String? = nil,
-        apiToken: String? = nil
+        apiToken: String? = nil,
+        homeTimeZone: String? = nil
     ) {
         self.radicaleURL = radicaleURL
         self.username = username
@@ -69,6 +82,7 @@ public struct Config: Codable, Equatable {
         self.syncIntervalMinutes = syncIntervalMinutes
         self.apiURL = apiURL
         self.apiToken = apiToken
+        self.homeTimeZone = homeTimeZone
     }
 
     /// Everything but the URL and the pairs is optional on the way in, so a
@@ -94,6 +108,20 @@ public struct Config: Codable, Equatable {
             try c.decodeIfPresent(Int.self, forKey: .syncIntervalMinutes) ?? 15
         apiURL = try c.decodeIfPresent(String.self, forKey: .apiURL)
         apiToken = try c.decodeIfPresent(String.self, forKey: .apiToken)
+        homeTimeZone = try c.decodeIfPresent(String.self, forKey: .homeTimeZone)
+    }
+
+    /// The zone identifier a timed event with no `TZID` is written in.
+    ///
+    /// Falls back rather than throwing, because this is read on the sync path
+    /// and a name that stopped resolving is not a reason to stop mirroring.
+    /// `ConfigDraft` refuses an unloadable name on the way *in*, which is where
+    /// somebody can still fix it — the same split calsync's `zones.py` makes.
+    public var fallbackZoneID: String {
+        guard let homeTimeZone, TimeZone(identifier: homeTimeZone) != nil else {
+            return Reconcile.fallbackZoneID
+        }
+        return homeTimeZone
     }
 
     /// Where the console lives, derived from the API URL.

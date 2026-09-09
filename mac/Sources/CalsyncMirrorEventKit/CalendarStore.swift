@@ -116,7 +116,12 @@ public final class CalendarStore {
                 end: end,
                 isAllDay: event.isAllDay,
                 location: event.location,
-                notes: event.notes)
+                notes: event.notes,
+                // `nil` here means EventKit holds this as a floating event.
+                // The planner compares it, so an event left floating by an
+                // older build is repaired on the next run rather than waiting
+                // for a timezone change to expose it.
+                timeZoneID: event.timeZone?.identifier)
         }
     }
 
@@ -131,10 +136,14 @@ public final class CalendarStore {
         event.notes = fields.notes
         event.url = fields.url
         // An all-day event is floating by definition; pinning it to a zone is
-        // how a tournament day shows up on the wrong date for a travelling parent.
+        // how a tournament day shows up on the wrong date for a travelling
+        // parent. A *timed* event must never be floating — see
+        // `Reconcile.fields` — so an unresolvable identifier falls back to a
+        // real zone rather than to nil.
         event.timeZone = fields.isAllDay
             ? nil
-            : fields.timeZoneID.flatMap(TimeZone.init(identifier:))
+            : (fields.timeZoneID.flatMap(TimeZone.init(identifier:))
+                ?? TimeZone(identifier: Reconcile.fallbackZoneID))
 
         for alarm in event.alarms ?? [] { event.removeAlarm(alarm) }
         if let offset = fields.alarmOffsetSeconds {

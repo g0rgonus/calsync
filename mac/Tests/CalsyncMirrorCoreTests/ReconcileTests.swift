@@ -79,12 +79,16 @@ final class ReconcileTests: XCTestCase {
             start: start, end: start.addingTimeInterval(5400))
     }
 
+    /// What EventKit holds after this tool has written the event — every
+    /// field, the zone included, or a test asserting "unchanged" is asserting
+    /// less than it looks.
     func mirrored(_ event: ParsedEvent, identifier: String) -> ExistingEvent {
         let fields = Reconcile.fields(for: event)
         return ExistingEvent(
             identifier: identifier, title: fields.title, start: fields.start,
             end: fields.end, isAllDay: fields.isAllDay,
-            location: fields.location, notes: fields.notes)
+            location: fields.location, notes: fields.notes,
+            timeZoneID: fields.timeZoneID)
     }
 
     func testCreatesWhatIsNotThere() {
@@ -111,6 +115,67 @@ final class ReconcileTests: XCTestCase {
             desired: [after], existing: [mirrored(before, identifier: "ek-1")], now: now)
         XCTAssertEqual(plan.updates.map(\.uid), ["a"])
         XCTAssertEqual(plan.updates.first?.existing.identifier, "ek-1")
+    }
+
+
+    // MARK: - Timezones
+
+    /// `EKEvent.timeZone == nil` is a **floating** event: EventKit keeps wall
+    /// clock instead of an instant, so the event moves whenever the Mac does.
+    /// calsync writes `DTSTART:…Z` and names no zone, so before this was fixed
+    /// every timed event the mirror wrote was floating — and a trip from
+    /// Eastern to Pacific re-anchored all 64 of them three hours out, then
+    /// pushed that to everyone sharing the calendar.
+    func testTimedEventNeverGetsANilZone() {
+        let event = desired("a", at: future(3))
+        XCTAssertNil(event.timeZoneID, "the fixture format names no zone")
+        XCTAssertNotNil(Reconcile.fields(for: event).timeZoneID)
+    }
+
+    /// A zone the VEVENT *does* name is preferred — it is the venue's, and it
+    /// is what Calendar.app shows next to the time.
+    func testANamedZoneIsKept() {
+        var event = desired("a", at: future(3))
+        event.timeZoneID = "America/New_York"
+        XCTAssertEqual(Reconcile.fields(for: event).timeZoneID, "America/New_York")
+    }
+
+    /// All-day events are floating by definition. Pinning one to a zone is how
+    /// a tournament day shows up on the wrong date for a travelling parent.
+    func testAllDayEventStaysFloating() {
+        var event = desired("a", at: future(3))
+        event.isAllDay = true
+        XCTAssertNil(Reconcile.fields(for: event).timeZoneID)
+    }
+
+    /// The repair path. An event an older build left floating has to be
+    /// noticed *without* waiting for a timezone change to move its start —
+    /// otherwise shipping the fix at home in Eastern would leave every event
+    /// broken until the next trip, which is precisely when it hurts.
+    func testAFloatingEventIsRewrittenEvenWhenItsInstantMatches() {
+        let event = desired("a", at: future(3))
+        var stale = mirrored(event, identifier: "ek-1")
+        stale.timeZoneID = nil
+
+        let plan = Reconcile.plan(desired: [event], existing: [stale], now: now)
+
+        XCTAssertEqual(plan.updates.map(\.uid), ["a"])
+        XCTAssertEqual(plan.unchanged, 0)
+    }
+
+    /// Foundation normalises zone aliases — `TimeZone(identifier: "UTC")` has
+    /// the identifier `"GMT"` — so comparing the strings would find a
+    /// difference no write can remove and rewrite every event on every run.
+    /// That is a worse failure than the one being fixed.
+    func testEquivalentZoneNamesAreNotAChange() {
+        let event = desired("a", at: future(3))
+        var stale = mirrored(event, identifier: "ek-1")
+        stale.timeZoneID = "GMT"
+
+        let plan = Reconcile.plan(desired: [event], existing: [stale], now: now)
+
+        XCTAssertTrue(plan.updates.isEmpty, "GMT and UTC are the same zone")
+        XCTAssertEqual(plan.unchanged, 1)
     }
 
     func testDeletesItsOwnVanishedEvent() {

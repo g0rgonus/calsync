@@ -42,6 +42,7 @@ public enum ConfigField: String, Equatable {
     case maxDisappearanceCount
     case windowBackDays
     case windowForwardDays
+    case homeTimeZone
     case pairs
 }
 
@@ -90,6 +91,7 @@ public struct ConfigDraft: Equatable {
     public var maxDisappearanceCount: String = ""
     public var windowBackDays: String = ""
     public var windowForwardDays: String = ""
+    public var homeTimeZone: String = ""
     public var pairs: [Pair] = []
 
     public init() {}
@@ -108,6 +110,7 @@ public struct ConfigDraft: Equatable {
         maxDisappearanceCount = String(config.maxDisappearanceCount)
         windowBackDays = String(config.windowBackDays)
         windowForwardDays = String(config.windowForwardDays)
+        homeTimeZone = config.homeTimeZone ?? ""
         pairs = config.pairs
     }
 
@@ -223,6 +226,24 @@ public struct ConfigDraft: Equatable {
                 message: "There is a token here but no API address to send it to."))
         }
 
+        // A zone is picked from a list, never typed — the rule and the reason
+        // are calsync's `zones.py`. Free text is how a deployment stores `EDT`,
+        // which `TimeZone(identifier:)` cannot load; accepting it here would
+        // silently file every event under GMT instead, which is the shape of
+        // bug this whole change exists to close. Refused on the way in, where
+        // somebody can still fix it.
+        let typedZone = homeTimeZone.trimmingCharacters(in: .whitespaces)
+        var zone: String? = typedZone.isEmpty ? nil : typedZone
+        if let named = zone, TimeZone(identifier: named) == nil {
+            problems.append(ConfigProblem(
+                field: .homeTimeZone,
+                message: "\(named.debugDescription) is not a timezone this Mac knows. "
+                    + "Use a city name like \"America/New_York\" — an abbreviation "
+                    + "such as \"EDT\" does not load, and a fixed offset is an hour "
+                    + "out for half the year."))
+            zone = nil
+        }
+
         // Percent first, and `20` means twenty percent — the same allowance the
         // console makes, because a box labelled with a % is one somebody types
         // 20 into.
@@ -259,7 +280,8 @@ public struct ConfigDraft: Equatable {
                 ConfigLimits.syncIntervalMinutes,
                 "The sync interval", defaults.syncIntervalMinutes),
             apiURL: api,
-            apiToken: api == nil ? nil : token)
+            apiToken: api == nil ? nil : token,
+            homeTimeZone: zone)
 
         problems.append(contentsOf: Self.pairProblems(resolved.pairs))
         guard problems.isEmpty else { throw ConfigRefused(problems) }

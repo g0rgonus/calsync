@@ -3,8 +3,8 @@ VERSION:2.0
 PRODID:-//calsync//EN
 BEGIN:VEVENT
 SUMMARY:Jesse ⚽️ vs Harbour FC
-DTSTART;TZID=America/New_York:20260912T140000
-DTEND;TZID=America/New_York:20260912T153000
+DTSTART:20260912T180000Z
+DTEND:20260912T193000Z
 DTSTAMP:20260912T180000Z
 UID:360Player-event-4716716
 SEQUENCE:0
@@ -30,8 +30,8 @@ DTEND;VALUE=DATE:20261004
 DTSTAMP:20261003T040000Z
 UID:360Player-event-4716999
 SEQUENCE:0
-DESCRIPTION:Soccer · Otters\nAll day — no time published yet\nSource: p
- 360-otters
+DESCRIPTION:Soccer · Otters (Marbury Otters U11)\nAll day — no time pub
+ lished yet\n7160 Kestrel Ln\, Fenwick\, NX 40219\nSource: p360-otters
 LOCATION:Alder Reach Memorial Park\, 7160 Kestrel Ln\, Fenwick\, NX 40219
 STATUS:CONFIRMED
 X-CALSYNC-ACTIVITY:otters

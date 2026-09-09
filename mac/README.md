@@ -159,6 +159,7 @@ hold a calendar password):
   "windowBackDays": 30,
   "windowForwardDays": 365,
   "syncIntervalMinutes": 15,
+  "homeTimeZone": "America/New_York",
   "apiURL": "http://homebox/v1",
   "apiToken": "…"
 }
@@ -171,6 +172,16 @@ because it gained a setting stops syncing on upgrade.
 `radicaleURL` is the **principal**, not the server root — CalDAV collections live
 under a user and Radicale answers 403 at the root. If the deployment runs
 `CALSYNC_RADICALE_ANONYMOUS_READ=1`, no username or password is needed at all.
+
+`homeTimeZone` is the zone a timed event is filed under. calsync writes
+`DTSTART:...Z` and names no zone at all, and an `EKEvent` with **no** zone is a
+*floating* event — EventKit keeps wall clock rather than an instant, so it moves
+whenever this Mac does. This does not decide when an event happens; any concrete
+zone stores the same instant. It decides what Calendar.app shows as the event's
+zone, and picking the household's own beats the `GMT` it falls back to. City
+names only: `EDT` does not load, and a fixed offset is an hour out for half the
+year. All-day events stay floating on purpose, which is why a tournament day
+does not slide onto the wrong date when you travel.
 
 Only `games` and `practices` belong in `pairs`. `onboarding` and `enrichment`
 are holding pens: putting an event calsync could not classify in front of the
