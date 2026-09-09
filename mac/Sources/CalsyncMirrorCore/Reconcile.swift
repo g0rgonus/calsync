@@ -183,7 +183,38 @@ public enum Reconcile {
         )
     }
 
-    static func matches(_ existing: ExistingEvent, _ desired: DesiredFields) -> Bool {
+    /// A field of a mirrored event that can disagree with Radicale.
+    ///
+    /// Named so the log can say *why* an event is being rewritten. "64 events
+    /// updated" is a fact nobody can act on; "64 events updated, start +3h" is
+    /// a diagnosis. Working out which of those it was, after the fact, took a
+    /// screenshot and a PROPFIND against the calendar server.
+    public enum EventField: Equatable {
+        case title, start, end, allDay, location, notes, timezone
+
+        public var label: String {
+            switch self {
+            case .title: return "title"
+            case .start: return "start"
+            case .end: return "end"
+            case .allDay: return "all-day"
+            case .location: return "location"
+            case .notes: return "notes"
+            case .timezone: return "timezone"
+            }
+        }
+    }
+
+    /// Everything about this event that no longer agrees with the feed.
+    ///
+    /// **The single definition of "changed".** `matches` is this being empty,
+    /// rather than a second list of comparisons beside it — two of those drift
+    /// the moment one is edited, and the visible symptom would be a log that
+    /// explains an update nobody made or stays silent about one that happened.
+    /// Same reasoning as `repo.source_freshness` on the calsync side.
+    public static func changedFields(
+        _ existing: ExistingEvent, _ desired: DesiredFields
+    ) -> [EventField] {
         func sameDate(_ a: Date, _ b: Date) -> Bool {
             abs(a.timeIntervalSince(b)) < dateTolerance
         }
@@ -203,13 +234,19 @@ public enum Reconcile {
             default: return false
             }
         }
-        return existing.title == desired.title
-            && sameDate(existing.start, desired.start)
-            && sameDate(existing.end, desired.end)
-            && existing.isAllDay == desired.isAllDay
-            && sameText(existing.location, desired.location)
-            && sameText(existing.notes, desired.notes)
-            && sameZone(existing.timeZoneID, desired.timeZoneID)
+        var changed: [EventField] = []
+        if existing.title != desired.title { changed.append(.title) }
+        if !sameDate(existing.start, desired.start) { changed.append(.start) }
+        if !sameDate(existing.end, desired.end) { changed.append(.end) }
+        if existing.isAllDay != desired.isAllDay { changed.append(.allDay) }
+        if !sameText(existing.location, desired.location) { changed.append(.location) }
+        if !sameText(existing.notes, desired.notes) { changed.append(.notes) }
+        if !sameZone(existing.timeZoneID, desired.timeZoneID) { changed.append(.timezone) }
+        return changed
+    }
+
+    static func matches(_ existing: ExistingEvent, _ desired: DesiredFields) -> Bool {
+        changedFields(existing, desired).isEmpty
     }
 
     /// Decide what to do, without doing any of it.

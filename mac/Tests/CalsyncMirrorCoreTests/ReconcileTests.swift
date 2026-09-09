@@ -264,4 +264,97 @@ final class ReconcileTests: XCTestCase {
         XCTAssertEqual(plan.duplicates.first?.existingTitle, "Soccer game")
         XCTAssertTrue(plan.deletes.isEmpty, "never auto-delete the hand-made one")
     }
+
+}
+
+/// The log has to say *why*, and it has to say it from the same comparison the
+/// planner used.
+final class UpdateReasonTests: XCTestCase {
+
+    let now = Date(timeIntervalSince1970: 1_788_000_000)
+
+    func parsed(_ uid: String, at start: Date) -> ParsedEvent {
+        ParsedEvent(
+            uid: uid, calsyncUID: uid, summary: "James ⚽️ Practice",
+            description: "body", location: "Thistledown Park",
+            start: start, end: start.addingTimeInterval(5400))
+    }
+
+    func mirrored(_ event: ParsedEvent) -> ExistingEvent {
+        let f = Reconcile.fields(for: event)
+        return ExistingEvent(
+            identifier: "ek-1", title: f.title, start: f.start, end: f.end,
+            isAllDay: f.isAllDay, location: f.location, notes: f.notes,
+            timeZoneID: f.timeZoneID)
+    }
+
+    func plan(_ existing: ExistingEvent, _ event: ParsedEvent) -> MirrorPlan {
+        Reconcile.plan(desired: [event], existing: [existing], now: now)
+    }
+
+    /// The line that would have ended the investigation in one look: sixty
+    /// events all moving by exactly one offset is a timezone, not a coach.
+    func testATimeMoveCarriesItsShift() {
+        let event = parsed("a", at: now.addingTimeInterval(86400))
+        var stale = mirrored(event)
+        stale.start = stale.start.addingTimeInterval(-3 * 3600)
+        stale.end = stale.end.addingTimeInterval(-3 * 3600)
+
+        let line = PlanReport.describe(plan(stale, event)).first { $0.contains("update") }
+        XCTAssertEqual(line?.contains("[start +3h, end +3h]"), true, line ?? "no line")
+    }
+
+    func testANegativeShiftIsSigned() {
+        let event = parsed("a", at: now.addingTimeInterval(86400))
+        var stale = mirrored(event)
+        stale.start = stale.start.addingTimeInterval(45 * 60)
+
+        let line = PlanReport.describe(plan(stale, event)).first { $0.contains("update") }
+        XCTAssertEqual(line?.contains("start -45m"), true, line ?? "no line")
+    }
+
+    /// The case this was built for: nothing about the event moved, it simply
+    /// had no zone. Without a reason on the line this is indistinguishable
+    /// from the feed rescheduling every fixture.
+    func testAZoneOnlyChangeSaysSo() {
+        let event = parsed("a", at: now.addingTimeInterval(86400))
+        var stale = mirrored(event)
+        stale.timeZoneID = nil
+
+        let line = PlanReport.describe(plan(stale, event)).first { $0.contains("update") }
+        XCTAssertEqual(line?.hasSuffix("[timezone]"), true, line ?? "no line")
+    }
+
+    func testTextChangesAreNamedWithoutValues() {
+        let event = parsed("a", at: now.addingTimeInterval(86400))
+        var stale = mirrored(event)
+        stale.title = "James ⚽️ Old Name"
+        stale.location = "Somewhere else"
+
+        let line = PlanReport.describe(plan(stale, event)).first { $0.contains("update") }
+        XCTAssertEqual(line?.contains("[title, location]"), true, line ?? "no line")
+    }
+
+    /// One definition of "changed", not two. A reason list that could disagree
+    /// with the planner would explain updates nobody made, or stay silent
+    /// about one that happened.
+    func testEveryPlannedUpdateHasAReason() {
+        let event = parsed("a", at: now.addingTimeInterval(86400))
+        var stale = mirrored(event)
+        stale.notes = "Managed by calsync — uid:a"
+
+        let mirrorPlan = plan(stale, event)
+        XCTAssertEqual(mirrorPlan.updates.count, 1)
+        for update in mirrorPlan.updates {
+            XCTAssertFalse(
+                PlanReport.reason(for: update).isEmpty,
+                "the planner decided this changed and the log cannot say why")
+        }
+    }
+
+    func testSubMinuteDifferenceDoesNotRenderAsABareSign() {
+        XCTAssertEqual(PlanReport.shift(from: now, to: now.addingTimeInterval(2)), "+2s")
+        XCTAssertEqual(PlanReport.shift(from: now, to: now.addingTimeInterval(90000)), "+1d1h")
+    }
+
 }

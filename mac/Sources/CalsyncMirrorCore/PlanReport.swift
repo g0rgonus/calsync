@@ -15,6 +15,51 @@ public enum PlanReport {
         return formatter
     }()
 
+    /// Why this event is being rewritten, as `[start +3h, end +3h]`.
+    ///
+    /// The log used to say only *that* something updated, which is the fact
+    /// nobody can act on. When travelling rewrote 64 of 67 events, working out
+    /// whether that was the feed moving or this tool disagreeing with itself
+    /// needed a `PROPFIND` against Radicale for `getlastmodified` and a
+    /// screenshot of the event on two machines. Both answers were already in
+    /// this process; it simply did not say them.
+    ///
+    /// A time carries its shift, because the *amount* is the diagnosis. Sixty
+    /// events all moving by exactly one offset is a timezone; one moving by
+    /// twenty minutes is a coach. Nothing else needs a value — a title or a
+    /// location that differs is read off the event itself.
+    static func reason(for update: PlannedUpdate) -> String {
+        let changed = Reconcile.changedFields(update.existing, update.fields)
+        guard !changed.isEmpty else { return "" }
+        let parts = changed.map { field -> String in
+            switch field {
+            case .start:
+                return "start " + shift(from: update.existing.start, to: update.fields.start)
+            case .end:
+                return "end " + shift(from: update.existing.end, to: update.fields.end)
+            default:
+                return field.label
+            }
+        }
+        return "  [" + parts.joined(separator: ", ") + "]"
+    }
+
+    /// A signed, human-sized duration: `+3h`, `-45m`, `+1d2h`.
+    static func shift(from: Date, to: Date) -> String {
+        let delta = to.timeIntervalSince(from)
+        let sign = delta < 0 ? "-" : "+"
+        var seconds = Int(abs(delta).rounded())
+        var out = ""
+        for (unit, size) in [("d", 86400), ("h", 3600), ("m", 60)] {
+            let count = seconds / size
+            if count > 0 { out += "\(count)\(unit)"; seconds -= count * size }
+        }
+        // Sub-minute differences are real (the comparison tolerance is a
+        // second) and must not render as a bare sign.
+        if out.isEmpty { out = "\(seconds)s" }
+        return sign + out
+    }
+
     public static func describe(_ plan: MirrorPlan) -> [String] {
         var lines: [String] = []
         for item in plan.creates {
@@ -23,7 +68,7 @@ public enum PlanReport {
         }
         for item in plan.updates {
             lines.append("  ~ update  \(stamp.string(from: item.fields.start))  "
-                + item.fields.title)
+                + item.fields.title + reason(for: item))
         }
         for item in plan.deletes {
             lines.append("  - delete  \(stamp.string(from: item.start))  \(item.title)")
