@@ -28,8 +28,13 @@ import re
 # TeamReach adapter records: one feed writes "@Hampton Roads Academy", while a
 # spaceless `vs` would eat the first word of a club called something like
 # "Vsetin".
+#
+# The team token is optional. A guest fixture on a player's own feed reads
+# "VPSL Match vs FC Richmond 2015/2016" — league and type, no team, because the
+# player was invited to another squad's game. Requiring the team sent it through
+# the token stripper and the title rendered the coach's raw text.
 LEAGUE_MATCH = re.compile(
-    r"^(?P<team>\S+)\s+(?P<league>\S+)\s+Match\s+"
+    r"^(?:(?P<team>\S+)\s+)?(?P<league>\S+)\s+Match\s+"
     r"(?:(?P<away>@)\s*|vs\.?\s+|v\.\s*)"
     r"(?P<opponent>.+?)\s*$",
     re.IGNORECASE,
@@ -75,6 +80,23 @@ def strip_age_suffix(opponent: str, age_group: str | None) -> str:
     return _collapse(trimmed) or opponent
 
 
+# "FC Richmond 2015/2016", "FC Richmond 2015/16", "FC Richmond 2016". Clubs name
+# their age teams by birth year, and a manager typing the opponent's full squad
+# name carries it into the title. Only 20xx years, and only at the end, so a
+# club with a year in the middle of its name is left alone.
+_BIRTH_YEARS = re.compile(r"\s+20\d{2}(?:\s*/\s*(?:20)?\d{2})?\s*$")
+
+
+def strip_birth_years(opponent: str) -> str:
+    """Drop a trailing birth-year band: "FC Richmond 2015/2016" -> "FC Richmond".
+
+    Unconditional, unlike `strip_age_suffix`: comparing a birth year with our
+    age group needs the season year to be known, and the band is the same
+    information the event already carries by being a guest fixture.
+    """
+    return _collapse(_BIRTH_YEARS.sub("", opponent)) or opponent
+
+
 def parse(summary: str, *, tokens: tuple[str, ...] = (),
           age_group: str | None = None
           ) -> tuple[str | None, str | None, bool | None]:
@@ -97,7 +119,9 @@ def parse(summary: str, *, tokens: tuple[str, ...] = (),
 
     match = LEAGUE_MATCH.match(summary)
     if match:
-        opponent = strip_age_suffix(_collapse(match.group("opponent")), age_group)
+        opponent = strip_birth_years(
+            strip_age_suffix(_collapse(match.group("opponent")), age_group)
+        )
         return (opponent or None), None, (False if match.group("away") else None)
 
     return None, (strip_known_tokens(summary, tokens) or None), None

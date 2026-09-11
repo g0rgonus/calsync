@@ -222,6 +222,71 @@ def test_titles(by_uid):
     assert _title(by_uid[FESTIVAL], [JESSE]) == "Jesse ⚽️ Super 8v8 Festival Kickoff"
 
 
+GUEST_FIXTURE = b"""BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//360 Player/Event calendar
+BEGIN:VEVENT
+UID:360Player-event-4830512
+SUMMARY:VPSL Match vs Hollin Vale FC 2015/2016
+DTSTAMP:20260814T101500Z
+DTSTART:20260913T170000Z
+DTEND:20260913T180000Z
+LOCATION:Brackenridge Elementary School\\, 4410 Sorrel Road Wyncote\\, NX
+DESCRIPTION:Bring both kits as back up\\, but plan to wear the blue kit.
+URL:https://app.360player.com/organization/100200/events/4830512
+CATEGORIES:match
+LAST-MODIFIED:20260814T101500Z
+CREATED:20260814T101500Z
+SEQUENCE:1787076900
+END:VEVENT
+END:VCALENDAR
+"""
+
+
+def test_a_guest_fixture_with_no_team_token_still_parses():
+    """A player's own feed carries games they were invited to with another squad.
+
+    Observed live: "VPSL Match vs FC Richmond 2015/2016" on a U10 player's feed
+    for a U11 game — league and type with no team token in front, and the
+    opponent's birth-year band typed in by the manager. The pattern required a
+    team token, so the title rendered the coach's raw text.
+    """
+    [event] = player360.parse_feed(
+        GUEST_FIXTURE, VANGUARD, source_id="p360-jesse-vanguard"
+    ).events
+    assert event.opponent == "Hollin Vale FC"
+    assert event.detail is None
+    assert event.home is False, "not the home ground, so `vs` defers to the venue"
+    assert _title(event, [JESSE]) == "Jesse ⚽️ @ Hollin Vale FC"
+
+
+@pytest.mark.parametrize("summary, opponent", [
+    ("VPSL Match vs Hollin Vale FC 2015/2016", "Hollin Vale FC"),
+    ("VPSL Match vs Hollin Vale FC 2015/16", "Hollin Vale FC"),
+    ("VPSL Match vs Hollin Vale FC 2016", "Hollin Vale FC"),
+    ("U10PL PSL Match @ Hollin Vale FC 2016", "Hollin Vale FC"),
+    # Only a trailing 20xx band is a birth year; anything else is the name.
+    ("VPSL Match vs Hollin 2016 Vale FC", "Hollin 2016 Vale FC"),
+    ("VPSL Match vs Hollin Vale 1904", "Hollin Vale 1904"),
+    # A different age band is still kept, as before.
+    ("U10PL PSL Match vs Hollin Vale FC U11", "Hollin Vale FC U11"),
+])
+def test_opponent_birth_year_band_is_dropped(summary, opponent):
+    from calsync.normalize import summary as summary_norm
+    got, _, _ = summary_norm.parse(summary, age_group="U10")
+    assert got == opponent
+
+
+def test_a_guest_fixture_is_not_evidence_of_our_team_name():
+    """Onboarding reads the left of a league match as our team. A guest fixture
+    has nothing there, so it must say nothing rather than crash or guess."""
+    from calsync import inspection
+    assert inspection.fixture_sides("VPSL Match vs Hollin Vale FC 2015/2016") is None
+    assert inspection.fixture_sides("U10PL PSL Match vs Harbour FC U10") == (
+        "U10PL", "Harbour FC U10"
+    )
+
+
 def test_multi_kid_titles_use_initials_in_birth_order(by_uid):
     event = by_uid[PRACTICE]
     assert _title(event, [JESSE, PARKER]) == "P+J ⚽️ Practice"
