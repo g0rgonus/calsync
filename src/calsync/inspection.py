@@ -213,9 +213,11 @@ def fixture_sides(summary: str) -> tuple[str, str] | None:
     # are enough to clear the frequency bar, so onboarding proposed "U10PL PSL
     # Match" as the team. The shape is already parsed in normalize/summary.py;
     # asking it first means one definition of this format rather than two.
+    # A guest fixture has no team token and so says nothing about who we are.
     league = summary_norm.LEAGUE_MATCH.match(text)
     if league:
-        left, right = league.group("team").strip(), league.group("opponent").strip()
+        left = (league.group("team") or "").strip()
+        right = league.group("opponent").strip()
         return (left, right) if left and right else None
 
     parts = teamreach._VERSUS.split(text, maxsplit=1)

@@ -84,8 +84,33 @@ raw text — `James ⚽️ U10DA TASL Match @ Chesapeake United SC` rather than
 `James ⚽️ @ Chesapeake United SC`.
 
 ```
-^(?<team>\S+)\s+(?<league>\S+)\s+Match\s+(?:(?<away>@)\s*|vs\.?\s+|v\.\s*)(?<opponent>.+)$
+^(?:(?<team>\S+)\s+)?(?<league>\S+)\s+Match\s+(?:(?<away>@)\s*|vs\.?\s+|v\.\s*)(?<opponent>.+)$
 ```
+
+**The team token can be missing.** A player's own feed (`user_ids=` rather
+than `group_ids=`) also carries games the player was invited to with another
+squad, and those read differently. Observed live on a U10 player's feed for a
+U11 guest game:
+
+```
+VPSL Match vs Hollin Vale FC 2015/2016
+└┬─┘ └─┬─┘    └──────┬──────┘ └───┬───┘
+league type      opponent   birth years
+```
+
+No team in front, so the pattern takes the team as optional; with it required,
+the whole string fell through to the token stripper and became the title.
+`vs` still means nothing here — the venue decides, and it is not the home
+ground, so the title reads `Jesse ⚽️ @ Hollin Vale FC`.
+
+**A trailing birth-year band is dropped from the opponent** — `2015/2016`,
+`2015/16`, `2016`, only 20xx and only at the end. It is the manager typing the
+opponent's full squad name, not part of the club's. Unlike a `U11` suffix it is
+dropped unconditionally: comparing it with our age group needs the season year,
+and it adds nothing the fixture being a guest game does not already say. The
+same feed swap showed no content differences on the 50 events both feeds carry,
+and the same UIDs, so repointing a source from the team feed to a player feed is
+an in-place change, not a re-creation.
 
 **`@` means away; `vs` means nothing.** This feed writes `vs` regardless of
 where a fixture is played, which is why `venue.matches_home` exists and why it
