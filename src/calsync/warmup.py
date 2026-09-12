@@ -54,6 +54,17 @@ def is_synthetic(uid: str) -> bool:
     return uid.startswith(PREFIX)
 
 
+def parent_of(uid: str) -> str | None:
+    """The game this warm-up belongs to, or None if it is not a warm-up.
+
+    The inverse of :func:`uid_for`, and it answers for a uid read back out of
+    `event_state`, where there is a string and no event to ask. `withheld.py`
+    needs exactly that: a decision is stored against the game, and the warm-up
+    in front of it has to follow without a second row saying so.
+    """
+    return uid[len(PREFIX):] if uid.startswith(PREFIX) else None
+
+
 def _content_hash(game: Event, minutes: int) -> str:
     """A hash that moves when the game moves *or* when the offset changes.
 

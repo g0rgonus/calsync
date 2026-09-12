@@ -180,6 +180,9 @@ class EventState:
     remote_etag: str | None
     starts_at: str
     cancelled: bool
+    #: Why a person took this event off the calendar, or None. One of
+    #: `withheld.REASONS`; it outlives every later poll, which is the point.
+    withheld: str | None = None
     #: The feed's LAST-MODIFIED as of the last poll that looked, and whether the
     #: last move of it went unexplained. See `Event.upstream_modified_at`.
     upstream_modified_at: str | None = None
@@ -193,20 +196,35 @@ def event_states(conn: sqlite3.Connection, source_id: str) -> dict[str, EventSta
     event rather than written a second time.
     """
     return {
-        r["uid"]: EventState(
-            uid=r["uid"],
-            source_id=r["source_id"],
-            collection=r["collection"],
-            remote_id=r["remote_id"],
-            content_hash=r["content_hash"],
-            remote_etag=r["remote_etag"],
-            starts_at=r["starts_at"],
-            cancelled=bool(r["cancelled"]),
-            upstream_modified_at=r["upstream_modified_at"],
-            upstream_edit_at=r["upstream_edit_at"],
-        )
+        r["uid"]: _event_state(r)
         for r in conn.execute("SELECT * FROM event_state WHERE source_id = ?", (source_id,))
     }
+
+
+def _event_state(row: sqlite3.Row) -> EventState:
+    return EventState(
+        uid=row["uid"],
+        source_id=row["source_id"],
+        collection=row["collection"],
+        remote_id=row["remote_id"],
+        content_hash=row["content_hash"],
+        remote_etag=row["remote_etag"],
+        starts_at=row["starts_at"],
+        cancelled=bool(row["cancelled"]),
+        withheld=row["withheld"],
+        upstream_modified_at=row["upstream_modified_at"],
+        upstream_edit_at=row["upstream_edit_at"],
+    )
+
+
+def event_state(conn: sqlite3.Connection, uid: str) -> EventState | None:
+    """One row by uid — for a caller that has an event and not a source.
+
+    Which is the console's situation exactly: a button on the calendar page
+    knows which event was clicked and nothing else about it.
+    """
+    row = conn.execute("SELECT * FROM event_state WHERE uid = ?", (uid,)).fetchone()
+    return _event_state(row) if row else None
 
 
 def record_event_state(
@@ -274,6 +292,28 @@ def mark_event_cancelled(conn: sqlite3.Connection, uid: str) -> None:
     conn.execute(
         "UPDATE event_state SET cancelled = 1, updated_at = datetime('now') WHERE uid = ?",
         (uid,),
+    )
+
+
+def set_withheld(conn: sqlite3.Connection, uid: str, reason: str | None) -> None:
+    """Record — or lift — a person's decision that an event is off the calendar.
+
+    Stores the decision only. Taking the event off is `withheld.enforce`, and
+    putting it back is an ordinary sync: the two are writes to a calendar, and
+    this module does not make those.
+    """
+    # Imported late: `withheld.py` imports this module, and the check belongs
+    # beside the only write of the column rather than at each of its callers. A
+    # reason nothing recognises would render as a blank label on the calendar
+    # page with no way left to tell what it meant.
+    from .withheld import REASONS
+
+    if reason is not None and reason not in REASONS:
+        raise ValueError(f"{reason!r} is not a reason an event can be withheld")
+    conn.execute(
+        "UPDATE event_state SET withheld = ?, updated_at = datetime('now') "
+        "WHERE uid = ?",
+        (reason, uid),
     )
 
 
@@ -414,11 +454,15 @@ class StoredEvent:
     child_id: str
     collection: str
     cancelled: bool
+    #: Why somebody took it off the calendar, or None. On the receipt because
+    #: `/calendar` reads nothing else, and "cancelled upstream" and "we are not
+    #: going" are not the same row to read.
+    withheld: str | None
     observed_at: str
 
 
 _STORED_SQL = f"""
-    SELECT s.uid, s.source_id, s.collection, s.cancelled, s.starts_at,
+    SELECT s.uid, s.source_id, s.collection, s.cancelled, s.withheld, s.starts_at,
            s.content_hash, c.observed_at,
            {', '.join('c.' + col for col in CONTENT_COLUMNS)},
            src.activity_id, a.child_id
@@ -470,6 +514,7 @@ def _stored_event(row: sqlite3.Row) -> StoredEvent:
         child_id=row["child_id"],
         collection=row["collection"],
         cancelled=bool(row["cancelled"]),
+        withheld=row["withheld"],
         observed_at=row["observed_at"],
     )
 

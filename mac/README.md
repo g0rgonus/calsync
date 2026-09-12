@@ -216,6 +216,19 @@ identity.** The old tool kept `~/.sports-calendar-sync.json` mapping source UIDs
 to event ids, and losing it meant recreating every event beside itself. This
 re-derives ownership from the calendar on every run.
 
+The same property is why **deleting a managed event in Calendar.app does not
+stick**: with nothing remembering what was written, a deleted event is
+indistinguishable from one that was never there, and the next run creates it
+again. It is not a bug to fix here — a mirror that remembered deletions would
+need exactly the state file that cost the predecessor a duplicated calendar, and
+it would still leave the event on every phone subscribed to Radicale. Take the
+event off in the console instead: `/calendar` has **Not attending** and
+**Cancelled** on each upcoming row, which remove it from the collection itself
+and keep it off through every later poll (`src/calsync/withheld.py`). The
+deletion then reaches this side as an ordinary disappearance — including the
+guard, so withholding a large number of events at once is held here and reported
+rather than applied.
+
 There is one small state file, and it is deliberately of a different kind:
 `~/Library/Application Support/calsync-mirror/health.json` records only when a
 read last worked, which is not derivable from anywhere else. Losing it costs

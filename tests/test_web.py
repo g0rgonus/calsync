@@ -1390,6 +1390,138 @@ def test_a_month_with_nothing_in_it_says_which_kind_of_nothing(writing, tmp_path
     assert "still on the calendar server" in behind
 
 
+# --- taking one event off the calendar --------------------------------------
+#
+# The button exists because deleting an event in Calendar.app does not stick:
+# the mirror keeps no state file, so a deleted event looks like one that was
+# never written and is created again on the next run. These check the console
+# half — the sync half is `tests/test_withheld.py`.
+
+
+def _an_upcoming_event(tmp_path) -> str:
+    conn = db.connect(tmp_path / "calsync.db")
+    row = conn.execute(
+        "SELECT uid FROM event_state WHERE cancelled = 0 AND starts_at > ? "
+        "ORDER BY starts_at LIMIT 1",
+        (NOW.isoformat(),),
+    ).fetchone()
+    assert row, "the fixture season should have something still to come"
+    return row["uid"]
+
+
+def test_the_agenda_offers_a_reason_for_taking_an_event_off(writing, tmp_path):
+    client, calendar = writing
+    synced(client, tmp_path, calendar)
+
+    page = client.get("/calendar?view=agenda&month=2026-03")["body"]
+    assert "/events/withhold" in page
+    assert "Not attending" in page and "Cancelled" in page
+    # And the page says why deleting it on the Mac instead does not work.
+    assert "does not stick" in page
+
+
+@pytest.mark.parametrize("reason", ["not_attending", "cancelled"])
+def test_withholding_an_event_removes_it_from_the_calendar(writing, tmp_path, reason):
+    client, calendar = writing
+    synced(client, tmp_path, calendar)
+    uid = _an_upcoming_event(tmp_path)
+    assert uid in calendar.written
+
+    done = client.post("/events/withhold", {"uid": uid, "reason": reason,
+                                            "back": "/calendar?month=2026-03"})
+
+    assert done["status"] == 303
+    assert uid in calendar.cancelled
+    assert uid not in calendar.written
+    conn = db.connect(tmp_path / "calsync.db")
+    assert repo.event_state(conn, uid).withheld == reason
+
+
+def test_a_withheld_event_says_so_on_the_calendar(writing, tmp_path):
+    client, calendar = writing
+    synced(client, tmp_path, calendar)
+    uid = _an_upcoming_event(tmp_path)
+    client.post("/events/withhold", {"uid": uid, "reason": "not_attending"})
+
+    page = client.get("/calendar?view=agenda&month=2026-03")["body"]
+    assert "not attending" in page
+    assert "/events/restore" in page
+
+
+def test_putting_it_back_syncs_it_back(writing, tmp_path):
+    """Restoring writes no event itself — it clears the decision and runs the
+    ordinary sync, which is the only thing here that creates events."""
+    client, calendar = writing
+    synced(client, tmp_path, calendar)
+    uid = _an_upcoming_event(tmp_path)
+    client.post("/events/withhold", {"uid": uid, "reason": "cancelled"})
+    assert uid not in calendar.written
+
+    done = client.post("/events/restore", {"uid": uid})
+
+    assert done["status"] == 303
+    assert uid in calendar.written
+    conn = db.connect(tmp_path / "calsync.db")
+    assert repo.event_state(conn, uid).withheld is None
+
+
+def test_an_event_that_has_already_started_is_refused(writing, tmp_path):
+    """Taking a played game off deletes the record of something that happened,
+    which is the refusal `retire.py` makes for the same reason."""
+    client, calendar = writing
+    synced(client, tmp_path, calendar)
+    uid = _an_upcoming_event(tmp_path)
+    # Moved into the past rather than waited for: the refusal compares
+    # `starts_at` against the clock, and the fixture season is entirely ahead
+    # of the pinned one.
+    conn = db.open_db(tmp_path / "calsync.db")
+    conn.execute("UPDATE event_state SET starts_at = ? WHERE uid = ?",
+                 ("2026-01-04T15:00:00+00:00", uid))
+    conn.commit()
+    conn.close()
+
+    page = client.post("/events/withhold", {"uid": uid, "reason": "cancelled"})["body"]
+
+    assert "already started" in page
+    assert uid not in calendar.cancelled
+    assert uid in calendar.written
+
+
+def test_a_reason_nothing_recognises_is_refused(writing, tmp_path):
+    client, calendar = writing
+    synced(client, tmp_path, calendar)
+    uid = _an_upcoming_event(tmp_path)
+
+    page = client.post("/events/withhold", {"uid": uid, "reason": "meh"})["body"]
+
+    assert "is not a reason" in page
+    assert uid in calendar.written
+
+
+def test_an_event_calsync_never_wrote_is_refused(writing, tmp_path):
+    client, calendar = writing
+    synced(client, tmp_path, calendar)
+
+    page = client.post("/events/withhold",
+                       {"uid": "nothing@nowhere", "reason": "cancelled"})["body"]
+    assert "no record of writing that event" in page
+
+
+def test_the_return_link_cannot_be_pointed_somewhere_else(writing, tmp_path):
+    """It arrives on a POST, so an unchecked one is an open redirect."""
+    client, calendar = writing
+    synced(client, tmp_path, calendar)
+    uid = _an_upcoming_event(tmp_path)
+
+    done = client.post("/events/withhold",
+                       {"uid": uid, "reason": "cancelled",
+                        "back": "https://example.invalid/"})
+
+    location = done["headers"]["Location"]
+    assert "example.invalid" not in location
+    assert "/calendar?ok=" in location
+
+
 def test_a_held_event_is_marked_on_the_calendar(writing, tmp_path):
     """The enrichment collection is not a family calendar, and the page says so.
 
@@ -2287,6 +2419,34 @@ def test_marking_an_edit_seen_clears_it_and_nothing_else(writing, tmp_path):
         "FROM event_state WHERE uid = ?", (uid,)).fetchone()
     assert row["upstream_edit_at"] is None
     assert {k: row[k] for k in before} == before, "acknowledging changed the event"
+    assert "Changed at the source" not in client.get("/review")["body"]
+
+
+def test_an_unexplained_edit_can_be_answered_as_a_cancellation(writing, tmp_path):
+    """The one thing this list could never do before.
+
+    A Player360 cancellation is exactly this — the app says cancelled, the feed
+    goes on exporting an ordinary event, and calsync will not infer a delete
+    from a moved timestamp. A person can state it, and stating it takes the
+    event off the calendar and keeps it off.
+    """
+    client, calendar = writing
+    onboard(client)
+    conn = db.connect(tmp_path / "calsync.db")
+    source_id = repo.list_sources(conn, enabled_only=False)[0].id
+    client.post(f"/sources/{source_id}/sync")
+    uid = _an_upcoming_event(tmp_path)
+    _flag_edit(tmp_path, uid)
+    assert "Cancelled" in client.get("/review")["body"]
+
+    assert client.post("/events/withhold", {"uid": uid, "reason": "cancelled",
+                                            "back": "/review"})["status"] == 303
+
+    assert uid in calendar.cancelled
+    conn = db.connect(tmp_path / "calsync.db")
+    assert repo.event_state(conn, uid).withheld == "cancelled"
+    # The question is answered, so it is off the list rather than still asking.
+    assert repo.event_state(conn, uid).upstream_edit_at is None
     assert "Changed at the source" not in client.get("/review")["body"]
 
 

@@ -93,7 +93,21 @@
         · <a href="/sources/{{ entry['source_id'] }}">{{ entry['activity'].name }}</a>
         · {{ entry['child'].name }}
       </p>
-% if entry['cancelled']:
+% if entry['withheld']:
+      <p class="note"><span class="tag tag-off">{{ reasons[entry['withheld']] }}</span>
+         Off the calendar for everyone, and it stays off — the feed still
+         publishes it, and every poll from here on leaves it alone.
+% if entry['upcoming']:
+      </p>
+      <form method="post" action="/events/restore" class="inline">
+        <input type="hidden" name="uid" value="{{ entry['uid'] }}">
+        <input type="hidden" name="back" value="{{ back }}">
+        <button class="btn btn-quiet" type="submit">Put it back</button>
+      </form>
+% else:
+      </p>
+% end
+% elif entry['cancelled']:
       <p class="note"><span class="tag tag-off">cancelled</span>
          Left in place as a tombstone, which is how the removal reaches a phone
          that already has it.</p>
@@ -102,6 +116,18 @@
          In <span class="raw">{{ entry['collection'] }}</span> rather than a
          family calendar — calsync could not tell which one it belongs in.
          <a href="/review">Answer that</a> and it moves.</p>
+% end
+% if entry['upcoming'] and not entry['cancelled'] and not entry['withheld']:
+      <div class="row-actions">
+% for reason, label in reasons.items():
+        <form method="post" action="/events/withhold" class="inline">
+          <input type="hidden" name="uid" value="{{ entry['uid'] }}">
+          <input type="hidden" name="reason" value="{{ reason }}">
+          <input type="hidden" name="back" value="{{ back }}">
+          <button class="btn btn-quiet" type="submit">{{ label.capitalize() }}</button>
+        </form>
+% end
+      </div>
 % end
     </div>
   </div>
@@ -115,4 +141,13 @@
   Times are the venue's, {{ tz }} where a feed did not say otherwise. Anything
   added to the calendar by hand is not here: calsync never saw it, and does not
   touch it.
+</p>
+
+<p class="note">
+  <strong>Deleting an event in Calendar.app does not stick.</strong> The mirror
+  keeps no list of what it has written — it reads the marker in each event — so
+  a deleted one looks like one that was never there, and comes back on the next
+  run. Use <em>{{ ' / '.join(label.capitalize() for label in reasons.values()) }}</em>
+  in the agenda instead: that takes the event off the calendar server itself, for
+  every phone subscribed to it, and every later poll leaves it off.
 </p>

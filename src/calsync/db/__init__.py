@@ -12,7 +12,7 @@ import time
 import sys
 from pathlib import Path
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 
 #: Additive column migrations, applied when absent. `schema.sql` uses
@@ -55,6 +55,11 @@ ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # rendered — it decides which title template the event takes and which
     # alarm, so `/calendar` and the API cannot reconstruct one without it.
     ("event_content", "warmup_for", "TEXT"),
+    # v10: a person's decision that an event does not belong on the calendar —
+    # not attending, or cancelled in a way the feed never says. On `event_state`
+    # because it has to outlive every later poll of a feed that goes on
+    # publishing the event (`withheld.py`).
+    ("event_state", "withheld", "TEXT"),
     # v5 adds `event_content`, which is a new table rather than new columns, so
     # `schema.sql`'s CREATE TABLE IF NOT EXISTS covers it and nothing belongs
     # here. Existing rows backfill themselves: the sync loop treats missing

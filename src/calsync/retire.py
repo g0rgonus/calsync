@@ -105,7 +105,7 @@ def retire_source(conn, source: repo.Source, target, *, now: datetime) -> Retire
         if state.cancelled:
             report.already_gone += 1
             continue
-        if not _upcoming(state.starts_at, now):
+        if not upcoming(state.starts_at, now):
             # It happened. Removing it now would delete the record of a game
             # that was played, which is not what anybody means by retiring.
             report.kept += 1
@@ -175,12 +175,16 @@ def live_events(conn, source_id: str, *, now: datetime) -> int:
     return sum(
         1
         for state in repo.event_states(conn, source_id).values()
-        if not state.cancelled and _upcoming(state.starts_at, now)
+        if not state.cancelled and upcoming(state.starts_at, now)
     )
 
 
-def _upcoming(starts_at: str, now: datetime) -> bool:
+def upcoming(starts_at: str, now: datetime) -> bool:
     """Has this event not started yet?
+
+    Public because `withheld.py`'s callers have to ask exactly this: taking a
+    played game off the calendar deletes the record of a game that was played,
+    which is the thing this module goes out of its way not to do.
 
     Parsed rather than compared as text: `starts_at` is stored as an ISO string
     whose offset is whatever the feed carried, so "2026-04-01T09:00:00-04:00"
