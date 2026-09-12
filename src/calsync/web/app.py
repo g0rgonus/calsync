@@ -25,7 +25,7 @@ from .. import __version__
 from .. import config as config_mod
 from .. import (
     db, dormancy, enrichment, matrix, notify, repo, retire, sources, targeting,
-    zones,
+    withheld as withheld_mod, zones,
 )
 from ..fetch import FetchError, http_fetch, render_url
 from ..inspection import InspectionError, inspect_feed
@@ -789,6 +789,16 @@ def create_app(
                 child_id=child_id,
             )
 
+            # Built from the padded read, not the filtered one below: a
+            # warm-up sits before its game and can fall on the previous day, so
+            # a game withheld on the 1st has a warm-up the page would otherwise
+            # show as plainly cancelled with no reason against it. Keyed by uid
+            # rather than a set because the warm-up borrows its game's reason:
+            # `withheld.is_withheld` answers whether, this answers which.
+            off = {
+                item.event.uid: item.withheld for item in items if item.withheld
+            }
+
             colours, seen = {}, {}
             entries = []
             for item in items:
@@ -818,6 +828,13 @@ def create_app(
                     "source_id": item.source_id,
                     "all_day": item.event.all_day,
                     "cancelled": item.cancelled,
+                    # The reason a person gave, or the game's reason if this is
+                    # the warm-up in front of one. Both are off the calendar;
+                    # only the game carries the row that says why.
+                    "withheld": item.withheld or off.get(item.event.warmup_for),
+                    "upcoming": retire.upcoming(
+                        item.event.starts_at.isoformat(), clock()
+                    ),
                     "held": bool(settings.enrichment_collection)
                             and item.collection == settings.enrichment_collection,
                     "collection": item.collection,
@@ -859,6 +876,10 @@ def create_app(
             children=children,
             child_id=child_id,
             today=clock().astimezone(zone).date(),
+            # So a decision made from this page comes back to this page, with
+            # the month and the child filter still on it.
+            back=link(),
+            reasons=withheld_mod.REASONS,
             previous=_shift_month(month, -1),
             following=_shift_month(month, +1),
             horizon=(clock().astimezone(zone)
@@ -866,6 +887,120 @@ def create_app(
             tz=str(zone),
             flash=_flash(),
         )
+
+    def _back_to(default: str) -> str:
+        """Where to return after a write made from a list of events.
+
+        The same page it was pressed on, so a run of three cancellations is
+        three clicks rather than three clicks and two navigations. Checked
+        against the pages that carry these buttons rather than trusted: a
+        redirect target straight out of a form is an open redirect, and this one
+        arrives on a POST from a page anybody on the tailnet can reach.
+        """
+        back = _field("back", default)
+        if not back.startswith(("/calendar", "/review")):
+            back = default
+        return back + ("&" if "?" in back else "?")
+
+    @app.post("/events/withhold")
+    def withhold_event():
+        """Take one event off the calendar and keep it off.
+
+        The button the mirror makes necessary: deleting an event in Calendar.app
+        is undone by the next mirror run, because identity lives in the events
+        and a deleted one is indistinguishable from one never written
+        (`withheld.py`). Deciding it here removes it for every subscriber at
+        once, and the decision outlives the poll that would otherwise restore it.
+
+        A write to the family's real calendar, so it goes through the same
+        `write_target` seam retiring and "Sync now" use.
+        """
+        # The uid arrives as a form field rather than in the path. It is a
+        # string a coach's app minted and calsync has never constrained —
+        # `@`, `/` and worse are all in the recorded feeds — and a path segment
+        # is the one place that has to be escaped correctly by every template
+        # that links to it.
+        uid = _field("uid")
+        reason = _field("reason")
+        if reason not in withheld_mod.REASONS:
+            raise Refused(
+                f"{reason!r} is not a reason to take an event off the calendar"
+            )
+
+        with connect() as conn:
+            state = repo.event_state(conn, uid)
+            if state is None:
+                raise Refused("calsync has no record of writing that event")
+            if not retire.upcoming(state.starts_at, clock()):
+                # The same refusal `retire.py` makes, for the same reason: it
+                # already happened, and taking it off now deletes the record of
+                # a game that was played rather than one nobody is going to.
+                raise Refused(
+                    "that event has already started. Taking it off the calendar "
+                    "now would remove the record of something that happened "
+                    "rather than change anybody's plans."
+                )
+            repo.set_withheld(conn, uid, reason)
+            # Whatever the publisher quietly rewrote, it is answered: the event
+            # is coming off the calendar, so there is nothing left to go and
+            # look at in the team's app.
+            repo.clear_upstream_edit(conn, uid)
+            conn.commit()
+
+            try:
+                target = write_target or targeting.build_target(conn, secrets=secrets)
+                report = withheld_mod.enforce(conn, state.source_id, target)
+            except (SecretError, TargetError) as exc:
+                raise Refused(
+                    f"the decision is saved, but the calendar could not be "
+                    f"reached to act on it, so the event is still there for now "
+                    f"and the next sync will remove it: {exc}"
+                ) from exc
+            conn.commit()
+
+        if not report.ok:
+            raise Refused(
+                "the decision is saved, but the event could not be removed, so "
+                "a later sync will retry it: " + "; ".join(report.errors[:3])
+            )
+        label = withheld_mod.REASONS[reason]
+        redirect(_back_to("/calendar") + "ok=" + _q(
+            f"Marked {label} — {report.removed} event(s) off the calendar, and "
+            "the next poll will leave it that way."
+        ))
+
+    @app.post("/events/restore")
+    def restore_event():
+        """Put a withheld event back, by clearing the decision and syncing.
+
+        Nothing here writes an event. Clearing the flag leaves a cancelled
+        `event_state` row, which `known_hashes` skips, so the sync that follows
+        sees the event as new and creates it — through exactly the path every
+        other event takes. A second writer of events is the one thing this was
+        never going to be (`withheld.py`).
+        """
+        uid = _field("uid")
+        with connect() as conn:
+            state = repo.event_state(conn, uid)
+            if state is None:
+                raise Refused("calsync has no record of writing that event")
+            source = _require_source(conn, state.source_id)
+            repo.set_withheld(conn, uid, None)
+            conn.commit()
+            enabled = source.enabled
+
+        if not enabled:
+            # Same refusal `POST /sources/<id>/sync` makes: syncing a retired
+            # season puts the whole thing back, not one event of it.
+            redirect(_back_to("/calendar") + "ok=" + _q(
+                "Cleared. Polling is paused for that team, so the event comes "
+                "back when it resumes."
+            ))
+
+        reports, problems = _sync_now([state.source_id])
+        message = problems[0] if problems else reports[0].line()
+        key = "err" if problems else "ok"
+        redirect(_back_to("/calendar") + key + "=" + _q(message))
 
     @app.get("/review")
     def review():

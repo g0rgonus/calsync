@@ -18,7 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
-from . import repo, sources, warmup
+from . import repo, sources, warmup, withheld
 from .diff import diff_poll
 from .fetch import FetchError, http_fetch, render_url
 from .models import Activity, Event, Venue
@@ -58,6 +58,12 @@ class SyncReport:
     #: (docs/sources/player360.md, Trap 2). Reported, never acted on — the feed
     #: does not say *what* changed, and guessing "cancelled" would be a delete.
     edited_upstream: list[str] = field(default_factory=list)
+    #: Events a person took off the calendar — not attending, or cancelled in a
+    #: way the feed never says (`withheld.py`). Counted every poll because the
+    #: feed goes on publishing them and the decision goes on being applied;
+    #: reported so a season of standing exclusions is visible rather than
+    #: showing up as a permanent shortfall in `created`.
+    withheld: int = 0
     #: Events held off the real calendar because calsync could not tell which
     #: one they belong in. Not an error and not a guard trip — a question
     #: waiting for an answer, counted so the poller says so out loud.
@@ -105,6 +111,8 @@ class SyncReport:
             parts.append(f"{self.moved} moved")
         if self.refreshed:
             parts.append(f"{self.refreshed} refreshed")
+        if self.withheld:
+            parts.append(f"{self.withheld} withheld")
         if self.awaiting_review:
             parts.append(f"{self.awaiting_review} awaiting review")
         if self.edited_upstream:
@@ -315,6 +323,14 @@ def sync_source(
         conn, source.id,
         since=(now - timedelta(days=settings.sync_window_back_days)).isoformat(),
     )
+    # Loaded before the diff rather than after it, because a person's standing
+    # decision to keep an event off the calendar changes what a *preview* would
+    # write as much as what a real poll does — and the console's gate is a
+    # preview. A dry run that counted a withheld game as "1 new" would be
+    # reporting a write that is never going to happen.
+    states = repo.event_states(conn, source.id)
+    off = {uid for uid, state in states.items() if state.withheld}
+
     delta = diff_poll(
         events, known, now=now, max_pct=max_pct, max_count=max_count,
         # A warm-up is derived from a game, not read from the feed, so it says
@@ -332,10 +348,21 @@ def sync_source(
         # left to apply. A disappearance still has valid creates and updates:
         # the events that ARE present are real, only their absence is suspect.
 
+    def _kept(events: list[Event]) -> list[Event]:
+        """``events``, minus the ones somebody has taken off the calendar.
+
+        A withheld event stays in the diff — it is still in the feed, and
+        removing it there would make it look like a disappearance and count
+        against the guard. It is dropped here instead, on the way to the write.
+        """
+        return [e for e in events if not withheld.is_withheld(e.uid, off)]
+
     if dry_run:
-        report.created = len(delta.created)
-        report.updated = len(delta.updated)
+        report.created = len(_kept(delta.created))
+        report.updated = len(_kept(delta.updated))
         report.cancelled = len(delta.cancelled)
+        report.withheld = len(delta.created) + len(delta.updated) \
+            - report.created - report.updated
         return report
 
     if delta.is_anomalous:
@@ -345,7 +372,6 @@ def sync_source(
         )
 
     # --- write, then record ------------------------------------------------
-    states = repo.event_states(conn, source.id)
     contents = repo.event_contents(conn, source.id)
 
     fresh = {e.uid for e in delta.created}
@@ -383,6 +409,13 @@ def sync_source(
         elif contents.get(event.uid) != repo.content_of(event):
             pending.append(event)
             refreshed_uids.add(event.uid)
+
+    # Last, after every reason to write an event has been collected and before
+    # any of them is acted on. A withheld event is skipped whether it is new,
+    # changed, moved or merely re-rendered: the decision is about the event, not
+    # about what the feed did to it this morning.
+    report.withheld = len(pending) - len(_kept(pending))
+    pending = _kept(pending)
 
     for event in pending:
         previous_state = states.get(event.uid)
@@ -465,6 +498,20 @@ def sync_source(
             continue
         repo.mark_event_cancelled(conn, uid)
         report.cancelled += 1
+
+    # Whatever is withheld and still on the calendar comes off now — the same
+    # call the console makes the moment somebody presses the button, repeated
+    # here because the calendar server may have been unreachable at that moment.
+    # After the target has accepted the removal, `known_hashes` stops seeing the
+    # row at all, so later polls take the cheap path above and never reach this.
+    # Its own read of `event_state`, not the `states` above: the loop just
+    # above marked rows cancelled, and a stale copy would ask the target to
+    # delete an event it has already deleted.
+    removal = withheld.enforce(conn, source.id, target)
+    report.cancelled += removal.removed
+    if not removal.ok:
+        report.status = "error"
+        report.errors.extend(removal.errors)
 
     # Stored content is kept only for as long as the calendar keeps the event.
     # Same bound the diff already compares across, which is what stops a prune

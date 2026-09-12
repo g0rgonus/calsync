@@ -168,7 +168,7 @@ so a fresh clone needs:
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/pytest                                    # 555 tests, ~5s
+.venv/bin/pytest                                    # 647 tests, ~5s
 .venv/bin/pytest tests/test_player360.py -k content_hash    # single test
 ```
 
@@ -605,6 +605,26 @@ Decisions that span several files and are easy to undo by accident:
   widen `max_disappearance_pct` past 0.5 or the count past 25. Narrowing is free.
   A guard that a web form can switch off in two clicks is not a guard, and the
   invariant above says never raise these to make something pass.
+- **A person can take one event off the calendar, and it stays off**
+  (`withheld.py`). Deleting it in Calendar.app does not work — the mirror keeps
+  no state file, so a deleted event looks like one never written and comes back
+  on the next run — and deleting it on a phone does not either, because the
+  phone reads Radicale and Radicale still has it. So the decision is stored,
+  on `event_state.withheld`, and two things follow. The **event is dropped on
+  the way to the write, not out of the diff**: it is still in the feed, and
+  removing it there would make it look like a disappearance and count against
+  the guard. And **nothing in the poll path ever sets the flag** — `upstream.py`
+  still only reports, and an agent has no path to it, the same division the
+  review gate draws. Two reasons share one mechanism, because the event comes
+  off either way and the label is all that differs: `not_attending`, and
+  `cancelled` for the Player360 case where the app knows and the export never
+  says (so `/review`'s unexplained-edit list can finally be answered rather than
+  only acknowledged). Putting it back writes no event here — clearing the flag
+  leaves a cancelled row, `known_hashes` skips those, and the next sync creates
+  it through the ordinary path. A warm-up follows its game and carries no row of
+  its own. Withholding a *past* event is refused where the button is, for
+  `retire.py`'s reason: it happened, and taking it off deletes the record of a
+  game that was played.
 - **An edit the feed will not explain is reported, never acted on**
   (`upstream.py`). Player360 does not export cancellations: an event cancelled
   in the app goes on being published as an ordinary one, and the only trace is

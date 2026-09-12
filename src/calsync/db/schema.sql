@@ -130,6 +130,13 @@ CREATE TABLE IF NOT EXISTS event_state (
     remote_etag     TEXT,
     starts_at       TEXT NOT NULL,
     cancelled       INTEGER NOT NULL DEFAULT 0,
+    -- A person said this event does not belong on the calendar: NULL normally,
+    -- otherwise one of `withheld.REASONS`. It survives every later poll, which
+    -- is the whole point — the feed goes on publishing the event forever, and
+    -- without a stored decision the next poll would put it straight back.
+    -- `cancelled` records that it is off the calendar; this records who
+    -- decided and why (`withheld.py`).
+    withheld        TEXT,
     updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS event_state_source ON event_state(source_id);

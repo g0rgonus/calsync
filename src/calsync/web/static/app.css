@@ -866,6 +866,18 @@ details.more > summary:hover { color: var(--cone); }
 .agenda-title { margin: 0 0 0.15rem; font-weight: 600; }
 .struck { text-decoration: line-through; color: var(--ink-2); }
 
+/* The decision buttons under an agenda row. Quiet and on their own line: they
+ * take an event off a calendar other people are subscribed to, so they should
+ * not sit where a thumb lands on the way past. */
+.row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.35rem;
+}
+.row-actions .btn, .agenda-body form.inline .btn { font-size: 0.72rem; padding: 0.25rem 0.55rem; }
+form.inline { display: inline-block; margin: 0.35rem 0 0; }
+
 /* Seven columns of chips on a phone is seven columns of ellipses. The cells
  * give up their fixed height and the chips shrink, which keeps the month
  * readable as a shape; the agenda is the same data laid out for that width,

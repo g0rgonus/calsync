@@ -18,6 +18,8 @@
     <strong>They are still on the calendar, because the feed still publishes
     them.</strong> A cancellation looks exactly like this: the team's app shows
     it, the feed does not carry it, and calsync will not guess at a delete.
+    You can say so, though — <em>Cancelled</em> takes the event off the calendar
+    and keeps it off, whatever the feed goes on publishing.
   </p>
   <div class="stack">
 % for row in edited:
@@ -38,9 +40,17 @@
 %   end
         </p>
       </div>
-      <form method="post" action="/review/edits/{{ row['uid'] }}/seen">
-        <button class="btn btn-quiet" type="submit">Seen</button>
-      </form>
+      <div class="row-actions">
+        <form method="post" action="/events/withhold" class="inline">
+          <input type="hidden" name="uid" value="{{ row['uid'] }}">
+          <input type="hidden" name="reason" value="cancelled">
+          <input type="hidden" name="back" value="/review">
+          <button class="btn btn-quiet" type="submit">Cancelled</button>
+        </form>
+        <form method="post" action="/review/edits/{{ row['uid'] }}/seen" class="inline">
+          <button class="btn btn-quiet" type="submit">Seen</button>
+        </form>
+      </div>
     </div>
 % end
   </div>
