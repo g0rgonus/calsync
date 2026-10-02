@@ -79,8 +79,8 @@ ENDPOINTS: dict[tuple[str, str], dict] = {
         "notes": [
             "For a reader of the calendar server to tell a deliberate absence "
             "from a broken read. An event missing from a collection is "
-            "accounted for if its state is not 'live' or its collection is "
-            "another one.",
+            "accounted for only if its state is not 'live'. A live event in "
+            "another collection is not: a misconfigured reader looks the same.",
             "An approval is recorded before its deletes are sent, so there is "
             "no moment when an absence is unexplained here.",
         ],

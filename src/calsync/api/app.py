@@ -176,9 +176,10 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None) -> Bo
 
         For a reader of the calendar server — the Mac mirror — to tell a
         deliberate absence from a broken read. An event missing from a
-        collection is accounted for if calsync took it off (withheld,
-        cancelled, or a removal a person approved) or moved it to another
-        collection; anything else missing is the mirror's own guard's business.
+        collection is accounted for only if calsync took it off (withheld,
+        cancelled, or a removal a person approved). A live event in another
+        collection is not — a reader with a mistyped collection sees exactly
+        that — so anything else missing stays the mirror's own guard's business.
 
         Approvals are recorded before the deletes are sent, so there is no
         moment when Radicale is missing an event this does not yet explain.

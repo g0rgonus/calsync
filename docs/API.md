@@ -266,7 +266,9 @@ exactly like a cancelled season. Without this it could not tell a bulk removal a
 person confirmed in the console from a broken read, so it held that too and
 asked again on the Mac. Now an absence is *accounted for* if calsync says the
 event is off on purpose or lives in another collection, and the mirror's guard
-counts only what is not. The approval is recorded **before** the deletes are
+counts only what is not. A *live* event in another collection is deliberately
+not an explanation: a reader with a mistyped or swapped collection name sees
+exactly that, and a dry run accepting it planned to delete a whole calendar. The approval is recorded **before** the deletes are
 sent (`repo.approve_removals`), so there is no moment when Radicale is missing
 an event this endpoint does not explain.
 
