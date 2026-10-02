@@ -9,13 +9,18 @@ public struct ReviewCounts: Equatable, Decodable {
     public var heldEvents: Int
     public var answersAwaitingDecision: Int
     public var upstreamEdits: Int
+    /// Teams whose last poll a guard held. The one count here where the
+    /// calendar is already wrong — new copies written, old ones kept — so it
+    /// is the one the menu raises rather than merely shows.
+    public var heldPolls: Int
     public var needsAttention: Int
 
     public init(heldEvents: Int = 0, answersAwaitingDecision: Int = 0,
-                upstreamEdits: Int = 0, needsAttention: Int = 0) {
+                upstreamEdits: Int = 0, heldPolls: Int = 0, needsAttention: Int = 0) {
         self.heldEvents = heldEvents
         self.answersAwaitingDecision = answersAwaitingDecision
         self.upstreamEdits = upstreamEdits
+        self.heldPolls = heldPolls
         self.needsAttention = needsAttention
     }
 
@@ -23,6 +28,7 @@ public struct ReviewCounts: Equatable, Decodable {
         case heldEvents = "held_events"
         case answersAwaitingDecision = "answers_awaiting_decision"
         case upstreamEdits = "upstream_edits"
+        case heldPolls = "held_polls"
         case needsAttention = "needs_attention"
     }
 
@@ -35,8 +41,9 @@ public struct ReviewCounts: Equatable, Decodable {
         answersAwaitingDecision =
             try c.decodeIfPresent(Int.self, forKey: .answersAwaitingDecision) ?? 0
         upstreamEdits = try c.decodeIfPresent(Int.self, forKey: .upstreamEdits) ?? 0
+        heldPolls = try c.decodeIfPresent(Int.self, forKey: .heldPolls) ?? 0
         needsAttention = try c.decodeIfPresent(Int.self, forKey: .needsAttention)
-            ?? (heldEvents + answersAwaitingDecision + upstreamEdits)
+            ?? (heldEvents + answersAwaitingDecision + upstreamEdits + heldPolls)
     }
 
     public var isQuiet: Bool { needsAttention == 0 }
@@ -45,6 +52,9 @@ public struct ReviewCounts: Equatable, Decodable {
     public var summary: String {
         guard !isQuiet else { return "Nothing waiting" }
         var parts: [String] = []
+        if heldPolls > 0 {
+            parts.append("\(heldPolls) held poll\(heldPolls == 1 ? "" : "s") to confirm")
+        }
         if heldEvents > 0 {
             parts.append("\(heldEvents) event\(heldEvents == 1 ? "" : "s") held")
         }

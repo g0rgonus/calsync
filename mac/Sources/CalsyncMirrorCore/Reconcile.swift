@@ -105,6 +105,11 @@ public struct MirrorPlan: Equatable {
     public var heldFingerprint: String? = nil
     /// Deletions that went ahead because a person confirmed this exact set.
     public var confirmed = false
+    /// Deletions calsync accounted for, by reason (`cancelled`, `withheld`,
+    /// `approved`). Not counted by the guard, and applied even when it
+    /// holds the rest: calsync's own record of a decision is independent of
+    /// whatever went wrong with this read.
+    public var accounted: [String: Int] = [:]
     public var duplicates: [DuplicateWarning] = []
 
     public var isEmpty: Bool {
@@ -262,6 +267,10 @@ public enum Reconcile {
     ///   - existing: every event currently in the destination calendar, within
     ///     the same window.
     ///   - now: events starting before this are never deletion candidates.
+    ///   - explain: why calsync took an event off the calendar, or
+    ///     `nil` if nothing accounts for it (`Placements.reason`). Only the
+    ///     unaccounted absences are evidence of a broken read, so only they
+    ///     count toward the guard.
     ///   - confirmed: fingerprints of held sets a person has agreed to delete.
     ///     One applies only if it names *exactly* this run's held set — the
     ///     collection is read again between showing the list and acting on it,
@@ -271,6 +280,7 @@ public enum Reconcile {
         desired: [ParsedEvent],
         existing: [ExistingEvent],
         now: Date,
+        explain: (String) -> String? = { _ in nil },
         confirmed: Set<String> = [],
         guardPolicy: DisappearanceGuard = DisappearanceGuard(),
         calendar: Calendar = .current,
@@ -321,21 +331,39 @@ public enum Reconcile {
             .filter { !seen.contains($0.calsyncUID ?? "") }
             .sorted { $0.start < $1.start }
 
+        // Split what calsync can account for from what it cannot. A person who
+        // confirmed a bulk removal in the console has already made this
+        // decision, and calsync records it before the first delete goes out —
+        // so a read of Radicale never shows an absence of that kind that the
+        // API does not yet explain. What is left is what a broken read makes.
+        var explained: [ExistingEvent] = []
+        var unexplained: [ExistingEvent] = []
+        for item in missing {
+            if let reason = explain(item.calsyncUID ?? "") {
+                explained.append(item)
+                plan.accounted[reason, default: 0] += 1
+            } else {
+                unexplained.append(item)
+            }
+        }
+
         if let hold = guardPolicy.evaluate(
-            trackedFuture: trackedFuture.count, missing: missing.count, incoming: live.count
+            trackedFuture: trackedFuture.count - explained.count,
+            missing: unexplained.count, incoming: live.count
         ) {
+            plan.deletes = explained
             // Only a disappearance, and never off an empty read. An identity
             // hold means the wrong collection answered; an empty one is the
             // shape of a broken read, and a list of every event on the calendar
             // is not something a person should be one click from deleting.
             if case .disappearance = hold, !live.isEmpty {
-                let fingerprint = HeldSet.fingerprint(missing.compactMap(\.calsyncUID))
+                let fingerprint = HeldSet.fingerprint(unexplained.compactMap(\.calsyncUID))
                 if confirmed.contains(fingerprint) {
                     plan.deletes = missing
                     plan.confirmed = true
                 } else {
                     plan.hold = hold
-                    plan.held = missing
+                    plan.held = unexplained
                     plan.heldFingerprint = fingerprint
                 }
             } else {
