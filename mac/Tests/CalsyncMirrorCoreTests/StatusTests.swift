@@ -71,6 +71,14 @@ final class ReviewCountsTests: XCTestCase {
 
     /// A badge is not worth failing over: an older or newer server must not
     /// leave the menu blank.
+    func testDecodesHeldPolls() throws {
+        let counts = try JSONDecoder().decode(
+            ReviewCounts.self,
+            from: Data(#"{"held_polls": 1, "needs_attention": 1}"#.utf8))
+        XCTAssertEqual(counts.heldPolls, 1)
+        XCTAssertEqual(counts.summary, "1 held poll to confirm")
+    }
+
     func testToleratesMissingFields() throws {
         let counts = try JSONDecoder().decode(
             ReviewCounts.self, from: Data(#"{"held_events": 4}"#.utf8))
@@ -171,6 +179,25 @@ final class StatusPresenterTests: XCTestCase {
         XCTAssertEqual(result.title, "3 events held")
         XCTAssertFalse(result.needsAttention, "not the mirror's problem to alarm about")
         XCTAssertNotEqual(result.symbol, "calendar")
+    }
+
+    /// The exception to the rule above: a held poll means old and new copies
+    /// are both on this calendar right now, and the fix is in the console.
+    func testAHeldPollInCalsyncRaisesTheAlarm() {
+        let result = status(
+            .ok(created: 0, updated: 0, deleted: 0, at: now),
+            review: ReviewCounts(heldEvents: 3, heldPolls: 1, needsAttention: 4))
+        XCTAssertEqual(result.title, "Approval waiting in calsync")
+        XCTAssertTrue(result.needsAttention, "this is what sends somebody to the console")
+        XCTAssertTrue(result.detail?.contains("console") == true, result.detail ?? "")
+    }
+
+    /// The mirror's own hold is still the louder of the two.
+    func testTheMirrorsOwnHoldOutranksAHeldPoll() {
+        let result = status(
+            .held("21 of 49", at: now),
+            review: ReviewCounts(heldPolls: 1, needsAttention: 1))
+        XCTAssertEqual(result.title, "Deletions withheld")
     }
 
     func testNeverSyncedIsNotAFault() {

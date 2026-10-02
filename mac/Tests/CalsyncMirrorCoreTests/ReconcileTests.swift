@@ -267,6 +267,78 @@ final class ReconcileTests: XCTestCase {
         XCTAssertTrue(plan.deletes.isEmpty)
     }
 
+    // MARK: - What calsync accounts for
+
+    /// The point of `GET /v1/placements`: a bulk removal confirmed in the
+    /// console reaches this calendar without a second confirmation here.
+    func testAbsencesCalsyncAccountsForAreNotCountedByTheGuard() {
+        let all = (1...10).map { desired("k\($0)", at: future($0)) }
+        let existing = all.enumerated().map { mirrored($1, identifier: "ek-\($0)") }
+        let gone = Set(["k6", "k7", "k8", "k9", "k10"])
+
+        let plan = Reconcile.plan(
+            desired: Array(all.prefix(5)), existing: existing, now: now,
+            explain: { gone.contains($0) ? "cancelled" : nil })
+
+        XCTAssertNil(plan.hold)
+        XCTAssertEqual(plan.deletes.count, 5)
+        XCTAssertEqual(plan.accounted, ["cancelled": 5])
+    }
+
+    /// A broken read at the same moment is still caught — the accounted-for
+    /// deletions go ahead, the unexplained ones are held, and the held list is
+    /// only the unexplained ones.
+    func testUnexplainedAbsencesAreStillHeld() {
+        let all = (1...10).map { desired("k\($0)", at: future($0)) }
+        let existing = all.enumerated().map { mirrored($1, identifier: "ek-\($0)") }
+
+        let plan = Reconcile.plan(
+            desired: Array(all.prefix(3)), existing: existing, now: now,
+            explain: { ["k4", "k5", "k6"].contains($0) ? "approved" : nil })
+
+        XCTAssertNotNil(plan.hold)
+        XCTAssertEqual(plan.deletes.compactMap(\.calsyncUID), ["k4", "k5", "k6"])
+        XCTAssertEqual(plan.held.compactMap(\.calsyncUID), ["k7", "k8", "k9", "k10"])
+    }
+
+    /// Accounted-for events leave the denominator too. Otherwise a large
+    /// confirmed removal would dilute the percentage and wave a real broken
+    /// read through behind it.
+    func testAccountedEventsDoNotDiluteTheGuard() {
+        let all = (1...10).map { desired("k\($0)", at: future($0)) }
+        let existing = all.enumerated().map { mirrored($1, identifier: "ek-\($0)") }
+        let accounted = Set(["k3", "k4", "k5", "k6", "k7", "k8"])
+
+        // 2 unexplained of the 4 that are not accounted for: 50%, over 20%.
+        let plan = Reconcile.plan(
+            desired: Array(all.prefix(2)), existing: existing, now: now,
+            explain: { accounted.contains($0) ? "cancelled" : nil })
+
+        XCTAssertNotNil(plan.hold)
+        XCTAssertEqual(plan.held.compactMap(\.calsyncUID), ["k9", "k10"])
+    }
+
+    func testPlacementsExplainRemovalsAndNothingElse() throws {
+        let json = #"""
+        {"placements": [
+          {"uid": "a", "collection": "practices", "state": "live"},
+          {"uid": "b", "collection": "practices", "state": "approved"},
+          {"uid": "c", "collection": "games", "state": "live"},
+          {"uid": "d", "collection": "practices", "state": "withheld"}
+        ]}
+        """#
+        let placements = try Placements.decode(Data(json.utf8))
+        XCTAssertNil(placements.reason(uid: "a"),
+                     "live and missing is exactly what a broken read looks like")
+        XCTAssertEqual(placements.reason(uid: "b"), "approved")
+        XCTAssertEqual(placements.reason(uid: "d"), "withheld")
+        XCTAssertNil(placements.reason(uid: "c"),
+                     "live in another collection is also what a mistyped pair "
+                     + "looks like, and that must stay held")
+        XCTAssertNil(placements.reason(uid: "zz"),
+                     "calsync forgetting an event is not a decision")
+    }
+
     /// The same name calsync's `diff.fingerprint` gives the same set.
     func testFingerprintMatchesTheServerSide() {
         XCTAssertEqual(HeldSet.fingerprint(["b", "a"]), HeldSet.fingerprint(["a", "b"]))

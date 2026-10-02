@@ -98,6 +98,22 @@ public final class SyncRunner {
             return summary
         }
 
+        // calsync's account of what it removed on purpose. Asked *after*
+        // Radicale is read, never before: calsync records an approval before
+        // sending the delete, so anything missing from the read above is
+        // already on record by now — the other order could miss one that
+        // landed in between. Optional: with no API, or no answer, the guard
+        // counts every absence, as it always has.
+        var placements: Placements? = nil
+        if let client = PlacementsClient(config: config) {
+            do {
+                placements = try await client.fetch()
+            } catch {
+                summary.lines.append(
+                    "calsync placements unavailable (\(error)) — every absence counts")
+            }
+        }
+
         let calendar = Calendar.current
         let windowStart = calendar.date(
             byAdding: .day, value: -config.windowBackDays, to: now) ?? now
@@ -120,6 +136,7 @@ public final class SyncRunner {
                 }
                 let plan = Reconcile.plan(
                     desired: windowed, existing: existing, now: now,
+                    explain: { placements?.reason(uid: $0) },
                     confirmed: confirm, guardPolicy: config.policy, calendar: calendar,
                     fallbackZoneID: config.fallbackZoneID)
 
