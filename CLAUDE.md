@@ -168,7 +168,7 @@ so a fresh clone needs:
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/pytest                                    # 647 tests, ~5s
+.venv/bin/pytest                                    # 656 tests, ~6s
 .venv/bin/pytest tests/test_player360.py -k content_hash    # single test
 ```
 
@@ -681,8 +681,13 @@ These encode failure modes found in a real feed. Weakening any of them can wipe 
 family calendar, so treat them as contracts, not defaults:
 
 - **Absence is the only cancellation signal, so a bad fetch looks like a cancelled
-  season.** `diff.py` holds all cancellations when >20% or >3 tracked future events
+  season.** `diff.py` holds all cancellations when >20% or >3 tracked events in the sync window
   vanish in one poll. Never bypass the guard or raise the thresholds to make a test pass.
+  The way out is a person: the source page lists the held set, with each event's
+  same-start twin when the feed re-minted it, and confirming posts that set's
+  fingerprint back through the real sync loop (`Diff.confirm`). A different set
+  by then cancels nothing. Without that a schedule rebuilt under fresh ids held
+  for weeks, every practice twice, with real cancellations stuck behind it.
 - **A feed's UID may not be stable, and that failure duplicates rather than deletes.**
   One observed source embeds a generation timestamp in the UID, so every poll mints
   fresh ids for the same events. The disappearance guard does not catch this (it

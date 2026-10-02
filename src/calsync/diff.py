@@ -11,7 +11,8 @@ fetch and a wiped family calendar.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import hashlib
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -38,6 +39,13 @@ class Diff:
     #: different things, so the caller has to be able to tell them apart.
     anomaly_kind: str | None = None
 
+    #: What a tripped disappearance guard withheld: every tracked uid missing
+    #: from this poll, warm-ups included. Kept rather than discarded so a person
+    #: can see the exact set and confirm it (`confirm`) — a guard that says
+    #: "pending confirmation" and offers no way to confirm holds forever, and a
+    #: source stuck that way also holds every *real* cancellation behind it.
+    held_cancellations: list[str] = field(default_factory=list)
+
     @property
     def is_anomalous(self) -> bool:
         return self.anomaly is not None
@@ -54,6 +62,31 @@ class Diff:
             parts.append(f"{len(self.cancelled)} cancelled")
         return ", ".join(parts)
 
+    def confirm(self, expected: str | None) -> bool:
+        """Release held cancellations a person has seen and agreed to.
+
+        ``expected`` is the `fingerprint` of the set that person was shown. It
+        must match this poll's set exactly: the feed is fetched again between
+        the page and the button, and a confirmation is an answer about *those*
+        events, not licence to cancel whatever is missing by the time it lands.
+        Only the disappearance guard can be confirmed — the identity guard
+        withholds creations too, and confirming it would duplicate a season.
+        """
+        if (expected is None or self.anomaly_kind != "disappearance"
+                or fingerprint(self.held_cancellations) != expected):
+            return False
+        self.cancelled = self.held_cancellations
+        self.held_cancellations = []
+        self.anomaly = None
+        self.anomaly_kind = None
+        return True
+
+
+def fingerprint(uids: Iterable[str]) -> str:
+    """A short, order-independent name for a set of uids."""
+    digest = hashlib.sha256("\n".join(sorted(uids)).encode()).hexdigest()
+    return digest[:16]
+
 
 def diff_poll(
     incoming: list[Event],
@@ -66,9 +99,11 @@ def diff_poll(
 ) -> Diff:
     """Compare a poll against ``{uid: content_hash}`` of what we already have.
 
-    Only *future* known events count toward disappearance: past events aging
-    out of the feed's rolling window is normal and must never look like a
-    cancellation.
+    ``known`` must already be bounded by the same sync window the incoming
+    events were filtered by (`repo.known_hashes`' ``since``), which is what
+    stops an event ageing out of the window looking like a cancellation. Within
+    that window, past events count toward the guard as much as future ones —
+    ``now`` is not consulted here.
 
     ``counts_as_evidence`` decides which uids the guard's arithmetic is measured
     over; everything counts by default. It exists for events calsync *derived*
@@ -136,6 +171,7 @@ def diff_poll(
         )
 
         result.anomaly_kind = "disappearance"
+        result.held_cancellations = missing
         return result
 
     result.cancelled = missing
