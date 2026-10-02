@@ -20,7 +20,7 @@ agenda. Nothing in the day-to-day path needs sqlite3 any more.
 
 **The HTTP API** (`calsync api`, `src/calsync/api/`) serves `GET /v1` (the
 machine-readable contract), `GET /v1/events`, `GET /v1/events/{uid}`,
-`GET /v1/review` and `POST /v1/tasks/{id}/result`, behind a bearer token from
+`GET /v1/review`, `GET /v1/placements` and `POST /v1/tasks/{id}/result`, behind a bearer token from
 the secret store. `GET /v1/review` reports **counts** of what is waiting on a
 human — held events, answers to approve, unexplained upstream edits — for
 something ambient like the Mac app's menu bar. It runs no dry run and fetches no
@@ -171,7 +171,7 @@ so a fresh clone needs:
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/pytest                                    # 656 tests, ~6s
+.venv/bin/pytest                                    # 665 tests, ~6s
 .venv/bin/pytest tests/test_player360.py -k content_hash    # single test
 ```
 
@@ -690,7 +690,13 @@ family calendar, so treat them as contracts, not defaults:
   same-start twin when the feed re-minted it, and confirming posts that set's
   fingerprint back through the real sync loop (`Diff.confirm`). A different set
   by then cancels nothing. Without that a schedule rebuilt under fresh ids held
-  for weeks, every practice twice, with real cancellations stuck behind it.
+  for weeks, every practice twice, with real cancellations stuck behind it. The
+  approval is written to `event_state.removal_approved_at` and **committed
+  before the first delete**, because the Mac mirror reads Radicale and asks
+  `GET /v1/placements` to account for what is missing — an approval landing
+  after the deletes would leave it an absence nothing explains, and it would ask
+  a second time on the Mac. `/v1/review` counts held polls so the menu bar can
+  send somebody to `/review`, which lists them.
 - **A feed's UID may not be stable, and that failure duplicates rather than deletes.**
   One observed source embeds a generation timestamp in the UID, so every poll mints
   fresh ids for the same events. The disappearance guard does not catch this (it

@@ -137,6 +137,11 @@ CREATE TABLE IF NOT EXISTS event_state (
     -- `cancelled` records that it is off the calendar; this records who
     -- decided and why (`withheld.py`).
     withheld        TEXT,
+    -- When a person confirmed this event's removal after a guard held it.
+    -- Recorded before the delete is sent, so a reader of the calendar server
+    -- never sees an absence calsync cannot account for. Cleared by the next
+    -- write: an event that is written again is live again.
+    removal_approved_at TEXT,
     updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS event_state_source ON event_state(source_id);

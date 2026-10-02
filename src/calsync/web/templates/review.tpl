@@ -9,6 +9,33 @@
   until somebody answers.
 </p>
 
+% if held_polls:
+<h2>Held polls</h2>
+<div class="card" style="margin-bottom:1.4rem">
+  <p class="note" style="margin-top:0">
+    A guard stopped these teams' last poll from deleting anything, because more
+    vanished from the feed at once than a normal week does. New events were
+    still written, so <strong>the calendar may be showing old and new copies
+    side by side</strong> until somebody decides. The list of what vanished,
+    and the button that confirms it, are on each team's page.
+  </p>
+  <div class="stack">
+% for row in held_polls:
+    <div class="agenda-row">
+      <span class="agenda-time">{{ row['started_at'][5:16].replace('T', ' ') }}</span>
+      <div class="agenda-body">
+        <p class="agenda-title">
+          {{ row['activity_emoji'] or '' }}
+          <a href="/sources/{{ row['source_id'] }}">{{ row['activity_name'] }}</a>
+        </p>
+        <p class="note">{{ row['detail'] }}</p>
+      </div>
+    </div>
+% end
+  </div>
+</div>
+% end
+
 % if edited:
 <h2>Changed at the source</h2>
 <div class="card" style="margin-bottom:1.4rem">
