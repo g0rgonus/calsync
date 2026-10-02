@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// Why a run withheld its deletions.
@@ -57,5 +58,17 @@ public struct DisappearanceGuard {
             && (Double(missing) / Double(trackedFuture)) > maxPct
         guard overCount || overPct else { return nil }
         return .disappearance(missing: missing, tracked: trackedFuture)
+    }
+}
+
+/// A short, order-independent name for a set of uids.
+///
+/// The same construction as `diff.fingerprint` on the calsync side — SHA-256
+/// over the sorted uids joined by newlines, first 16 hex digits — so a set has
+/// one name wherever it is held.
+public enum HeldSet {
+    public static func fingerprint(_ uids: [String]) -> String {
+        let digest = SHA256.hash(data: Data(uids.sorted().joined(separator: "\n").utf8))
+        return digest.map { String(format: "%02x", $0) }.joined().prefix(16).description
     }
 }

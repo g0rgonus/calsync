@@ -12,10 +12,14 @@ import CalsyncMirrorEventKit
 /// `CalsyncMirrorCore` exactly as it does for the CLI, and is tested there
 /// without a Mac. What lives here is a status item, a timer, and a menu.
 ///
-/// It deliberately cannot resolve anything. Status, pause, sync now and links
-/// out are all about *this machine*; answering a question or approving an
-/// answer happens in the console, by a person, because that is where the review
-/// gate is (docs/API.md).
+/// It deliberately cannot resolve anything of calsync's. Status, pause, sync
+/// now and links out are all about *this machine*; answering a question or
+/// approving an answer happens in the console, by a person, because that is
+/// where the review gate is (docs/API.md). The one decision it does take is
+/// this machine's own: confirming deletions *its* guard withheld from *its*
+/// calendars, which nothing on the server can see. Without it the guard's
+/// "pending confirmation" had no answer, and a cancellation confirmed in the
+/// console sat on the family's Macs as a duplicate until it slid into the past.
 /// Where a background app says what it did.
 ///
 /// Both, deliberately. `print` lands in the launchd log file, which is where
@@ -48,6 +52,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var timer: Timer?
     var outcome: SyncOutcome = .never
     var review: ReviewCounts?
+    /// What the last run held back, kept so the menu can put the list in front
+    /// of somebody. Replaced by every run, so a stale list is never confirmed.
+    var held: [HeldDeletions] = []
     var syncing = false
     /// So a held run or a long outage is announced once, not every interval.
     var announced: String?
@@ -98,7 +105,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Syncing
 
     @MainActor
-    func syncNow() async {
+    func syncNow(confirm: Set<String> = []) async {
         guard let config, !syncing else { return }
         syncing = true
         refresh()
@@ -107,7 +114,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // else happened to redraw it.
 
         let runner = SyncRunner(config: config, store: CalendarStore())
-        let summary = await runner.run()
+        let summary = await runner.run(confirm: confirm)
 
         if summary.paused {
             Log.say("paused; nothing done")
@@ -122,7 +129,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // A paused run did nothing and must not overwrite what the last real
         // run reported — otherwise pausing makes the menu look like it synced.
-        if !summary.paused { outcome = summary.outcome }
+        if !summary.paused {
+            outcome = summary.outcome
+            held = summary.held
+        }
+        if !confirm.isEmpty {
+            Log.say(summary.confirmed > 0
+                ? "confirmed: \(summary.confirmed) held deletion(s) applied"
+                : "confirmation did not apply — the held list changed; nothing deleted")
+        }
 
         if let client = ReviewClient(config: config) {
             review = try? await client.fetch()
@@ -200,6 +215,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
 
         menu.addItem(item(syncing ? "Syncing…" : "Sync Now", #selector(doSync), key: "s"))
+        if !held.isEmpty, !syncing {
+            let count = held.reduce(0) { $0 + $1.events.count }
+            menu.addItem(item("Review \(count) Withheld Deletion\(count == 1 ? "" : "s")…",
+                              #selector(reviewHeld)))
+        }
 
         let pause = Pause.load()
         if pause.isActive(at: Date()) {
@@ -254,6 +274,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Actions
 
     @objc func doSync() { Task { await syncNow() } }
+
+    /// Put the held list in front of a person, and delete it only on a yes.
+    ///
+    /// The list shown is the one the last run held. What is confirmed is its
+    /// fingerprint, and the run that acts on it reads Radicale again — if the
+    /// set has changed in between, nothing is deleted and the new list is
+    /// offered instead.
+    @objc func reviewHeld() {
+        let sets = held
+        guard !sets.isEmpty else { return }
+        let stamp = PlanReport.stamp
+        var lines: [String] = []
+        for set in sets {
+            lines.append("From \(set.calendar):")
+            for event in set.events.prefix(30) {
+                lines.append("  \(stamp.string(from: event.start))  \(event.title)")
+            }
+            if set.events.count > 30 { lines.append("  …and \(set.events.count - 30) more") }
+        }
+        let count = sets.reduce(0) { $0 + $1.events.count }
+
+        let alert = NSAlert()
+        alert.messageText = "Delete \(count) event\(count == 1 ? "" : "s") no longer in Radicale?"
+        alert.informativeText = lines.joined(separator: "\n") + "\n\n"
+            + "These vanished from the calendar server in one go, so they were "
+            + "held rather than deleted. Delete them only if that was deliberate — "
+            + "a cancellation confirmed in the calsync console looks exactly like this. "
+            + "If the list has changed by the time this runs, nothing is deleted."
+        alert.addButton(withTitle: "Delete \(count)")
+        alert.addButton(withTitle: "Keep Them")
+        alert.alertStyle = .warning
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let fingerprints = Set(sets.map(\.fingerprint))
+        Task { await syncNow(confirm: fingerprints) }
+    }
 
     @objc func doPause(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String,

@@ -74,10 +74,21 @@ public enum PlanReport {
             lines.append("  - delete  \(stamp.string(from: item.start))  \(item.title)")
         }
         if plan.unchanged > 0 { lines.append("  = \(plan.unchanged) unchanged") }
+        if plan.confirmed {
+            lines.append("  (\(plan.deletes.count) deletion(s) held earlier, confirmed by a person)")
+        }
         if let hold = plan.hold {
             lines.append("  HELD: \(hold.message)")
-            lines.append("        Nothing was deleted. If this is a real cancellation, "
-                + "re-run once Radicale is confirmed good.")
+            for item in plan.held {
+                lines.append("  ? held    \(stamp.string(from: item.start))  \(item.title)")
+            }
+            if let fingerprint = plan.heldFingerprint {
+                lines.append("        Nothing was deleted. If these really are gone, confirm "
+                    + "from the menu bar or with --confirm \(fingerprint)")
+            } else {
+                lines.append("        Nothing was deleted. If this is a real cancellation, "
+                    + "re-run once Radicale is confirmed good.")
+            }
         }
         if plan.isEmpty && plan.hold == nil && plan.unchanged == 0 {
             lines.append("  nothing to do")

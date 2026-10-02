@@ -49,11 +49,19 @@ deletions withheld, a long outage, and events waiting on a human.
   !  3 events held, 1 answer to approve
 ```
 
-It **cannot resolve anything**. Status, pause, Sync Now and links out are all
-about this machine; answering a question or approving an answer happens in the
-console, by a person, because that is where the review gate is
+It **cannot resolve anything of calsync's**. Status, pause, Sync Now and links
+out are all about this machine; answering a question or approving an answer
+happens in the console, by a person, because that is where the review gate is
 ([docs/API.md](../docs/API.md)). The menu links there rather than reimplementing
 it.
+
+The one decision it does take is this machine's own: **Review Withheld
+Deletions…** appears when its guard has held, lists exactly what it held, and
+deletes that list on a yes. Nothing on the server can see this hold, so without
+it the guard's "pending confirmation" had no answer — a cancellation confirmed
+in the console sat here as a duplicate until it slid into the past. What is
+confirmed is the set's fingerprint, and the run that acts on it reads Radicale
+again: a list that has changed in between deletes nothing and is offered afresh.
 
 **Pause expires by default.** A pause you forget is the family's calendar going
 quietly stale for weeks — the same failure `persists_across_seasons` prevents on
@@ -226,8 +234,8 @@ event off in the console instead: `/calendar` has **Not attending** and
 **Cancelled** on each upcoming row, which remove it from the collection itself
 and keep it off through every later poll (`src/calsync/withheld.py`). The
 deletion then reaches this side as an ordinary disappearance — including the
-guard, so withholding a large number of events at once is held here and reported
-rather than applied.
+guard, so withholding a large number of events at once is held here until
+somebody confirms it from the menu bar (or with `--confirm`).
 
 There is one small state file, and it is deliberately of a different kind:
 `~/Library/Application Support/calsync-mirror/health.json` records only when a
@@ -288,7 +296,10 @@ the same shape as "the season was called off".
 - **The same guard `diff.py` applies to a feed.** More than 3, or more than 20%,
   of tracked *future* events vanishing in one run withholds every deletion and
   exits 3. Thresholds match `diff.MAX_DISAPPEARANCE_*` on purpose; two numbers
-  meaning the same thing drift apart the moment one is tuned.
+  meaning the same thing drift apart the moment one is tuned. The held list is
+  printed with a fingerprint; `--confirm <fingerprint>` (or the menu bar) deletes
+  that exact list and nothing else. An empty read and a total turnover cannot be
+  confirmed — both are the shape of a read gone wrong, not of a schedule.
 - **Total turnover is held too** — nothing tracked survived and nothing arriving
   is recognised means the collection moved or the mapping is wrong, never a
   normal season.

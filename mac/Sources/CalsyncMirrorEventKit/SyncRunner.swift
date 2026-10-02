@@ -2,6 +2,13 @@ import EventKit
 import Foundation
 import CalsyncMirrorCore
 
+/// Deletions one pair withheld, as a person would be asked about them.
+public struct HeldDeletions {
+    public var calendar: String
+    public var events: [ExistingEvent]
+    public var fingerprint: String
+}
+
 /// What one pass over every pair did.
 public struct RunSummary {
     public var created = 0
@@ -10,6 +17,11 @@ public struct RunSummary {
     public var unchanged = 0
     public var duplicates: [DuplicateWarning] = []
     public var holds: [String] = []
+    /// The confirmable part of `holds`: each pair's withheld set and the
+    /// fingerprint that confirms it.
+    public var held: [HeldDeletions] = []
+    /// Deletions that went ahead because a person confirmed them.
+    public var confirmed = 0
     public var errors: [String] = []
     /// Nothing could be reached. Distinct from an error, and the reason the
     /// menu can stay quiet on a trip away.
@@ -47,7 +59,13 @@ public final class SyncRunner {
     /// Read everything, then write. The ordering is the safety, the same as
     /// `sync.py`: a failed read must never reach the part that decides what to
     /// delete, and an unreachable run must not open a calendar at all.
-    public func run(now: Date = Date(), dryRun: Bool = false) async -> RunSummary {
+    ///
+    /// `confirm` carries fingerprints of held sets a person has agreed to; see
+    /// `Reconcile.plan`. A fingerprint for a set that has since changed does
+    /// nothing, and the run holds again with the current list.
+    public func run(
+        now: Date = Date(), dryRun: Bool = false, confirm: Set<String> = []
+    ) async -> RunSummary {
         var summary = RunSummary()
 
         let pause = Pause.load()
@@ -102,7 +120,7 @@ public final class SyncRunner {
                 }
                 let plan = Reconcile.plan(
                     desired: windowed, existing: existing, now: now,
-                    guardPolicy: config.policy, calendar: calendar,
+                    confirmed: confirm, guardPolicy: config.policy, calendar: calendar,
                     fallbackZoneID: config.fallbackZoneID)
 
                 summary.lines.append(
@@ -112,6 +130,11 @@ public final class SyncRunner {
                 summary.unchanged += plan.unchanged
                 summary.duplicates.append(contentsOf: plan.duplicates)
                 if let hold = plan.hold { summary.holds.append(hold.message) }
+                if let fingerprint = plan.heldFingerprint {
+                    summary.held.append(HeldDeletions(
+                        calendar: read.pair.calendar, events: plan.held,
+                        fingerprint: fingerprint))
+                }
 
                 if dryRun {
                     summary.created += plan.creates.count
@@ -129,7 +152,11 @@ public final class SyncRunner {
                     catch { summary.errors.append("updating \(item.fields.title): \(error)") }
                 }
                 for item in plan.deletes {
-                    do { try store.delete(item); summary.deleted += 1 }
+                    do {
+                        try store.delete(item)
+                        summary.deleted += 1
+                        if plan.confirmed { summary.confirmed += 1 }
+                    }
                     catch { summary.errors.append("deleting \(item.title): \(error)") }
                 }
             } catch {

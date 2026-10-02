@@ -219,6 +219,60 @@ final class ReconcileTests: XCTestCase {
         XCTAssertTrue(plan.deletes.isEmpty, "a held guard must delete nothing")
     }
 
+    /// The way out of a hold. Confirming a schedule cancelled in the console
+    /// would otherwise leave every copy on this Mac until it slid into the past.
+    func testHeldSetIsNamedAndConfirmable() {
+        let all = (1...10).map { desired("k\($0)", at: future($0)) }
+        let existing = all.enumerated().map { mirrored($1, identifier: "ek-\($0)") }
+        let kept = Array(all.prefix(5))
+
+        let held = Reconcile.plan(desired: kept, existing: existing, now: now)
+        XCTAssertEqual(held.held.compactMap(\.calsyncUID), ["k6", "k7", "k8", "k9", "k10"])
+        let fingerprint = try! XCTUnwrap(held.heldFingerprint)
+
+        let plan = Reconcile.plan(
+            desired: kept, existing: existing, now: now, confirmed: [fingerprint])
+        XCTAssertNil(plan.hold)
+        XCTAssertTrue(plan.confirmed)
+        XCTAssertEqual(plan.deletes.map(\.identifier), ["ek-5", "ek-6", "ek-7", "ek-8", "ek-9"])
+    }
+
+    /// Radicale is read again between the list and the button. Agreeing that
+    /// five events are gone is not agreeing to whatever is missing by then.
+    func testAConfirmationOfADifferentSetDeletesNothing() {
+        let all = (1...10).map { desired("k\($0)", at: future($0)) }
+        let existing = all.enumerated().map { mirrored($1, identifier: "ek-\($0)") }
+        let shown = Reconcile.plan(
+            desired: Array(all.prefix(5)), existing: existing, now: now)
+
+        let plan = Reconcile.plan(
+            desired: Array(all.prefix(4)), existing: existing, now: now,
+            confirmed: [shown.heldFingerprint!])
+        XCTAssertNotNil(plan.hold)
+        XCTAssertFalse(plan.confirmed)
+        XCTAssertTrue(plan.deletes.isEmpty)
+        XCTAssertEqual(plan.held.count, 6, "the new list is offered instead")
+    }
+
+    /// An empty read is the shape of a broken one. Nobody should be a click
+    /// away from deleting every event on the calendar.
+    func testAnEmptyReadCannotBeConfirmed() {
+        let all = (1...10).map { desired("k\($0)", at: future($0)) }
+        let existing = all.enumerated().map { mirrored($1, identifier: "ek-\($0)") }
+        let forged = HeldSet.fingerprint(all.map(\.uid))
+        let plan = Reconcile.plan(
+            desired: [], existing: existing, now: now, confirmed: [forged])
+        XCTAssertNotNil(plan.hold)
+        XCTAssertNil(plan.heldFingerprint)
+        XCTAssertTrue(plan.deletes.isEmpty)
+    }
+
+    /// The same name calsync's `diff.fingerprint` gives the same set.
+    func testFingerprintMatchesTheServerSide() {
+        XCTAssertEqual(HeldSet.fingerprint(["b", "a"]), HeldSet.fingerprint(["a", "b"]))
+        XCTAssertEqual(HeldSet.fingerprint(["a", "b"]), "7e18f737311b2dc3")
+    }
+
     /// Radicale answering with an empty collection must not empty the calendar.
     func testEmptyReadDeletesNothing() {
         let all = (1...10).map { desired("k\($0)", at: future($0)) }
