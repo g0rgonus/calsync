@@ -26,7 +26,7 @@ from .. import __version__
 #: Bumped when a shape changes in a way a client could notice. Not the package
 #: version: an agent cares whether the contract moved, not whether a venue
 #: parser was tidied.
-CONTRACT_VERSION = "1.2"
+CONTRACT_VERSION = "1.3"
 
 
 #: One entry per route the app actually serves, keyed by (method, rule) exactly
@@ -63,6 +63,28 @@ ENDPOINTS: dict[tuple[str, str], dict] = {
         "summary": "One event by uid, unbounded by date.",
         "returns": {"event": "as in /v1/events", "sources": "freshness"},
     },
+    ("GET", "/v1/placements"): {
+        "summary": "Where calsync last put each event, and whether it is off "
+                   "the calendar on purpose.",
+        "query": {
+            "from": "RFC3339 or a bare date. Defaults to, and is clamped at, "
+                    "the bottom of the sync window.",
+        },
+        "returns": {
+            "placements": "array of {uid, source_id, collection, starts_at, state}",
+            "state": "'live', or why not: 'withheld' (a person took it off), "
+                     "'cancelled' (calsync deleted it), 'approved' (a person "
+                     "confirmed its removal; the delete may still be landing)",
+        },
+        "notes": [
+            "For a reader of the calendar server to tell a deliberate absence "
+            "from a broken read. An event missing from a collection is "
+            "accounted for if its state is not 'live' or its collection is "
+            "another one.",
+            "An approval is recorded before its deletes are sent, so there is "
+            "no moment when an absence is unexplained here.",
+        ],
+    },
     ("GET", "/v1/review"): {
         "summary": "How much is waiting on a human, as counts.",
         "returns": {
@@ -70,7 +92,10 @@ ENDPOINTS: dict[tuple[str, str], dict] = {
             "sources": "array of {source_id, activity, held_events}",
             "answers_awaiting_decision": "answers given, not yet approved",
             "upstream_edits": "events a feed rewrote without saying what changed",
-            "needs_attention": "the three above, summed",
+            "held_polls": "sources whose last poll a guard held, awaiting a "
+                          "person on the source page",
+            "held_poll_sources": "array of {source_id, activity, since, detail}",
+            "needs_attention": "the four counts above, summed",
         },
         "notes": [
             "Counts only. The questions, and answering them, are in the "

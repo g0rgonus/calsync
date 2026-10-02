@@ -246,6 +246,84 @@ def test_an_identity_break_cannot_be_confirmed():
     assert delta.is_anomalous
 
 
+def test_a_confirmed_removal_is_on_record_before_any_delete(conn, source, target, tmp_path):
+    """The Mac mirror reads Radicale and asks `/v1/placements` to account for
+    what is missing. If the approval landed after the deletes, a mirror run in
+    between would see an absence nothing explains, hold it, and ask a second
+    person for the decision the first had just made."""
+    _sync(conn, source, target)
+    shown = _sync(conn, source, target, raw=_first_event_only(), dry_run=True)
+
+    on_record = []
+    real_cancel = target.cancel
+
+    def cancel(ref):
+        # A separate connection sees only what is committed — which is what
+        # the API process would see at this moment.
+        other = db.connect(tmp_path / "calsync.db")
+        row = other.execute(
+            "SELECT removal_approved_at FROM event_state WHERE uid = ?",
+            (ref.remote_id,),
+        ).fetchone()
+        other.close()
+        on_record.append(row[0])
+        return real_cancel(ref)
+
+    target.cancel = cancel
+    _sync(conn, source, target, raw=_first_event_only(),
+          confirm_held=shown.held_fingerprint)
+
+    assert len(on_record) == 4
+    assert all(on_record), "a delete went out before its approval was committed"
+
+
+def test_an_event_written_again_is_no_longer_approved_for_removal(conn, source, target):
+    """A stale approval would let a later bad read of a live event pass as
+    deliberate on the mirror."""
+    _sync(conn, source, target)
+    uid = next(iter(repo.event_states(conn, source.id)))
+    repo.approve_removals(conn, [uid])
+    assert _placement(conn, uid)["state"] == "approved"
+
+    conn.execute("UPDATE event_state SET content_hash = 'stale' WHERE uid = ?", (uid,))
+    _sync(conn, source, target)
+
+    assert _placement(conn, uid)["state"] == "live"
+
+
+def test_placements_say_why_an_event_is_off(conn, source, target):
+    _sync(conn, source, target)
+    live, approved, cancelled, withheld = sorted(repo.event_states(conn, source.id))[:4]
+    repo.approve_removals(conn, [approved])
+    repo.mark_event_cancelled(conn, cancelled)
+    repo.set_withheld(conn, withheld, "not_attending")
+    repo.mark_event_cancelled(conn, withheld)
+
+    assert _placement(conn, live)["state"] == "live"
+    assert _placement(conn, approved)["state"] == "approved"
+    assert _placement(conn, cancelled)["state"] == "cancelled"
+    assert _placement(conn, withheld)["state"] == "withheld", "the reason, not the result"
+
+
+def _placement(conn, uid):
+    return next(p for p in repo.placements(conn, since="2000-01-01") if p["uid"] == uid)
+
+
+def test_a_held_poll_is_listed_until_one_gets_through(conn, source, target):
+    _sync(conn, source, target)
+    assert repo.held_polls(conn) == []
+
+    _sync(conn, source, target, raw=_first_event_only())
+    assert [r["source_id"] for r in repo.held_polls(conn)] == [source.id]
+
+    # A failed fetch says nothing about whether the hold is still there.
+    _sync(conn, source, target, raw=b"not a calendar")
+    assert [r["source_id"] for r in repo.held_polls(conn)] == [source.id]
+
+    _sync(conn, source, target)
+    assert repo.held_polls(conn) == []
+
+
 def test_identity_break_holds_creations_too(conn, source, target, tmp_path):
     """The flag-football failure: every UID is new, so nothing matches.
 

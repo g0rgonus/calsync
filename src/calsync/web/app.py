@@ -1104,6 +1104,12 @@ def create_app(
                 # observed instance was a cancellation nobody would otherwise
                 # hear about (docs/sources/player360.md, Trap 2).
                 edited=repo.pending_upstream_edits(conn),
+                # First on the page, because it is the one where the calendar
+                # is already wrong: a held poll has written the new events and
+                # kept the old ones, so until somebody looks, it shows both.
+                # The decision is on the source page, beside the list it is
+                # about; this is the signpost the Mac's menu bar sends you to.
+                held_polls=repo.held_polls(conn),
                 venues=repo.list_venues(conn),
                 flash=_flash(),
             )

@@ -170,6 +170,32 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None) -> Bo
                 }
             )
 
+    @app.get("/v1/placements")
+    def list_placements():
+        """Where calsync last put each event, and whether it is off on purpose.
+
+        For a reader of the calendar server — the Mac mirror — to tell a
+        deliberate absence from a broken read. An event missing from a
+        collection is accounted for if calsync took it off (withheld,
+        cancelled, or a removal a person approved) or moved it to another
+        collection; anything else missing is the mirror's own guard's business.
+
+        Approvals are recorded before the deletes are sent, so there is no
+        moment when Radicale is missing an event this does not yet explain.
+        It carries no content: a uid, where it is, and why it is not there.
+        """
+        with connect() as conn:
+            settings = Settings.load(conn)
+            now = clock()
+            floor = now - timedelta(days=settings.sync_window_back_days)
+            since = max(_stamp(request.query.getunicode("from"), default=floor), floor)
+            items = repo.placements(conn, since=since.isoformat())
+            return _dump({
+                "from": since.isoformat(),
+                "count": len(items),
+                "placements": items,
+            })
+
     @app.get("/v1/review")
     def review_queue():
         """How much is waiting on a human, as counts.
@@ -220,13 +246,30 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None) -> Bo
             # upstream edit is neither — it is a thing to go and look at.
             answered = repo.list_tasks(conn, state=repo.ANSWERED)
             edits = repo.pending_upstream_edits(conn)
+            # A fourth kind: a guard held a poll, and the decision — usually a
+            # schedule rebuilt under fresh ids — is waiting on the source page.
+            # Read from the last completed poll, so it clears itself the moment
+            # a confirmation or a recovered feed lets one through.
+            held_polls = [
+                {
+                    "source_id": row["source_id"],
+                    "activity": {"id": row["activity_id"], "name": row["activity_name"]},
+                    "since": row["started_at"],
+                    "detail": row["detail"],
+                }
+                for row in repo.held_polls(conn)
+            ]
 
             return _dump({
                 "held_events": held_total,
                 "sources": per_source,
                 "answers_awaiting_decision": len(answered),
                 "upstream_edits": len(edits),
-                "needs_attention": held_total + len(answered) + len(edits),
+                "held_polls": len(held_polls),
+                "held_poll_sources": held_polls,
+                "needs_attention": (
+                    held_total + len(answered) + len(edits) + len(held_polls)
+                ),
                 "enrichment_collection": collection,
                 "resolved_in": "the console, at /review — not through this API",
             })
