@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
 from . import repo, sources, warmup, withheld
-from .diff import diff_poll
+from .diff import diff_poll, fingerprint
 from .fetch import FetchError, http_fetch, render_url
 from .models import Activity, Event, Venue
 from .render import render
@@ -70,6 +70,12 @@ class SyncReport:
     awaiting_review: int = 0
     held: str | None = None
     held_kind: str | None = None
+    #: The uids a tripped disappearance guard withheld, and the fingerprint a
+    #: person confirms them by (`diff.Diff.confirm`). Empty unless held.
+    held_cancellations: list[str] = field(default_factory=list)
+    held_fingerprint: str | None = None
+    #: Cancellations applied because a person confirmed a held set.
+    confirmed: int = 0
     errors: list[str] = field(default_factory=list)
 
     #: Which collection the events actually went to, so a staged run says so.
@@ -121,6 +127,8 @@ class SyncReport:
             parts.append(f"{self.skipped_window} outside window")
         if self.staged_to:
             parts.append(f"staged to {self.staged_to!r}")
+        if self.confirmed:
+            parts.append(f"{self.confirmed} held cancellation(s) confirmed")
         if self.held:
             parts.append(f"HELD ({self.held_kind}): {self.held}")
         parts.extend(f"ERROR: {e}" for e in self.errors)
@@ -240,11 +248,18 @@ def sync_source(
     fetcher=http_fetch,
     raw: bytes | str | None = None,
     dry_run: bool = False,
+    confirm_held: str | None = None,
 ) -> SyncReport:
     """Poll one source and reconcile it into ``target``.
 
     ``raw`` bypasses the network with a payload already in hand — how the golden
     tests run, and how a saved feed can be replayed without a credential.
+
+    ``confirm_held`` is a person's answer to a held disappearance: the
+    fingerprint of the set they were shown. If this poll's held set is exactly
+    that set, those cancellations go through like any other; if the feed has
+    moved since, the poll stays held and nothing is cancelled. Only a person
+    reaches this — the console's confirm button — never the poller.
     """
     report = SyncReport(source_id=source.id, staged_to=source.staging_collection)
     settings = Settings.load(conn)
@@ -340,10 +355,16 @@ def sync_source(
 
     report.unchanged = len(delta.unchanged)
 
+    if not dry_run and delta.confirm(confirm_held):
+        report.confirmed = len(delta.cancelled)
+
     if delta.is_anomalous:
         report.status = "held"
         report.held = delta.anomaly
         report.held_kind = delta.anomaly_kind
+        report.held_cancellations = list(delta.held_cancellations)
+        if delta.held_cancellations:
+            report.held_fingerprint = fingerprint(delta.held_cancellations)
         # An identity break withholds creations too, so there may be nothing
         # left to apply. A disappearance still has valid creates and updates:
         # the events that ARE present are real, only their absence is suspect.
@@ -531,9 +552,12 @@ def sync_source(
         )
         repo.record_source_error(conn, source.id, detail)
     elif not delta.is_anomalous:
+        detail = delta.summary()
+        if report.confirmed:
+            detail += f" ({report.confirmed} held, confirmed by a person)"
         repo.record_poll_run(
             conn, source_id=source.id, status="ok",
-            detail=delta.summary(), raw_sha256=result.raw_sha256,
+            detail=detail, raw_sha256=result.raw_sha256,
         )
         repo.record_source_success(conn, source.id)
 

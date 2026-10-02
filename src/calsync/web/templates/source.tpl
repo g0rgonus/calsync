@@ -15,6 +15,57 @@
   <strong>A guard held this poll.</strong> {{ report.held }}
   Nothing was cancelled. Look at the feed before doing anything else.
 </div>
+%   if held and report.held_fingerprint:
+<% replaced = sum(1 for row in held if row['twin']) %>
+<div class="card">
+  <h2 style="margin-top:0">Gone from the feed</h2>
+  <p class="note">
+% if replaced == len(held):
+    Every one of these has a twin still in the feed — same start, same label,
+    new id. That is what a schedule rebuilt in the team's app looks like, and
+    each pair is a duplicate on the calendar until these go.
+% elif replaced:
+    {{ replaced }} of {{ len(held) }} have a twin still in the feed under a new
+    id; the rest have no replacement at all. Check the team's app for those.
+% else:
+    None of these has a replacement in the feed. That is either a season cut
+    short or a feed that came back incomplete — check the team's app before
+    confirming anything.
+% end
+  </p>
+  <table class="derived">
+% for row in held:
+    <tr>
+      <th style="width:auto;white-space:normal">{{ row['when'] }}</th>
+      <td>
+        {{ row['label'] }}{{ ' + warm-up' if row['warmup'] else '' }}
+        <span class="note" style="display:block">
+          <span class="raw">{{ row['uid'] }}</span> · {{ row['collection'] }}
+          {{ '· already happened' if row['past'] else '' }}
+        </span>
+      </td>
+      <td>
+% if row['twin']:
+        replaced by <span class="raw">{{ row['twin'] }}</span>
+% else:
+        <strong>no replacement</strong>
+% end
+      </td>
+    </tr>
+% end
+  </table>
+  <form method="post" action="/sources/{{ source.id }}/confirm-cancellations"
+        style="margin-top:1rem">
+    <input type="hidden" name="held" value="{{ report.held_fingerprint }}">
+    <button class="btn" type="submit">These are gone — take them off the calendar</button>
+  </form>
+  <p class="note">
+    Cancels exactly this list, past ones included, which is what the poll would
+    have done had the guard not tripped. If the feed changes before you press
+    it, nothing is cancelled and this list is shown again.
+  </p>
+</div>
+%   end
 % end
 
 <div class="card">

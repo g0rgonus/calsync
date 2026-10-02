@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from calsync import db, repo
-from calsync.diff import diff_poll
+from calsync.diff import diff_poll, fingerprint
 from calsync.fetch import FetchError, render_url
 from calsync.identity import IdentityError, extract, synthesize
 from calsync.models import Event
@@ -170,6 +170,80 @@ def test_mass_disappearance_holds_cancellations(conn, source, target):
     assert not any(s.cancelled for s in repo.event_states(conn, source.id).values())
     assert [r["status"] for r in conn.execute(
         "SELECT status FROM poll_runs ORDER BY id")] == ["ok", "held"]
+
+
+def test_a_held_poll_names_what_it_held(conn, source, target):
+    """"Pending confirmation" has to say pending confirmation *of what*."""
+    _sync(conn, source, target)
+    report = _sync(conn, source, target, raw=_first_event_only())
+
+    assert len(report.held_cancellations) == 4
+    assert report.held_fingerprint == fingerprint(report.held_cancellations)
+
+
+def test_a_confirmed_hold_cancels_exactly_what_was_held(conn, source, target, tmp_path):
+    """The way out of a guard that would otherwise hold until the season ends.
+
+    A schedule rebuilt in the team's app under fresh ids trips the guard on
+    every poll until the old events age out of the window — weeks of every
+    practice on the calendar twice, and every genuine cancellation stuck behind
+    them. A person who has looked at the list can say so.
+    """
+    _sync(conn, source, target)
+    held = _sync(conn, source, target, raw=_first_event_only(), dry_run=True)
+
+    report = _sync(conn, source, target, raw=_first_event_only(),
+                   confirm_held=held.held_fingerprint)
+
+    assert report.status == "ok"
+    assert report.confirmed == report.cancelled == 4
+    states = repo.event_states(conn, source.id)
+    assert {uid for uid, s in states.items() if s.cancelled} == set(held.held_cancellations)
+    assert len(list((tmp_path / "out").rglob("*.ics"))) == 1
+    detail = conn.execute(
+        "SELECT status, detail FROM poll_runs ORDER BY id DESC LIMIT 1").fetchone()
+    assert detail["status"] == "ok"
+    assert "confirmed by a person" in detail["detail"]
+
+
+def test_a_confirmation_of_a_different_set_cancels_nothing(conn, source, target):
+    """The feed is fetched again between the page and the button. Agreeing that
+    four events are gone is not agreeing that whatever is missing by then is."""
+    _sync(conn, source, target)
+    shown = _sync(conn, source, target, raw=_first_event_only(), dry_run=True)
+    stale = fingerprint(shown.held_cancellations[1:])
+
+    report = _sync(conn, source, target, raw=_first_event_only(), confirm_held=stale)
+
+    assert report.status == "held"
+    assert report.confirmed == report.cancelled == 0
+    assert not any(s.cancelled for s in repo.event_states(conn, source.id).values())
+
+
+def test_a_dry_run_never_applies_a_confirmation(conn, source, target):
+    _sync(conn, source, target)
+    shown = _sync(conn, source, target, raw=_first_event_only(), dry_run=True)
+
+    report = _sync(conn, source, target, raw=_first_event_only(), dry_run=True,
+                   confirm_held=shown.held_fingerprint)
+
+    assert report.status == "held"
+    assert not any(s.cancelled for s in repo.event_states(conn, source.id).values())
+
+
+def test_an_identity_break_cannot_be_confirmed():
+    """It withholds creations as well, so "confirming" it would duplicate a
+    season. There is no held set to fingerprint, and a forged one is refused."""
+    delta = diff_poll(
+        [_event("new-1", hash_="a"), _event("new-2", hash_="b")],
+        {"old-1": "a", "old-2": "b"},
+        now=NOW,
+    )
+    assert delta.anomaly_kind == "identity"
+    assert delta.held_cancellations == []
+    assert not delta.confirm(fingerprint([]))
+    assert not delta.confirm(fingerprint(["old-1", "old-2"]))
+    assert delta.is_anomalous
 
 
 def test_identity_break_holds_creations_too(conn, source, target, tmp_path):

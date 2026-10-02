@@ -25,7 +25,7 @@ from .. import __version__
 from .. import config as config_mod
 from .. import (
     db, dormancy, enrichment, matrix, notify, repo, retire, sources, targeting,
-    withheld as withheld_mod, zones,
+    warmup, withheld as withheld_mod, zones,
 )
 from ..fetch import FetchError, http_fetch, render_url
 from ..inspection import InspectionError, inspect_feed
@@ -375,6 +375,9 @@ def create_app(
                 # different by the time anybody retires anything.
                 upcoming=retire.live_events(conn, source_id, now=clock()),
                 polls=repo.recent_polls(conn, source_id),
+                held=_held_rows(
+                    conn, source_id, report, zone=_zone(activity.tz), now=clock(),
+                ),
                 flash=_flash(),
             )
 
@@ -545,7 +548,9 @@ def create_app(
 
     # --- syncing on demand -------------------------------------------------
 
-    def _sync_now(source_ids: list[str]) -> tuple[list, list[str]]:
+    def _sync_now(
+        source_ids: list[str], *, confirm_held: str | None = None,
+    ) -> tuple[list, list[str]]:
         """Run the real sync loop for the named sources, now.
 
         The same ``sync_source`` the poller calls, against the same target — not
@@ -592,6 +597,7 @@ def create_app(
                             sync_source(
                                 conn, source, target, now=clock(),
                                 secrets=secrets, fetcher=fetcher,
+                                confirm_held=confirm_held,
                             )
                         )
                     except sqlite3.OperationalError as exc:
@@ -631,6 +637,45 @@ def create_app(
         if problems:
             redirect(f"/sources/{source_id}?err=" + _q("; ".join(problems)))
         redirect(f"/sources/{source_id}?ok=" + _q(reports[0].line()))
+
+    @app.post("/sources/<source_id>/confirm-cancellations")
+    def confirm_cancellations(source_id):
+        """Agree that the events a guard held back really are gone.
+
+        The guard says "pending confirmation"; this is the confirmation. It is
+        "Sync now" with one answer attached — the fingerprint of the held set
+        the page showed — so it runs the real sync loop and its ordering, and
+        cancels exactly that set or nothing. If the feed has moved between the
+        page and the press, the poll stays held and the page is shown again
+        with whatever is missing now: agreeing to one list is not agreeing to
+        another.
+        """
+        expected = _field("held")
+        if not expected:
+            raise Refused("nothing was confirmed — reload the page and look again")
+        with connect() as conn:
+            source = _require_source(conn, source_id)
+            if not source.enabled:
+                raise Refused(
+                    "polling is paused for this team, so there is no poll to "
+                    "confirm. Resume polling first."
+                )
+
+        reports, problems = _sync_now([source_id], confirm_held=expected)
+        if problems:
+            redirect(f"/sources/{source_id}?err=" + _q("; ".join(problems)))
+        report = reports[0]
+        if not report.confirmed and report.held_kind == "disappearance":
+            redirect(f"/sources/{source_id}?err=" + _q(
+                "the feed changed since that page loaded, so nothing was "
+                "cancelled. Here is what is missing now — look again."
+            ))
+        if not report.confirmed:
+            redirect(f"/sources/{source_id}?ok=" + _q(
+                "nothing is held any more, so there was nothing to confirm — "
+                + report.line()
+            ))
+        redirect(f"/sources/{source_id}?ok=" + _q(report.line()))
 
     @app.post("/sync")
     def sync_every():
@@ -1758,6 +1803,58 @@ def _preview(conn, source, secrets, fetcher, clock):
         conn, source, _NoTarget(), now=clock(), secrets=secrets,
         fetcher=fetcher, dry_run=True,
     )
+
+
+def _held_rows(
+    conn, source_id: str, report, *, zone: ZoneInfo, now: datetime,
+) -> list[dict]:
+    """The events a held poll would have cancelled, ready to put in front of a person.
+
+    A warm-up is folded into its game: it goes when the game goes, and listing
+    it separately would ask somebody to confirm one decision twice. Each row
+    names the event still on the calendar at the same start with the same
+    label, when there is one — that is what tells a schedule regenerated under
+    new ids (every row has a twin) from a season genuinely being cut short.
+    """
+    held = set(report.held_cancellations)
+    if not held:
+        return []
+    states = repo.event_states(conn, source_id)
+    contents = repo.event_contents(conn, source_id)
+
+    def label(uid: str) -> str:
+        content = contents.get(uid) or {}
+        if content.get("detail"):
+            return content["detail"]
+        if content.get("opponent"):
+            return f"vs {content['opponent']}"
+        return uid
+
+    present: dict[tuple[str, str], str] = {}
+    for uid, state in states.items():
+        if uid not in held and not state.cancelled and not warmup.is_synthetic(uid):
+            present.setdefault((state.starts_at, label(uid)), uid)
+
+    rows = []
+    for uid in held:
+        if warmup.is_synthetic(uid):
+            continue
+        state = states.get(uid)
+        if state is None:
+            continue
+        starts = datetime.fromisoformat(state.starts_at).astimezone(zone)
+        rows.append({
+            "uid": uid,
+            "when": starts.strftime("%a %b %-d, %-I:%M %p"),
+            "sort": state.starts_at,
+            "label": label(uid),
+            "collection": state.collection,
+            "past": starts < now,
+            "twin": present.get((state.starts_at, label(uid))),
+            "warmup": any(warmup.parent_of(w) == uid for w in held),
+        })
+    rows.sort(key=lambda r: datetime.fromisoformat(r["sort"]))
+    return rows
 
 
 def _card(conn, source) -> dict:

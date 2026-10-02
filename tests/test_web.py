@@ -1710,6 +1710,85 @@ def test_a_sync_already_running_is_refused_rather_than_doubled(writing, tmp_path
     assert "already syncing" in second["body"]
 
 
+# --- confirming a held poll -------------------------------------------------
+#
+# A schedule rebuilt in the team's app comes back under fresh ids. The new
+# events are written, the old ones vanish, and the guard holds the old ones on
+# the calendar — every practice twice — until somebody confirms them.
+
+REBUILT = OTTERS.replace(b"UID:2463", b"UID:9992463")
+
+
+def _rebuilt_and_held(client, feed, tmp_path):
+    onboard(client)
+    conn = db.connect(tmp_path / "calsync.db")
+    source_id = repo.list_sources(conn, enabled_only=False)[0].id
+    client.post(f"/sources/{source_id}/sync")
+    old = sorted(u for u in repo.event_states(conn, source_id) if u.startswith("2463"))
+    assert len(old) > 3, "the fixture no longer trips the guard"
+    feed.body = REBUILT
+    held = client.post(f"/sources/{source_id}/sync")["headers"]["Location"]
+    assert "HELD" in unquote(held)
+    return source_id, old
+
+
+def test_a_held_source_page_lists_the_events_and_their_replacements(
+    writing, feed, tmp_path
+):
+    client, _calendar = writing
+    source_id, old = _rebuilt_and_held(client, feed, tmp_path)
+
+    page = client.get(f"/sources/{source_id}")["body"]
+
+    assert "Gone from the feed" in page
+    for uid in old:
+        assert uid in page
+        assert f"999{uid}" in page, f"{uid}'s replacement is not named"
+    assert "Every one of these has a twin" in page
+    assert f"/sources/{source_id}/confirm-cancellations" in page
+
+
+def test_confirming_takes_the_old_copies_off_the_calendar(writing, feed, tmp_path):
+    client, calendar = writing
+    source_id, old = _rebuilt_and_held(client, feed, tmp_path)
+    page = client.get(f"/sources/{source_id}")["body"]
+    fingerprint = page.split('name="held" value="')[1].split('"')[0]
+
+    where = client.post(f"/sources/{source_id}/confirm-cancellations",
+                        {"held": fingerprint})["headers"]["Location"]
+
+    assert "ok=" in where and "confirmed" in unquote(where), unquote(where)
+    assert sorted(calendar.cancelled) == old
+    assert all(f"999{uid}" in calendar.written for uid in old)
+    assert "Gone from the feed" not in client.get(f"/sources/{source_id}")["body"]
+
+
+def test_a_confirmation_for_a_list_that_has_since_changed_does_nothing(
+    writing, feed, tmp_path
+):
+    client, calendar = writing
+    source_id, _old = _rebuilt_and_held(client, feed, tmp_path)
+
+    where = client.post(f"/sources/{source_id}/confirm-cancellations",
+                        {"held": "0000000000000000"})["headers"]["Location"]
+
+    assert "err=" in where
+    assert "feed changed" in unquote(where)
+    assert calendar.cancelled == []
+
+
+def test_a_paused_source_cannot_be_confirmed(writing, feed, tmp_path):
+    client, calendar = writing
+    source_id, _old = _rebuilt_and_held(client, feed, tmp_path)
+    client.post(f"/sources/{source_id}/enabled", {"enabled": "0"})
+
+    page = client.post(f"/sources/{source_id}/confirm-cancellations",
+                       {"held": "anything"})["body"]
+
+    assert "paused" in page
+    assert calendar.cancelled == []
+
+
 # --- retiring a season ------------------------------------------------------
 
 
