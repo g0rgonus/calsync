@@ -22,7 +22,7 @@ struct CalsyncMirror {
         calsync-mirror — mirror calsync's Radicale collections into Apple Calendar
 
         USAGE
-          calsync-mirror [--dry-run] [--config <path>]
+          calsync-mirror [--dry-run] [--confirm <fingerprint>] [--config <path>]
           calsync-mirror --check [--config <path>]
           calsync-mirror --init [--config <path>]
 
@@ -30,6 +30,11 @@ struct CalsyncMirror {
           --check      Can Radicale be reached and parsed? Touches no calendar
                        and asks for no permission. Run this first of all.
           --dry-run    Show the plan and change nothing. Run this second.
+          --confirm    Delete a held set after all. The fingerprint is printed
+                       with the held list; it only applies if the list is
+                       still exactly that, so a changed read deletes nothing.
+                       Repeatable, one per calendar. Combine with --dry-run
+                       to see what it would delete.
           --config     Config file (default: ~/.config/calsync-mirror/config.json)
           --init       Write a sample config and exit.
           --version    Print the version and exit.
@@ -54,6 +59,7 @@ struct CalsyncMirror {
         var doInit = false
         var checkOnly = false
         var configPath = Config.defaultPath
+        var confirm = Set<String>()
 
         var args = Array(CommandLine.arguments.dropFirst())
         while !args.isEmpty {
@@ -62,6 +68,9 @@ struct CalsyncMirror {
             case "--dry-run", "-n": dryRun = true
             case "--init": doInit = true
             case "--check": checkOnly = true
+            case "--confirm":
+                guard !args.isEmpty else { fail("--confirm needs a fingerprint") }
+                confirm.insert(args.removeFirst())
             case "--version":
                 // Bare, so `install.sh` can read it straight into Info.plist
                 // without a parse step to get wrong.
@@ -130,11 +139,16 @@ struct CalsyncMirror {
         let runner = SyncRunner(config: config, store: CalendarStore())
 
         if dryRun { print("DRY RUN — nothing will be written\n") }
-        let summary = await runner.run(now: now, dryRun: dryRun)
+        let summary = await runner.run(now: now, dryRun: dryRun, confirm: confirm)
         for line in summary.lines { print(line) }
 
         if summary.offline { exit(Exit.unreachable.rawValue) }
         if !summary.errors.isEmpty { exit(Exit.error.rawValue) }
+        if !confirm.isEmpty, summary.confirmed == 0, !dryRun {
+            FileHandle.standardError.write(Data(
+                ("WARNING: nothing matched --confirm; the held list has changed "
+                 + "since that fingerprint was printed, so nothing was deleted\n").utf8))
+        }
         if !summary.holds.isEmpty { exit(Exit.held.rawValue) }
         exit(Exit.ok.rawValue)
     }

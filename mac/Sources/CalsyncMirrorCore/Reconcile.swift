@@ -99,6 +99,12 @@ public struct MirrorPlan: Equatable {
     public var deletes: [ExistingEvent] = []
     /// Set when the guard withheld deletions. `deletes` is empty when it is.
     public var hold: HoldReason? = nil
+    /// What a disappearance hold withheld, and the fingerprint a person
+    /// confirms it by. Empty for an identity hold, which cannot be confirmed.
+    public var held: [ExistingEvent] = []
+    public var heldFingerprint: String? = nil
+    /// Deletions that went ahead because a person confirmed this exact set.
+    public var confirmed = false
     public var duplicates: [DuplicateWarning] = []
 
     public var isEmpty: Bool {
@@ -256,10 +262,16 @@ public enum Reconcile {
     ///   - existing: every event currently in the destination calendar, within
     ///     the same window.
     ///   - now: events starting before this are never deletion candidates.
+    ///   - confirmed: fingerprints of held sets a person has agreed to delete.
+    ///     One applies only if it names *exactly* this run's held set — the
+    ///     collection is read again between showing the list and acting on it,
+    ///     and agreeing that these events are gone is not agreeing to whatever
+    ///     is missing by then.
     public static func plan(
         desired: [ParsedEvent],
         existing: [ExistingEvent],
         now: Date,
+        confirmed: Set<String> = [],
         guardPolicy: DisappearanceGuard = DisappearanceGuard(),
         calendar: Calendar = .current,
         fallbackZoneID: String = Reconcile.fallbackZoneID
@@ -312,7 +324,23 @@ public enum Reconcile {
         if let hold = guardPolicy.evaluate(
             trackedFuture: trackedFuture.count, missing: missing.count, incoming: live.count
         ) {
-            plan.hold = hold
+            // Only a disappearance, and never off an empty read. An identity
+            // hold means the wrong collection answered; an empty one is the
+            // shape of a broken read, and a list of every event on the calendar
+            // is not something a person should be one click from deleting.
+            if case .disappearance = hold, !live.isEmpty {
+                let fingerprint = HeldSet.fingerprint(missing.compactMap(\.calsyncUID))
+                if confirmed.contains(fingerprint) {
+                    plan.deletes = missing
+                    plan.confirmed = true
+                } else {
+                    plan.hold = hold
+                    plan.held = missing
+                    plan.heldFingerprint = fingerprint
+                }
+            } else {
+                plan.hold = hold
+            }
         } else {
             plan.deletes = missing
         }
