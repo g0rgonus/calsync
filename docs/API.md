@@ -212,11 +212,14 @@ GET  /v1/review                                        # built
 
 **How much is waiting on a human, as counts.** It exists so something ambient —
 a menu bar, a dashboard — can show that events are sitting in the enrichment
-calendar without anybody remembering to open the console. Three kinds of waiting
+calendar without anybody remembering to open the console. Four kinds of waiting
 are counted apart because they are different acts: `held_events` are questions
 nobody has answered, `answers_awaiting_decision` are answers somebody gave that
-need a glance, and `upstream_edits` are events a feed rewrote without saying
-what changed. `needs_attention` is the three summed.
+need a glance, `upstream_edits` are events a feed rewrote without saying what
+changed, and `held_polls` are teams whose last poll a guard held — usually a
+schedule rebuilt under fresh ids, with old and new copies on the calendar side
+by side until somebody confirms on the source page. `needs_attention` is the
+four summed.
 
 It **runs no dry run and fetches no feed**, so it is safe to poll on a timer.
 The console's `/review` page does run one, because a verdict from last week says
@@ -243,6 +246,31 @@ nothing stores documents yet. Approve would write to CalDAV and record who
 decided and when. Edits made at approval are stored as a correction against
 `(extractor, prompt_version)` — that's your regression corpus for prompt
 changes.
+
+---
+
+## Placements
+
+```http
+GET  /v1/placements?from=                              # built
+```
+
+**Where calsync last put each event, and whether it is off the calendar on
+purpose** — `live`, or `withheld`, `cancelled` or `approved` (a person confirmed
+a held removal; the delete may still be landing). No content: a uid, a
+collection and a state.
+
+It exists so **one confirmation is enough**. The Mac mirror reads Radicale and
+runs the same disappearance guard `diff.py` does, because a broken read looks
+exactly like a cancelled season. Without this it could not tell a bulk removal a
+person confirmed in the console from a broken read, so it held that too and
+asked again on the Mac. Now an absence is *accounted for* if calsync says the
+event is off on purpose or lives in another collection, and the mirror's guard
+counts only what is not. A *live* event in another collection is deliberately
+not an explanation: a reader with a mistyped or swapped collection name sees
+exactly that, and a dry run accepting it planned to delete a whole calendar. The approval is recorded **before** the deletes are
+sent (`repo.approve_removals`), so there is no moment when Radicale is missing
+an event this endpoint does not explain.
 
 ---
 

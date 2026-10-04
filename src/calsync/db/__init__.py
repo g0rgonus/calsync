@@ -12,7 +12,7 @@ import time
 import sys
 from pathlib import Path
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 
 #: Additive column migrations, applied when absent. `schema.sql` uses
@@ -60,6 +60,11 @@ ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # because it has to outlive every later poll of a feed that goes on
     # publishing the event (`withheld.py`).
     ("event_state", "withheld", "TEXT"),
+    # v11: when a person confirmed this event's removal after a guard held it.
+    # Written *before* the delete goes out, so anything reading Radicale — the
+    # Mac mirror — never sees an absence calsync cannot already account for
+    # (`GET /v1/placements`). Cleared by the next write of the event.
+    ("event_state", "removal_approved_at", "TEXT"),
     # v5 adds `event_content`, which is a new table rather than new columns, so
     # `schema.sql`'s CREATE TABLE IF NOT EXISTS covers it and nothing belongs
     # here. Existing rows backfill themselves: the sync loop treats missing

@@ -793,3 +793,60 @@ def test_a_deployment_with_no_enrichment_calendar_holds_nothing(client, db_path)
 
 def test_the_queue_needs_the_token_like_everything_else(client):
     assert client.get("/v1/review", token=None)["status"] == 401
+
+
+# --- placements, and held polls ---------------------------------------------
+#
+# What the Mac mirror asks so that one confirmation in the console is enough:
+# where each event is, and whether an absence was somebody's decision.
+
+
+def test_placements_account_for_every_kind_of_deliberate_absence(client, db_path):
+    conn = db.connect(db_path)
+    uids = sorted(repo.event_states(conn, "p360-jesse-vanguard"))
+    repo.approve_removals(conn, [uids[0]])
+    repo.mark_event_cancelled(conn, uids[1])
+    repo.set_withheld(conn, uids[2], "cancelled")
+    conn.commit()
+    conn.close()
+
+    body = client.get("/v1/placements")["json"]
+    states = {p["uid"]: p["state"] for p in body["placements"]}
+
+    assert states[uids[0]] == "approved"
+    assert states[uids[1]] == "cancelled"
+    assert states[uids[2]] == "withheld"
+    assert set(states.values()) <= {"live", *repo.REMOVED_STATES}
+    assert all(p["collection"] for p in body["placements"])
+    assert "summary" not in body["placements"][0], "a placement carries no content"
+
+
+def test_placements_cannot_reach_below_the_window(client):
+    body = client.get("/v1/placements?from=2001-01-01")["json"]
+    assert body["from"] > "2001-01-01"
+
+
+def test_a_held_poll_is_waiting_on_somebody(client, db_path):
+    conn = db.connect(db_path)
+    repo.record_poll_run(conn, source_id="p360-jesse-vanguard", status="held",
+                         detail="5 of 5 tracked events (100%) vanished")
+    conn.commit()
+    conn.close()
+
+    body = client.get("/v1/review")["json"]
+
+    assert body["held_polls"] == 1
+    assert body["held_poll_sources"][0]["source_id"] == "p360-jesse-vanguard"
+    assert body["needs_attention"] >= 1
+
+
+def test_a_poll_that_gets_through_clears_the_hold(client, db_path):
+    conn = db.connect(db_path)
+    repo.record_poll_run(conn, source_id="p360-jesse-vanguard", status="held",
+                         detail="held")
+    repo.record_poll_run(conn, source_id="p360-jesse-vanguard", status="ok",
+                         detail="confirmed")
+    conn.commit()
+    conn.close()
+
+    assert client.get("/v1/review")["json"]["held_polls"] == 0

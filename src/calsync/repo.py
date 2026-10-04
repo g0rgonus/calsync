@@ -257,6 +257,10 @@ def record_event_state(
     ``upstream_edit_at`` is deliberately cleared: this write means the feed said
     what changed, so any outstanding "something changed and we cannot see what"
     has been answered by the change itself.
+
+    ``removal_approved_at`` is cleared for the same reason ``cancelled`` is: an
+    event written again is live again, and a stale approval would let a later
+    bad read of it pass as deliberate.
     """
     conn.execute(
         """
@@ -275,11 +279,88 @@ def record_event_state(
             cancelled    = 0,
             updated_at   = excluded.updated_at,
             upstream_modified_at = excluded.upstream_modified_at,
-            upstream_edit_at     = NULL
+            upstream_edit_at     = NULL,
+            removal_approved_at  = NULL
         """,
         (uid, source_id, collection, remote_id, content_hash, remote_etag,
          starts_at, upstream_modified_at),
     )
+
+
+def approve_removals(conn: sqlite3.Connection, uids: list[str]) -> None:
+    """Record that a person confirmed these events are gone.
+
+    Called before the deletes are sent, never after: anything reading the
+    calendar server must be able to account for an absence the moment it
+    appears (`GET /v1/placements`). If a delete then fails, the event is still
+    on the server and the approval explains nothing that is missing, so the
+    early record costs nothing.
+    """
+    conn.executemany(
+        "UPDATE event_state SET removal_approved_at = datetime('now') WHERE uid = ?",
+        [(uid,) for uid in uids],
+    )
+
+
+#: Why an event is deliberately off the calendar, as `placements` reports it.
+REMOVED_STATES = ("withheld", "cancelled", "approved")
+
+
+def placements(conn: sqlite3.Connection, *, since: str) -> list[dict]:
+    """Where each event starting from ``since`` is, and whether it is off on purpose.
+
+    ``state`` is ``live``, or why it is not: ``withheld`` (a person took it
+    off), ``cancelled`` (calsync deleted it), or ``approved`` (a person
+    confirmed its removal and the delete may not have landed yet). Withheld
+    outranks cancelled because it is the reason, not the result.
+    """
+    rows = conn.execute(
+        "SELECT uid, source_id, collection, starts_at, cancelled, withheld, "
+        "removal_approved_at FROM event_state WHERE starts_at >= ? "
+        "ORDER BY starts_at, uid",
+        (since,),
+    )
+    out = []
+    for r in rows:
+        if r["withheld"]:
+            state = "withheld"
+        elif r["cancelled"]:
+            state = "cancelled"
+        elif r["removal_approved_at"]:
+            state = "approved"
+        else:
+            state = "live"
+        out.append({
+            "uid": r["uid"], "source_id": r["source_id"],
+            "collection": r["collection"], "starts_at": r["starts_at"],
+            "state": state,
+        })
+    return out
+
+
+def held_polls(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Enabled sources whose most recent completed poll was held by a guard.
+
+    The latest poll *run*, so a held source that has since polled cleanly —
+    confirmed, or the feed recovered — drops off on its own. Errors are
+    skipped rather than counted as a release: a fetch that failed says
+    nothing about whether the hold is still there.
+    """
+    return list(conn.execute(
+        """
+        SELECT p.source_id, p.started_at, p.detail,
+               a.id AS activity_id, a.name AS activity_name,
+               a.emoji AS activity_emoji
+          FROM poll_runs p
+          JOIN sources s ON s.id = p.source_id
+          JOIN activities a ON a.id = s.activity_id
+         WHERE s.enabled = 1
+           AND p.status = 'held'
+           AND p.id = (SELECT MAX(id) FROM poll_runs q
+                        WHERE q.source_id = p.source_id AND q.status != 'error')
+         ORDER BY p.started_at
+        """
+    ))
 
 
 def mark_event_cancelled(conn: sqlite3.Connection, uid: str) -> None:

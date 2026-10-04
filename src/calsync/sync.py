@@ -357,6 +357,13 @@ def sync_source(
 
     if not dry_run and delta.confirm(confirm_held):
         report.confirmed = len(delta.cancelled)
+        # Recorded and committed before a single delete is sent. The Mac mirror
+        # reads the calendar server and asks `GET /v1/placements` to account for
+        # what is missing; an approval written after the deletes would leave a
+        # window where the absence is unexplained and the mirror holds it —
+        # asking a second person for a decision this one has just made.
+        repo.approve_removals(conn, delta.cancelled)
+        conn.commit()
 
     if delta.is_anomalous:
         report.status = "held"

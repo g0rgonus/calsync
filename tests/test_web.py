@@ -1777,6 +1777,22 @@ def test_a_confirmation_for_a_list_that_has_since_changed_does_nothing(
     assert calendar.cancelled == []
 
 
+def test_the_review_page_signposts_a_held_poll(writing, feed, tmp_path):
+    """Where the Mac's menu bar sends you. The decision is on the source page;
+    this has to say which one, and stop saying it once the hold is answered."""
+    client, _calendar = writing
+    source_id, _old = _rebuilt_and_held(client, feed, tmp_path)
+
+    page = client.get("/review")["body"]
+    assert "Held polls" in page
+    assert f'href="/sources/{source_id}"' in page
+
+    fingerprint = client.get(f"/sources/{source_id}")["body"] \
+        .split('name="held" value="')[1].split('"')[0]
+    client.post(f"/sources/{source_id}/confirm-cancellations", {"held": fingerprint})
+    assert "Held polls" not in client.get("/review")["body"]
+
+
 def test_a_paused_source_cannot_be_confirmed(writing, feed, tmp_path):
     client, calendar = writing
     source_id, _old = _rebuilt_and_held(client, feed, tmp_path)
