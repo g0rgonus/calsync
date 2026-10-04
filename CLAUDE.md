@@ -139,10 +139,13 @@ an `EKEventStore`. Three things decide its shape:
   assertions rather than being checked by squinting at a menu bar. The app
   **cannot resolve anything**: status, pause and links out are about that
   machine, and answering or approving stays in the console where the review gate
-  is. The one exception is the mirror's *own* guard: **Review Withheld
-  Deletions…** confirms a held set by fingerprint, the same shape as the
-  console's confirmation, because nothing on the server can see that hold and a
-  cancellation confirmed there otherwise sat on every Mac as a duplicate. **Pause expires by default**, for the reason `persists_across_seasons`
+  is. A bulk removal is decided **once, in the console**: the menu raises a
+  held calsync poll (`/v1/review`'s `held_polls`) and sends you there, and the
+  mirror's guard then counts only absences `GET /v1/placements` cannot account
+  for — read *after* Radicale, since calsync commits an approval before its
+  first delete. What it still holds is the mirror's own business (a broken
+  read, or no API to ask), confirmed by fingerprint in **Review Withheld
+  Deletions…**. **Pause expires by default**, for the reason `persists_across_seasons`
   exists — a hold you forget is the calendar going stale for weeks. It is
   assembled as a bundle by `install.sh` rather than by an Xcode project: the
   bundle is what makes it an app (name in the permission dialog, bundle id for

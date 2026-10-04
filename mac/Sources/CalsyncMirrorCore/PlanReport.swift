@@ -74,6 +74,11 @@ public enum PlanReport {
             lines.append("  - delete  \(stamp.string(from: item.start))  \(item.title)")
         }
         if plan.unchanged > 0 { lines.append("  = \(plan.unchanged) unchanged") }
+        if !plan.accounted.isEmpty {
+            let reasons = plan.accounted.sorted { $0.key < $1.key }
+                .map { "\($0.value) \($0.key)" }.joined(separator: ", ")
+            lines.append("  (removed in calsync, not counted by the guard: \(reasons))")
+        }
         if plan.confirmed {
             lines.append("  (\(plan.deletes.count) deletion(s) held earlier, confirmed by a person)")
         }

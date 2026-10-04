@@ -55,13 +55,26 @@ happens in the console, by a person, because that is where the review gate is
 ([docs/API.md](../docs/API.md)). The menu links there rather than reimplementing
 it.
 
-The one decision it does take is this machine's own: **Review Withheld
-Deletions…** appears when its guard has held, lists exactly what it held, and
-deletes that list on a yes. Nothing on the server can see this hold, so without
-it the guard's "pending confirmation" had no answer — a cancellation confirmed
-in the console sat here as a duplicate until it slid into the past. What is
-confirmed is the set's fingerprint, and the run that acts on it reads Radicale
-again: a list that has changed in between deletes nothing and is offered afresh.
+**A bulk removal is decided once, in the console.** When calsync's guard holds
+a poll — usually a schedule rebuilt under fresh ids, with old and new copies on
+the calendar side by side — `GET /v1/review` counts it, and the menu says
+*Approval waiting in calsync* with a notification, pointing at the console's
+`/review`. Confirm there and this machine follows on its next run without
+asking: after reading Radicale it fetches `GET /v1/placements`, and an absence
+calsync accounts for — cancelled, withheld, or a removal a person approved — is
+not counted by the guard. A *move* to another collection is deliberately not
+on that list: a mistyped or swapped collection name in this machine's config
+looks identical, and must stay held. calsync records an
+approval before it sends the first delete, so there is no moment when Radicale
+is missing something the API cannot yet explain. Both need `apiURL` and
+`apiToken` in Settings; without them, nothing changes from before.
+
+The one decision the app does take is this machine's own: **Review Withheld
+Deletions…** appears when its guard holds what calsync *cannot* account for —
+a broken read, or no API to ask — lists exactly that, and deletes it on a yes.
+What is confirmed is the set's fingerprint, and the run that acts on it reads
+Radicale again: a list that has changed in between deletes nothing and is
+offered afresh.
 
 **Pause expires by default.** A pause you forget is the family's calendar going
 quietly stale for weeks — the same failure `persists_across_seasons` prevents on
@@ -296,7 +309,10 @@ the same shape as "the season was called off".
 - **The same guard `diff.py` applies to a feed.** More than 3, or more than 20%,
   of tracked *future* events vanishing in one run withholds every deletion and
   exits 3. Thresholds match `diff.MAX_DISAPPEARANCE_*` on purpose; two numbers
-  meaning the same thing drift apart the moment one is tuned. The held list is
+  meaning the same thing drift apart the moment one is tuned. Absences calsync
+  accounts for (`GET /v1/placements`) leave both sides of the arithmetic and
+  are deleted even when the rest is held; only what nothing explains is
+  evidence of a broken read. The held list is
   printed with a fingerprint; `--confirm <fingerprint>` (or the menu bar) deletes
   that exact list and nothing else. An empty read and a total turnover cannot be
   confirmed — both are the shape of a read gone wrong, not of a schedule.

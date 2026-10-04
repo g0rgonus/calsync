@@ -117,6 +117,21 @@ public enum StatusPresenter {
                 ? "No changes. Last checked \(ago(at, now: now))."
                 : "\(created) added, \(updated) changed, \(deleted) removed "
                     + "\(ago(at, now: now))."
+            // calsync's guard held a poll. Raised rather than shown, unlike the
+            // other review counts: the new events are already written and the
+            // old ones kept, so this calendar is showing both right now. The
+            // decision is in the console; confirming it there is enough, and
+            // this machine follows on its next run without asking again.
+            if let review, review.heldPolls > 0 {
+                let teams = review.heldPolls == 1 ? "a team's poll" : "\(review.heldPolls) teams' polls"
+                return MenuStatus(
+                    symbol: "calendar.badge.exclamationmark",
+                    title: "Approval waiting in calsync",
+                    detail: "calsync held \(teams) — old and new copies may both be "
+                        + "on the calendar until it is confirmed in the console.\n"
+                        + detail,
+                    needsAttention: true)
+            }
             return MenuStatus(
                 symbol: waiting ? "calendar.badge.exclamationmark" : "calendar",
                 title: waiting ? (review?.summary ?? "In sync") : "In sync",
