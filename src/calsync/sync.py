@@ -266,6 +266,15 @@ def sync_source(
     # gate, and until now they were computed and dropped.
     report.diagnostics = {k: list(v) for k, v in result.diagnostics.items()}
 
+    # Loaded before anything is counted, because a person's standing decision to
+    # keep an event off the calendar changes what a poll reports as much as what
+    # it writes — and the console's gate is a preview. A dry run that counted a
+    # withheld game as "1 new" would be reporting a write that is never going to
+    # happen, and a venue warning for it would be asking a question about a
+    # place nobody is going.
+    states = repo.event_states(conn, source.id)
+    off = {uid for uid, state in states.items() if state.withheld}
+
     events = []
     called_off: set[str] = set()
     unresolved_venues: set[str] = set()
@@ -283,7 +292,7 @@ def sync_source(
         # may well supply an address inline, so "has an address" proves nothing —
         # what matters is whether we know the place, which is what carries a
         # confirmed pin and survives the venue being spelled differently later.
-        if not _enrich_venue(conn, event):
+        if not _enrich_venue(conn, event) and not withheld.is_withheld(event.uid, off):
             unresolved_venues.add(event.venue.name or event.venue.raw)
         if event.is_game:
             report.fixtures_seen += 1
@@ -314,14 +323,6 @@ def sync_source(
         conn, source.id,
         since=(now - timedelta(days=settings.sync_window_back_days)).isoformat(),
     )
-    # Loaded before the diff rather than after it, because a person's standing
-    # decision to keep an event off the calendar changes what a *preview* would
-    # write as much as what a real poll does — and the console's gate is a
-    # preview. A dry run that counted a withheld game as "1 new" would be
-    # reporting a write that is never going to happen.
-    states = repo.event_states(conn, source.id)
-    off = {uid for uid, state in states.items() if state.withheld}
-
     delta = diff_poll(
         events, known, now=now, max_pct=max_pct, max_count=max_count,
         # A warm-up is derived from a game, not read from the feed, so it says

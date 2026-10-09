@@ -174,7 +174,7 @@ so a fresh clone needs:
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/pytest                                    # 667 tests, ~7s
+.venv/bin/pytest                                    # 668 tests, ~7s
 .venv/bin/pytest tests/test_player360.py -k content_hash    # single test
 ```
 
