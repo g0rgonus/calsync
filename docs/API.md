@@ -212,14 +212,19 @@ GET  /v1/review                                        # built
 
 **How much is waiting on a human, as counts.** It exists so something ambient —
 a menu bar, a dashboard — can show that events are sitting in the enrichment
-calendar without anybody remembering to open the console. Four kinds of waiting
+calendar without anybody remembering to open the console. Three kinds of waiting
 are counted apart because they are different acts: `held_events` are questions
 nobody has answered, `answers_awaiting_decision` are answers somebody gave that
-need a glance, `upstream_edits` are events a feed rewrote without saying what
-changed, and `held_polls` are teams whose last poll a guard held — usually a
-schedule rebuilt under fresh ids, with old and new copies on the calendar side
+need a glance, and `held_polls` are teams whose last poll a guard held — usually
+a schedule rebuilt under fresh ids, with old and new copies on the calendar side
 by side until somebody confirms on the source page. `needs_attention` is the
-four summed.
+three summed.
+
+`upstream_edits` was removed in contract 1.4. It counted events whose
+`LAST-MODIFIED` moved with nothing calsync reads changing — a stand-in for the
+cancellations Player360 did not export. Once the feed marked them
+`STATUS:CANCELLED` it flagged nearly every practice a coach touched, for
+changes nobody here could see.
 
 It **runs no dry run and fetches no feed**, so it is safe to poll on a timer.
 The console's `/review` page does run one, because a verdict from last week says

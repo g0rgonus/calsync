@@ -144,14 +144,6 @@ class Event:
     #: case. Only rendering does: writing 00:00 would put "Semifinal Games" at
     #: midnight and fire its alarm the previous evening.
     all_day: bool = False
-    #: The feed's own LAST-MODIFIED, carried but never trusted for change
-    #: detection — `content_hash` remains the authority, and this is excluded
-    #: from it. Player360 bumps this 2-5s after an event *ends*, so it is noise
-    #: for all but one purpose: a move of it to *before* the event, with our
-    #: content unchanged, is an upstream edit whose substance the feed does not
-    #: publish. That is how Player360 cancellations reached us before it began
-    #: sending ``STATUS:CANCELLED`` (`cancelled`, below).
-    upstream_modified_at: datetime | None = None
 
     #: The feed says this event is off: ``STATUS:CANCELLED``. The one
     #: cancellation signal that is *positive* — everything else calsync has is

@@ -38,15 +38,10 @@ ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # schedule exists, and `schema.sql` only ever CREATEs — so an existing
     # `event_content` needs this here or every read of it fails.
     ("event_content", "all_day", "INTEGER NOT NULL DEFAULT 0"),
-    # v8: the upstream LAST-MODIFIED we last saw, and whether the last move of
-    # it went unexplained. On `event_state`, never `event_content`, because
-    # `content_of` is compared field by field to detect a refresh — a churning
-    # timestamp there would re-push every event as it ends, which is the exact
-    # reason `content_hash` excludes it (docs/sources/player360.md, Trap 1).
-    ("event_state", "upstream_modified_at", "TEXT"),
-    ("event_state", "upstream_edit_at", "TEXT"),
-    # v8: which set of unexplained edits has already been announced.
-    ("sources", "edits_notified", "TEXT"),
+    # v8 added event_state.upstream_modified_at / upstream_edit_at and
+    # sources.edits_notified for the unexplained-edit notice. That notice is
+    # gone (feeds now say STATUS:CANCELLED); a database created before then
+    # still carries the columns, unread.
     # v9: minutes before kick-off this team wants you at the ground, 0 for a
     # team that does not ask. On `activities` because it is a coach's rule
     # rather than a household's — see `warmup.py`.

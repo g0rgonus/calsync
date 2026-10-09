@@ -22,7 +22,7 @@ agenda. Nothing in the day-to-day path needs sqlite3 any more.
 machine-readable contract), `GET /v1/events`, `GET /v1/events/{uid}`,
 `GET /v1/review`, `GET /v1/placements` and `POST /v1/tasks/{id}/result`, behind a bearer token from
 the secret store. `GET /v1/review` reports **counts** of what is waiting on a
-human — held events, answers to approve, unexplained upstream edits — for
+human — held events, answers to approve, held polls — for
 something ambient like the Mac app's menu bar. It runs no dry run and fetches no
 feed, unlike the console's `/review` page, because a number refreshed every few
 minutes cannot justify polling every team's feed; the counts come from
@@ -174,7 +174,7 @@ so a fresh clone needs:
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/pytest                                    # 680 tests, ~7s
+.venv/bin/pytest                                    # 667 tests, ~7s
 .venv/bin/pytest tests/test_player360.py -k content_hash    # single test
 ```
 
@@ -619,12 +619,11 @@ Decisions that span several files and are easy to undo by accident:
   on `event_state.withheld`, and two things follow. The **event is dropped on
   the way to the write, not out of the diff**: it is still in the feed, and
   removing it there would make it look like a disappearance and count against
-  the guard. And **nothing in the poll path ever sets the flag** — `upstream.py`
-  still only reports, and an agent has no path to it, the same division the
-  review gate draws. Two reasons share one mechanism, because the event comes
-  off either way and the label is all that differs: `not_attending`, and
-  `cancelled` for a cancellation the export does not carry (so `/review`'s
-  unexplained-edit list can be answered rather than only acknowledged). Putting it back writes no event here — clearing the flag
+  the guard. And **nothing in the poll path ever sets the flag**, and an agent
+  has no path to it, the same division the review gate draws. Two reasons share
+  one mechanism, because the event comes off either way and the label is all
+  that differs: `not_attending`, and `cancelled` for a cancellation the export
+  does not carry. Putting it back writes no event here — clearing the flag
   leaves a cancelled row, `known_hashes` skips those, and the next sync creates
   it through the ordinary path. A warm-up follows its game and carries no row of
   its own. Withholding a *past* event is refused where the button is, for
@@ -644,17 +643,13 @@ Decisions that span several files and are easy to undo by accident:
   nobody either. The row is tombstoned only once the target accepts the delete,
   so a failed one is retried by the next poll. A game the feed reinstates is
   created afresh, and the next write clears the column.
-- **An edit the feed will not explain is reported, never acted on**
-  (`upstream.py`). Before `STATUS:CANCELLED`, Player360 exported cancellations
-  as an ordinary event whose only trace was `LAST-MODIFIED` moving to *before*
-  the event, where the documented churn lands 2-5s after `DTEND`.
-  `sync._note_upstream_edit` flags that — content hash identical, timestamp
-  moved early — and it reaches `/review` and a push. It
-  cannot say a cancellation happened, because one of the two observed
-  pre-`DTEND` edits was not one, so guessing would be a delete decided by
-  inference. `content_hash` still ignores the field entirely; the timestamp
-  lives on `event_state`, never `event_content`, or every event would re-push
-  as it ends.
+- **An edit the feed will not explain is not reported.** Before
+  `STATUS:CANCELLED`, calsync flagged `LAST-MODIFIED` moving to before the
+  event with the content hash unchanged, because that was the only trace a
+  Player360 cancellation left. Once cancellations were spelled out it flagged
+  nearly every practice — 23 in six weeks, most likely comments the export does
+  not carry — and paged about each. Do not bring it back as a cancellation
+  proxy; `content_hash` still ignores `LAST-MODIFIED` entirely.
 - **A warm-up is a shadow of its game, not evidence from a feed** (`warmup.py`).
   No coach publishes "be there 45 minutes early" — it is said once a season and
   never exported — so calsync synthesizes one event per game from

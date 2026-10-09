@@ -244,9 +244,13 @@ The only trace is `LAST-MODIFIED`, which moved to 1h50m *before* `DTSTART` while
 the documented churn lands 2–5s *after* `DTEND`. That makes a real edit
 distinguishable from the churn — but not identifiable: of the two pre-`DTEND`
 edits in the sample, only one was a cancellation, so it says "the coach changed
-something" and never what. It is not grounds for a delete, and it is still
-reported (`upstream.py`) — an edit whose substance the feed withholds has not
-gone away just because cancellations are now spelled out.
+something" and never what. It is not grounds for a delete.
+
+calsync used to report these as "changed at the source" and stopped in 0.14.0.
+With cancellations spelled out, what is left is a coach touching nearly every
+practice hours beforehand — 23 in six weeks, most likely comments on the event,
+which the export does not carry — and a notice about a change nobody here can
+read only trains somebody to ignore notices.
 
 Disappearance remains a cancellation signal for an event that genuinely leaves
 the feed, and it is dangerous against a shared family calendar even so.
