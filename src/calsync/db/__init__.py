@@ -12,7 +12,7 @@ import time
 import sys
 from pathlib import Path
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 
 #: Additive column migrations, applied when absent. `schema.sql` uses
@@ -65,6 +65,10 @@ ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # Mac mirror — never sees an absence calsync cannot already account for
     # (`GET /v1/placements`). Cleared by the next write of the event.
     ("event_state", "removal_approved_at", "TEXT"),
+    # v12: when the feed marked this event STATUS:CANCELLED. Same reason as
+    # v11 and written at the same point, before the delete — but nobody
+    # approved it, so it is not that column.
+    ("event_state", "cancelled_upstream_at", "TEXT"),
     # v5 adds `event_content`, which is a new table rather than new columns, so
     # `schema.sql`'s CREATE TABLE IF NOT EXISTS covers it and nothing belongs
     # here. Existing rows backfill themselves: the sync loop treats missing

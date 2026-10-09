@@ -51,12 +51,15 @@ class SyncReport:
     #: `event_content` entirely. Counted apart from `updated` because `updated`
     #: means the feed changed and these are precisely the ones where it did not.
     refreshed: int = 0
+    #: Of `cancelled`, how many the feed itself marked ``STATUS:CANCELLED``
+    #: rather than dropped. Applied without a guard or a person, however many.
+    called_off: int = 0
     #: Events the feed rewrote without changing anything calsync can read — its
     #: LAST-MODIFIED moved to *before* the event, where the documented churn
-    #: lands after it, while the content hash stayed identical. That is how a
-    #: Player360 cancellation reaches us: the app knows, the export does not say
-    #: (docs/sources/player360.md, Trap 2). Reported, never acted on — the feed
-    #: does not say *what* changed, and guessing "cancelled" would be a delete.
+    #: lands after it, while the content hash stayed identical. Player360 once
+    #: exported cancellations only this way (docs/sources/player360.md, Trap 2).
+    #: Reported, never acted on — the feed does not say *what* changed, and
+    #: guessing "cancelled" would be a delete.
     edited_upstream: list[str] = field(default_factory=list)
     #: Events a person took off the calendar — not attending, or cancelled in a
     #: way the feed never says (`withheld.py`). Counted every poll because the
@@ -105,20 +108,26 @@ class SyncReport:
             and self.fixtures_seen > 0
         )
 
-    def line(self) -> str:
+    def tally(self) -> str:
+        """What this poll did to the calendar, which is what `poll_runs` keeps."""
         parts = [
-            f"{self.source_id}: {self.status}",
             f"{self.created} new",
             f"{self.updated} changed",
             f"{self.unchanged} unchanged",
             f"{self.cancelled} cancelled",
         ]
+        if self.called_off:
+            parts.append(f"{self.called_off} of them by the feed")
         if self.moved:
             parts.append(f"{self.moved} moved")
         if self.refreshed:
             parts.append(f"{self.refreshed} refreshed")
         if self.withheld:
             parts.append(f"{self.withheld} withheld")
+        return ", ".join(parts)
+
+    def line(self) -> str:
+        parts = [f"{self.source_id}: {self.status}", self.tally()]
         if self.awaiting_review:
             parts.append(f"{self.awaiting_review} awaiting review")
         if self.edited_upstream:
@@ -298,10 +307,17 @@ def sync_source(
     report.diagnostics = {k: list(v) for k, v in result.diagnostics.items()}
 
     events = []
+    called_off: set[str] = set()
     unresolved_venues: set[str] = set()
     for event in result.events:
         if not _in_window(event, now=now, settings=settings):
             report.skipped_window += 1
+            continue
+        if event.cancelled:
+            # Never written, never counted, and no warm-up generated for it —
+            # but its warm-up is named here, because it was generated while the
+            # game was on and has to come off with it.
+            called_off.update((event.uid, warmup.uid_for(event.uid)))
             continue
         # Only the sync layer can see this: the adapter has no database. A feed
         # may well supply an address inline, so "has an address" proves nothing —
@@ -351,6 +367,7 @@ def sync_source(
         # A warm-up is derived from a game, not read from the feed, so it says
         # nothing about whether this fetch can be trusted. See `diff_poll`.
         counts_as_evidence=lambda uid: not warmup.is_synthetic(uid),
+        called_off=called_off,
     )
 
     report.unchanged = len(delta.unchanged)
@@ -388,7 +405,8 @@ def sync_source(
     if dry_run:
         report.created = len(_kept(delta.created))
         report.updated = len(_kept(delta.updated))
-        report.cancelled = len(delta.cancelled)
+        report.cancelled = len(delta.cancelled) + len(delta.called_off)
+        report.called_off = len(delta.called_off)
         report.withheld = len(delta.created) + len(delta.updated) \
             - report.created - report.updated
         return report
@@ -398,6 +416,12 @@ def sync_source(
             conn, source_id=source.id, status="held",
             detail=delta.anomaly, raw_sha256=result.raw_sha256,
         )
+
+    # Committed before anything is written or deleted, for the same reader and
+    # the same reason as a person's approval above.
+    if delta.called_off:
+        repo.note_cancelled_upstream(conn, delta.called_off)
+        conn.commit()
 
     # --- write, then record ------------------------------------------------
     contents = repo.event_contents(conn, source.id)
@@ -508,7 +532,8 @@ def sync_source(
                 report.moved += 1
                 report.unchanged -= 1
 
-    for uid in delta.cancelled:
+    feed_said = set(delta.called_off)
+    for uid in delta.cancelled + delta.called_off:
         state = states.get(uid)
         if state is None:
             continue
@@ -526,6 +551,8 @@ def sync_source(
             continue
         repo.mark_event_cancelled(conn, uid)
         report.cancelled += 1
+        if uid in feed_said:
+            report.called_off += 1
 
     # Whatever is withheld and still on the calendar comes off now — the same
     # call the console makes the moment somebody presses the button, repeated
@@ -559,7 +586,10 @@ def sync_source(
         )
         repo.record_source_error(conn, source.id, detail)
     elif not delta.is_anomalous:
-        detail = delta.summary()
+        # What was done, not what the diff proposed: the diff counts a withheld
+        # event the feed still publishes as new on every poll, and the log said
+        # "3 new" for weeks while nothing was written.
+        detail = report.tally()
         if report.confirmed:
             detail += f" ({report.confirmed} held, confirmed by a person)"
         repo.record_poll_run(

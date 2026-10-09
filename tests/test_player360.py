@@ -359,3 +359,80 @@ def test_guard_trips_on_count_even_when_percentage_is_low(result):
     d = diff_poll(result.events, known, now=NOW)
     assert d.is_anomalous
     assert d.cancelled == []
+
+
+# --- STATUS:CANCELLED ---------------------------------------------------------
+# docs/sources/player360.md, Trap 2: the export now says so.
+
+
+def _with_status(uid: str, status: str) -> bytes:
+    text = FIXTURE.read_text()
+    marker = f"UID:{uid}\r\n" if f"UID:{uid}\r\n" in text else f"UID:{uid}\n"
+    return text.replace(marker, f"{marker}STATUS:{status}\r\n").encode()
+
+
+def test_a_cancelled_event_is_carried_as_cancelled():
+    parsed = player360.parse_feed(
+        _with_status(MATCH, "CANCELLED"), VANGUARD, source_id="p360-jesse-vanguard"
+    )
+    flags = {e.uid: e.cancelled for e in parsed.events}
+    assert flags[MATCH] is True
+    assert not any(v for uid, v in flags.items() if uid != MATCH)
+
+
+def test_a_confirmed_event_is_not_cancelled():
+    parsed = player360.parse_feed(
+        _with_status(MATCH, "CONFIRMED"), VANGUARD, source_id="p360-jesse-vanguard"
+    )
+    assert not any(e.cancelled for e in parsed.events)
+
+
+def test_the_status_is_not_part_of_the_content_hash(by_uid):
+    """A cancelled event never reaches the content comparison, and one that
+    comes back is new again — so the hash has no reason to move."""
+    parsed = player360.parse_feed(
+        _with_status(MATCH, "CANCELLED"), VANGUARD, source_id="p360-jesse-vanguard"
+    )
+    again = {e.uid: e for e in parsed.events}
+    assert again[MATCH].content_hash == by_uid[MATCH].content_hash
+
+
+def test_a_feed_cancellation_skips_the_guard_entirely(result):
+    """Every tracked event called off at once is still not an anomaly: the feed
+    parsed, and said so about each of them."""
+    known = {e.uid: e.content_hash for e in result.events}
+    d = diff_poll([], known, now=NOW, called_off=list(known))
+    assert not d.is_anomalous
+    assert sorted(d.called_off) == sorted(known)
+    assert d.cancelled == []
+
+
+def test_feed_cancellations_are_left_out_of_the_guards_arithmetic(result):
+    """Two called off and one vanished, out of five: the guard measures one
+    absence against three tracked events, not three against five."""
+    events = result.events
+    known = {e.uid: e.content_hash for e in events}
+    called_off = [events[0].uid, events[1].uid]
+    vanished = events[2].uid
+    present = [e for e in events[3:]]
+
+    d = diff_poll(present, known, now=NOW, called_off=called_off,
+                  max_pct=0.5, max_count=3)
+    assert not d.is_anomalous
+    assert d.cancelled == [vanished]
+    assert sorted(d.called_off) == sorted(called_off)
+
+
+def test_a_held_disappearance_does_not_hold_feed_cancellations(result):
+    events = result.events
+    known = {e.uid: e.content_hash for e in events}
+    d = diff_poll([], known, now=NOW, called_off=[events[0].uid])
+    assert d.anomaly_kind == "disappearance"
+    assert d.called_off == [events[0].uid]
+    assert events[0].uid not in d.held_cancellations
+
+
+def test_an_untracked_feed_cancellation_is_nothing_to_do(result):
+    d = diff_poll(result.events, {e.uid: e.content_hash for e in result.events},
+                  now=NOW, called_off=["never-written"])
+    assert d.called_off == []

@@ -73,16 +73,19 @@ ENDPOINTS: dict[tuple[str, str], dict] = {
         "returns": {
             "placements": "array of {uid, source_id, collection, starts_at, state}",
             "state": "'live', or why not: 'withheld' (a person took it off), "
-                     "'cancelled' (calsync deleted it), 'approved' (a person "
-                     "confirmed its removal; the delete may still be landing)",
+                     "'cancelled' (calsync deleted it, or the feed marked it "
+                     "cancelled and the delete may still be landing), "
+                     "'approved' (a person confirmed its removal; the delete "
+                     "may still be landing)",
         },
         "notes": [
             "For a reader of the calendar server to tell a deliberate absence "
             "from a broken read. An event missing from a collection is "
             "accounted for only if its state is not 'live'. A live event in "
             "another collection is not: a misconfigured reader looks the same.",
-            "An approval is recorded before its deletes are sent, so there is "
-            "no moment when an absence is unexplained here.",
+            "An approval, or a cancellation the feed announced, is recorded "
+            "before its deletes are sent, so there is no moment when an "
+            "absence is unexplained here.",
         ],
     },
     ("GET", "/v1/review"): {
