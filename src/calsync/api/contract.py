@@ -26,7 +26,7 @@ from .. import __version__
 #: Bumped when a shape changes in a way a client could notice. Not the package
 #: version: an agent cares whether the contract moved, not whether a venue
 #: parser was tidied.
-CONTRACT_VERSION = "1.3"
+CONTRACT_VERSION = "1.4"
 
 
 #: One entry per route the app actually serves, keyed by (method, rule) exactly
@@ -94,11 +94,10 @@ ENDPOINTS: dict[tuple[str, str], dict] = {
             "held_events": "events sitting in the enrichment calendar",
             "sources": "array of {source_id, activity, held_events}",
             "answers_awaiting_decision": "answers given, not yet approved",
-            "upstream_edits": "events a feed rewrote without saying what changed",
             "held_polls": "sources whose last poll a guard held, awaiting a "
                           "person on the source page",
             "held_poll_sources": "array of {source_id, activity, since, detail}",
-            "needs_attention": "the four counts above, summed",
+            "needs_attention": "the three counts above, summed",
         },
         "notes": [
             "Counts only. The questions, and answering them, are in the "

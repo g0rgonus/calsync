@@ -16,14 +16,13 @@ Two reasons, one mechanism. The event comes off the calendar either way, and
 which reason it was changes nothing but the label:
 
 - **not_attending** — the game is on, this kid is not going to it.
-- **cancelled** — the game is off, and the feed does not say so. That is not a
-  hypothetical: Player360 exports a cancelled practice as an ordinary one
-  indefinitely, and `upstream.py` can see that *something* was edited without
-  being able to say what (docs/sources/player360.md, Trap 2). calsync will not
-  infer a delete from that. A person can state it, which is what this is.
+- **cancelled** — the game is off, and the feed does not say so. A feed that
+  marks it ``STATUS:CANCELLED`` needs nobody (`Event.cancelled`); this is for
+  the one that does not, which calsync will not infer a delete for. A person
+  can state it, which is what this is.
 
-**Only a person reaches this.** `upstream.py` still notifies and changes no
-calendar, and nothing in the poll path sets the flag — the same division the
+**Only a person reaches this.** Nothing in the poll path sets the flag — the
+same division the
 review gate draws (docs/API.md): an agent may put something in front of you and
 has no path to the function that writes it.
 

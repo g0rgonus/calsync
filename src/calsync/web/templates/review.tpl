@@ -36,54 +36,6 @@
 </div>
 % end
 
-% if edited:
-<h2>Changed at the source</h2>
-<div class="card" style="margin-bottom:1.4rem">
-  <p class="note" style="margin-top:0">
-    The publisher rewrote these and did not say what changed — every field
-    calsync reads is identical, only the feed's own modified time moved.
-    <strong>They are still on the calendar, because the feed still publishes
-    them.</strong> A cancellation looks exactly like this: the team's app shows
-    it, the feed does not carry it, and calsync will not guess at a delete.
-    You can say so, though — <em>Cancelled</em> takes the event off the calendar
-    and keeps it off, whatever the feed goes on publishing.
-  </p>
-  <div class="stack">
-% for row in edited:
-    <div class="agenda-row">
-      <span class="agenda-time">{{ row['starts_at'][5:16].replace('T', ' ') }}</span>
-      <div class="agenda-body">
-        <p class="agenda-title">
-          {{ row['activity_emoji'] or '' }} {{ row['detail'] or row['uid'] }}
-        </p>
-        <p class="note">
-          {{ row['activity_name'] }}
-%   if row['venue_name']:
-          · {{ row['venue_name'] }}
-%   end
-          · <a href="/sources/{{ row['source_id'] }}">source</a>
-%   if row['url']:
-          · <a href="{{ row['url'] }}" rel="noreferrer noopener" target="_blank">open in the team's app</a>
-%   end
-        </p>
-      </div>
-      <div class="row-actions">
-        <form method="post" action="/events/withhold" class="inline">
-          <input type="hidden" name="uid" value="{{ row['uid'] }}">
-          <input type="hidden" name="reason" value="cancelled">
-          <input type="hidden" name="back" value="/review">
-          <button class="btn btn-quiet" type="submit">Cancelled</button>
-        </form>
-        <form method="post" action="/review/edits/{{ row['uid'] }}/seen" class="inline">
-          <button class="btn btn-quiet" type="submit">Seen</button>
-        </form>
-      </div>
-    </div>
-% end
-  </div>
-</div>
-% end
-
 % if not enrichment:
 <div class="banner banner-info">
   <strong>The hold is off.</strong> Events calsync cannot classify are being

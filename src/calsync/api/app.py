@@ -241,13 +241,11 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None) -> Bo
                     "held_events": held,
                 })
 
-            # Three different kinds of waiting, counted apart because they are
-            # different acts: answering a question is work, deciding on an
-            # answer somebody already gave is a glance, and an unexplained
-            # upstream edit is neither — it is a thing to go and look at.
+            # Kinds of waiting, counted apart because they are different acts:
+            # answering a question is work, and deciding on an answer somebody
+            # already gave is a glance.
             answered = repo.list_tasks(conn, state=repo.ANSWERED)
-            edits = repo.pending_upstream_edits(conn)
-            # A fourth kind: a guard held a poll, and the decision — usually a
+            # A third kind: a guard held a poll, and the decision — usually a
             # schedule rebuilt under fresh ids — is waiting on the source page.
             # Read from the last completed poll, so it clears itself the moment
             # a confirmation or a recovered feed lets one through.
@@ -265,11 +263,10 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None) -> Bo
                 "held_events": held_total,
                 "sources": per_source,
                 "answers_awaiting_decision": len(answered),
-                "upstream_edits": len(edits),
                 "held_polls": len(held_polls),
                 "held_poll_sources": held_polls,
                 "needs_attention": (
-                    held_total + len(answered) + len(edits) + len(held_polls)
+                    held_total + len(answered) + len(held_polls)
                 ),
                 "enrichment_collection": collection,
                 "resolved_in": "the console, at /review — not through this API",

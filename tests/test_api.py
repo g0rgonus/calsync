@@ -677,7 +677,8 @@ def test_a_quiet_queue_reports_zero_rather_than_omitting_the_fields(client):
     assert body["held_events"] == 0
     assert body["sources"] == []
     assert body["answers_awaiting_decision"] == 0
-    assert body["upstream_edits"] == 0
+    assert body["held_polls"] == 0
+    assert "upstream_edits" not in body, "removed in 1.4, not left at a zero that means nothing"
 
 
 def test_held_events_are_counted_and_attributed_to_their_activity(client, db_path):
@@ -745,19 +746,7 @@ def test_an_answer_waiting_on_a_decision_is_counted_apart_from_a_question(
     assert body["needs_attention"] == 1
 
 
-def test_an_unexplained_upstream_edit_is_something_to_go_and_look_at(client, db_path):
-    conn = db.connect(db_path)
-    uid = conn.execute("SELECT uid FROM event_state LIMIT 1").fetchone()["uid"]
-    conn.execute("UPDATE event_state SET upstream_edit_at = ? WHERE uid = ?",
-                 (NOW.isoformat(), uid))
-    conn.commit()
-    conn.close()
-    body = client.get("/v1/review")["json"]
-    assert body["upstream_edits"] == 1
-    assert body["needs_attention"] == 1
-
-
-def test_the_three_kinds_of_waiting_sum(client, db_path):
+def test_the_kinds_of_waiting_sum(client, db_path):
     _hold(db_path, 2)
     conn = db.connect(db_path)
     repo.record_task(
@@ -765,18 +754,12 @@ def test_the_three_kinds_of_waiting_sum(client, db_path):
         type="resolve_venue", context=("Kingsmere",), candidates=(),
         dispatched_at=NOW.isoformat())
     conn.execute("UPDATE tasks SET state = ? WHERE id = 't1'", (repo.ANSWERED,))
-    uid = conn.execute(
-        "SELECT uid FROM event_state WHERE collection != 'enrichment' "
-        "LIMIT 1").fetchone()["uid"]
-    conn.execute("UPDATE event_state SET upstream_edit_at = ? WHERE uid = ?",
-                 (NOW.isoformat(), uid))
     conn.commit()
     conn.close()
 
     body = client.get("/v1/review")["json"]
-    assert (body["held_events"], body["answers_awaiting_decision"],
-            body["upstream_edits"]) == (2, 1, 1)
-    assert body["needs_attention"] == 4
+    assert (body["held_events"], body["answers_awaiting_decision"]) == (2, 1)
+    assert body["needs_attention"] == 3
 
 
 def test_a_deployment_with_no_enrichment_calendar_holds_nothing(client, db_path):
