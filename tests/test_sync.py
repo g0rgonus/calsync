@@ -532,6 +532,28 @@ def test_unresolved_venues_are_reported(conn, source, target):
     assert not report.is_clean
 
 
+def test_a_withheld_event_raises_no_venue_question(conn, source, target):
+    """A team dinner you are not going to does not need a map pin. Nothing is
+    written for it, so asking where it is would be noise on every poll."""
+    from calsync.sources import player360
+
+    activity = repo.get_activity(conn, "jesse-soccer-vanguard")
+    parsed = player360.parse_feed(FIXTURE.read_bytes(), activity, source_id=source.id)
+    place = next(e.venue.name for e in parsed.events if e.venue)
+    there = [e.uid for e in parsed.events if e.venue and e.venue.name == place]
+
+    first = _sync(conn, source, target)
+    assert place in first.diagnostics["unresolved_venues"]
+
+    for uid in there:
+        repo.set_withheld(conn, uid, "not_attending")
+    conn.commit()
+    report = _sync(conn, source, target)
+
+    assert place not in report.diagnostics.get("unresolved_venues", [])
+    assert report.diagnostics["unresolved_venues"], "the other venues still ask"
+
+
 def test_a_resolved_venue_clears_that_diagnostic(conn, source, target):
     for name in ("Alder Reach Memorial Park", "Thistledown Park", "Kiln Creek Park"):
         conn.execute(
