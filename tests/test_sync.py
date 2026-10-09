@@ -714,3 +714,162 @@ def test_an_unexplained_edit_does_not_rewrite_the_event(conn, source, target, tm
     assert before == after
     assert report.created == report.updated == report.refreshed == 0
     assert {p: p.stat().st_mtime_ns for p in written} == stamps, "the event was rewritten"
+
+
+# --- the feed says cancelled ------------------------------------------------
+# Player360 now exports STATUS:CANCELLED (docs/sources/player360.md, Trap 2).
+# It is honoured outright: no guard, no person, however many at once.
+
+
+def _called_off(*uids: str, raw: bytes | None = None) -> bytes:
+    text = (raw or FIXTURE.read_bytes()).decode()
+    for uid in uids:
+        line = next(l for l in text.splitlines(keepends=True) if l.rstrip() == f"UID:{uid}")
+        text = text.replace(line, line + "STATUS:CANCELLED\r\n")
+    return text.encode()
+
+
+def _all_uids() -> list[str]:
+    return [l.rstrip()[4:] for l in FIXTURE.read_text().splitlines() if l.startswith("UID:")]
+
+
+def test_every_event_called_off_at_once_is_cancelled_without_a_hold(
+    conn, source, target, tmp_path
+):
+    """The whole feed at once: far past any guard, and still not a fault. The
+    feed parsed and named each event — nothing a broken fetch produces."""
+    _sync(conn, source, target)
+    uids = _all_uids()
+
+    report = _sync(conn, source, target, raw=_called_off(*uids))
+
+    assert report.status == "ok"
+    assert report.held is None
+    assert report.cancelled == report.called_off == len(uids)
+    assert all(s.cancelled for s in repo.event_states(conn, source.id).values())
+    assert list((tmp_path / "out").rglob("*.ics")) == []
+    assert repo.held_polls(conn) == []
+    assert "by the feed" in conn.execute(
+        "SELECT detail FROM poll_runs ORDER BY id DESC LIMIT 1").fetchone()[0]
+
+
+def test_a_called_off_event_is_never_written(conn, source, target):
+    uid = _all_uids()[0]
+    report = _sync(conn, source, target, raw=_called_off(uid))
+
+    assert report.created == len(_all_uids()) - 1
+    assert uid not in repo.event_states(conn, source.id)
+    again = _sync(conn, source, target, raw=_called_off(uid))
+    assert again.created == again.cancelled == 0
+
+
+def test_a_feed_cancellation_is_on_record_before_its_delete(conn, source, target, tmp_path):
+    """The mirror reads Radicale, then asks `/v1/placements`. A delete landing
+    before calsync could account for it would be an absence nothing explains —
+    ten of them and the mirror holds, asking a person about a rained-out
+    weekend the feed already announced."""
+    _sync(conn, source, target)
+    uids = _all_uids()
+
+    seen = []
+    real_cancel = target.cancel
+
+    def cancel(ref):
+        other = db.connect(tmp_path / "calsync.db")
+        seen.append(next(p["state"] for p in repo.placements(other, since="2000-01-01")
+                         if p["uid"] == ref.remote_id))
+        other.close()
+        return real_cancel(ref)
+
+    target.cancel = cancel
+    _sync(conn, source, target, raw=_called_off(*uids))
+
+    assert seen == ["cancelled"] * len(uids)
+
+
+def test_a_failed_delete_of_a_called_off_event_is_retried(conn, source, target):
+    """Recorded first, but not tombstoned until the target agrees — a row
+    marked cancelled drops out of the diff, and the event would stay on the
+    calendar with nothing left to remove it."""
+    from calsync.targets import TargetError
+
+    _sync(conn, source, target)
+    uid = _all_uids()[0]
+    real_cancel = target.cancel
+
+    def refuse(ref):
+        raise TargetError("server went away")
+
+    target.cancel = refuse
+    failed = _sync(conn, source, target, raw=_called_off(uid))
+    assert failed.status == "error"
+    assert not repo.event_states(conn, source.id)[uid].cancelled
+    assert _placement(conn, uid)["state"] == "cancelled", "the mirror is still told"
+
+    target.cancel = real_cancel
+    retried = _sync(conn, source, target, raw=_called_off(uid))
+    assert retried.status == "ok"
+    assert retried.called_off == 1
+    assert repo.event_states(conn, source.id)[uid].cancelled
+
+
+def test_a_game_the_feed_reinstates_comes_back(conn, source, target, tmp_path):
+    _sync(conn, source, target)
+    uid = _all_uids()[0]
+    _sync(conn, source, target, raw=_called_off(uid))
+
+    report = _sync(conn, source, target)
+
+    assert report.created == 1
+    assert not repo.event_states(conn, source.id)[uid].cancelled
+    assert _placement(conn, uid)["state"] == "live"
+
+
+def test_a_called_off_game_takes_its_warm_up_with_it(conn, source, target):
+    conn.execute("UPDATE activities SET warmup_minutes = 45")
+    conn.commit()
+    _sync(conn, source, target)
+    states = repo.event_states(conn, source.id)
+    game = next(uid for uid in states if f"calsync-warmup-{uid}" in states)
+
+    report = _sync(conn, source, target, raw=_called_off(game))
+
+    assert report.called_off == 2
+    states = repo.event_states(conn, source.id)
+    assert states[game].cancelled
+    assert states[f"calsync-warmup-{game}"].cancelled
+
+
+def test_feed_cancellations_go_through_while_a_disappearance_is_held(
+    conn, source, target
+):
+    """A held absence is a question about the fetch. A game the feed called off
+    in that same fetch is not part of the question."""
+    _sync(conn, source, target)
+    text = _first_event_only()
+    first = _all_uids()[0]
+
+    report = _sync(conn, source, target, raw=_called_off(first, raw=text))
+
+    assert report.status == "held"
+    assert report.called_off == 1
+    assert first not in report.held_cancellations
+    assert repo.event_states(conn, source.id)[first].cancelled
+
+
+def test_the_poll_log_counts_what_was_written(conn, source, target):
+    """A withheld event the feed still publishes is "new" to the diff on every
+    poll. The log recorded that for weeks while nothing was written."""
+    _sync(conn, source, target)
+    uid = _all_uids()[1]
+    repo.set_withheld(conn, uid, "not_attending")
+    repo.mark_event_cancelled(conn, uid)
+    conn.commit()
+
+    report = _sync(conn, source, target)
+
+    assert report.created == 0
+    detail = conn.execute(
+        "SELECT detail FROM poll_runs ORDER BY id DESC LIMIT 1").fetchone()[0]
+    assert detail.startswith("0 new"), detail
+    assert "1 withheld" in detail

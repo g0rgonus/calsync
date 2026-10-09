@@ -464,6 +464,10 @@ def parse_feed(
                 source_id=source_id,
                 source_category=parsed.event_type,
                 content_hash=content_hash(component),
+                # Never observed on TeamReach. Read anyway because it is the
+                # standard's own word for it and Player360 started sending it
+                # unannounced; see `Event.cancelled`.
+                cancelled=(_text(component, "STATUS") or "").upper() == "CANCELLED",
                 unresolved=tuple(unresolved),
             )
         )

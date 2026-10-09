@@ -174,7 +174,7 @@ so a fresh clone needs:
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/pytest                                    # 665 tests, ~6s
+.venv/bin/pytest                                    # 680 tests, ~7s
 .venv/bin/pytest tests/test_player360.py -k content_hash    # single test
 ```
 
@@ -623,20 +623,33 @@ Decisions that span several files and are easy to undo by accident:
   still only reports, and an agent has no path to it, the same division the
   review gate draws. Two reasons share one mechanism, because the event comes
   off either way and the label is all that differs: `not_attending`, and
-  `cancelled` for the Player360 case where the app knows and the export never
-  says (so `/review`'s unexplained-edit list can finally be answered rather than
-  only acknowledged). Putting it back writes no event here — clearing the flag
+  `cancelled` for a cancellation the export does not carry (so `/review`'s
+  unexplained-edit list can be answered rather than only acknowledged). Putting it back writes no event here — clearing the flag
   leaves a cancelled row, `known_hashes` skips those, and the next sync creates
   it through the ordinary path. A warm-up follows its game and carries no row of
   its own. Withholding a *past* event is refused where the button is, for
   `retire.py`'s reason: it happened, and taking it off deletes the record of a
   game that was played.
+- **A feed that says `STATUS:CANCELLED` is obeyed, with no guard and no
+  person** (`Event.cancelled`, `diff_poll`'s `called_off`). Player360 started
+  sending it unannounced around September 2026 and keeps the event in the feed,
+  marked. The guard exists because an *absence* cannot tell a cancellation from
+  a broken fetch; this is not an absence, so it is left out of the guard's
+  arithmetic on both sides and applied even while the same poll holds a
+  disappearance — ten games marked cancelled is a rained-out weekend, never a
+  truncated response. The game's warm-up comes off with it. The cancellation is
+  written to `event_state.cancelled_upstream_at` and **committed before the
+  first delete**, for `removal_approved_at`'s reason: `/v1/placements` reports
+  it `cancelled` the moment the mirror can find it missing, so the Mac needs
+  nobody either. The row is tombstoned only once the target accepts the delete,
+  so a failed one is retried by the next poll. A game the feed reinstates is
+  created afresh, and the next write clears the column.
 - **An edit the feed will not explain is reported, never acted on**
-  (`upstream.py`). Player360 does not export cancellations: an event cancelled
-  in the app goes on being published as an ordinary one, and the only trace is
-  `LAST-MODIFIED` moving to *before* the event where the documented churn lands
-  2-5s after `DTEND`. `sync._note_upstream_edit` flags that — content hash
-  identical, timestamp moved early — and it reaches `/review` and a push. It
+  (`upstream.py`). Before `STATUS:CANCELLED`, Player360 exported cancellations
+  as an ordinary event whose only trace was `LAST-MODIFIED` moving to *before*
+  the event, where the documented churn lands 2-5s after `DTEND`.
+  `sync._note_upstream_edit` flags that — content hash identical, timestamp
+  moved early — and it reaches `/review` and a push. It
   cannot say a cancellation happened, because one of the two observed
   pre-`DTEND` edits was not one, so guessing would be a delete decided by
   inference. `content_hash` still ignores the field entirely; the timestamp
@@ -686,8 +699,8 @@ Decisions that span several files and are easy to undo by accident:
 These encode failure modes found in a real feed. Weakening any of them can wipe a
 family calendar, so treat them as contracts, not defaults:
 
-- **Absence is the only cancellation signal, so a bad fetch looks like a cancelled
-  season.** `diff.py` holds all cancellations when >20% or >3 tracked events in the sync window
+- **Absence is usually the only cancellation signal, so a bad fetch looks like a
+  cancelled season.** `diff.py` holds all cancellations when >20% or >3 tracked events in the sync window
   vanish in one poll. Never bypass the guard or raise the thresholds to make a test pass.
   The way out is a person: the source page lists the held set, with each event's
   same-start twin when the feed re-minted it, and confirming posts that set's

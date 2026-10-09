@@ -149,8 +149,18 @@ class Event:
     #: from it. Player360 bumps this 2-5s after an event *ends*, so it is noise
     #: for all but one purpose: a move of it to *before* the event, with our
     #: content unchanged, is an upstream edit whose substance the feed does not
-    #: publish. That is how a cancellation reaches us and the only trace of it.
+    #: publish. That is how Player360 cancellations reached us before it began
+    #: sending ``STATUS:CANCELLED`` (`cancelled`, below).
     upstream_modified_at: datetime | None = None
+
+    #: The feed says this event is off: ``STATUS:CANCELLED``. The one
+    #: cancellation signal that is *positive* — everything else calsync has is
+    #: an absence, which a bad fetch imitates perfectly. So it is honoured
+    #: without a guard and without a person, however many arrive at once; see
+    #: `diff.diff_poll`'s ``called_off``. Not in `content_hash`: a cancelled
+    #: event never reaches the content comparison, and one that comes back is
+    #: new again because its row is cancelled.
+    cancelled: bool = False
 
     #: Questions blocking this event's placement (UNKNOWN_TYPE and friends).
     #:

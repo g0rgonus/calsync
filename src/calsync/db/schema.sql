@@ -142,6 +142,9 @@ CREATE TABLE IF NOT EXISTS event_state (
     -- never sees an absence calsync cannot account for. Cleared by the next
     -- write: an event that is written again is live again.
     removal_approved_at TEXT,
+    -- When the feed marked this event cancelled. Recorded before the delete,
+    -- like removal_approved_at, and for the same reader; cleared the same way.
+    cancelled_upstream_at TEXT,
     updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS event_state_source ON event_state(source_id);

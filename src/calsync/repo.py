@@ -258,9 +258,10 @@ def record_event_state(
     what changed, so any outstanding "something changed and we cannot see what"
     has been answered by the change itself.
 
-    ``removal_approved_at`` is cleared for the same reason ``cancelled`` is: an
-    event written again is live again, and a stale approval would let a later
-    bad read of it pass as deliberate.
+    ``removal_approved_at`` and ``cancelled_upstream_at`` are cleared for the
+    same reason ``cancelled`` is: an event written again is live again, and a
+    stale record would let a later bad read of it pass as deliberate. That is
+    also how a game the feed un-cancels comes back.
     """
     conn.execute(
         """
@@ -280,7 +281,8 @@ def record_event_state(
             updated_at   = excluded.updated_at,
             upstream_modified_at = excluded.upstream_modified_at,
             upstream_edit_at     = NULL,
-            removal_approved_at  = NULL
+            removal_approved_at  = NULL,
+            cancelled_upstream_at = NULL
         """,
         (uid, source_id, collection, remote_id, content_hash, remote_etag,
          starts_at, upstream_modified_at),
@@ -302,6 +304,21 @@ def approve_removals(conn: sqlite3.Connection, uids: list[str]) -> None:
     )
 
 
+def note_cancelled_upstream(conn: sqlite3.Connection, uids: list[str]) -> None:
+    """Record that the feed marked these events cancelled.
+
+    Before the deletes, for `approve_removals`' reason: the Mac mirror must be
+    able to account for an absence the moment it appears. Unlike marking the
+    row cancelled, this leaves a failed delete to be retried — the event is
+    still tracked, so the next poll finds it called off again.
+    """
+    conn.executemany(
+        "UPDATE event_state SET cancelled_upstream_at = datetime('now') "
+        "WHERE uid = ? AND cancelled_upstream_at IS NULL",
+        [(uid,) for uid in uids],
+    )
+
+
 #: Why an event is deliberately off the calendar, as `placements` reports it.
 REMOVED_STATES = ("withheld", "cancelled", "approved")
 
@@ -310,13 +327,15 @@ def placements(conn: sqlite3.Connection, *, since: str) -> list[dict]:
     """Where each event starting from ``since`` is, and whether it is off on purpose.
 
     ``state`` is ``live``, or why it is not: ``withheld`` (a person took it
-    off), ``cancelled`` (calsync deleted it), or ``approved`` (a person
+    off), ``cancelled`` (calsync deleted it, or the feed marked it cancelled
+    and the delete may not have landed yet), or ``approved`` (a person
     confirmed its removal and the delete may not have landed yet). Withheld
     outranks cancelled because it is the reason, not the result.
     """
     rows = conn.execute(
         "SELECT uid, source_id, collection, starts_at, cancelled, withheld, "
-        "removal_approved_at FROM event_state WHERE starts_at >= ? "
+        "removal_approved_at, cancelled_upstream_at FROM event_state "
+        "WHERE starts_at >= ? "
         "ORDER BY starts_at, uid",
         (since,),
     )
@@ -324,7 +343,7 @@ def placements(conn: sqlite3.Connection, *, since: str) -> list[dict]:
     for r in rows:
         if r["withheld"]:
             state = "withheld"
-        elif r["cancelled"]:
+        elif r["cancelled"] or r["cancelled_upstream_at"]:
             state = "cancelled"
         elif r["removal_approved_at"]:
             state = "approved"

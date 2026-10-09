@@ -6,9 +6,11 @@ this code:
 - SEQUENCE == unix(LAST-MODIFIED), and every event is touched 2-3s after its
   DTEND. Those fields churn on events that did not change, so change detection
   uses our own content hash and upstream SEQUENCE is never propagated.
-- Cancellation is signalled only by an event disappearing, which makes a
-  truncated response indistinguishable from a cancelled season. Parsing is
-  therefore strict, and the disappearance guard lives in diff.py.
+- A cancellation may arrive two ways. Since 2026 the export marks one
+  ``STATUS:CANCELLED`` and keeps publishing it, which is carried on
+  `Event.cancelled` and honoured outright. An event can also simply vanish,
+  which makes a truncated response indistinguishable from a cancelled season —
+  so parsing is strict, and the disappearance guard lives in diff.py.
 """
 
 from __future__ import annotations
@@ -181,10 +183,14 @@ def parse_feed(
         if ends_at is None:
             ends_at = starts_at
 
+        cancelled = (_text(component, "STATUS") or "").upper() == "CANCELLED"
         cats = _categories(component)
         is_game = any(c in GAME_CATEGORIES or c in extra_games for c in cats)
         unresolved: list[str] = []
-        if cats and not is_game:
+        # A cancelled event is never written, so it asks nobody anything: an
+        # unrecognised category on it would hold up a promotion over an event
+        # that is not going on any calendar.
+        if cats and not is_game and not cancelled:
             unrecognised = {
                 c for c in cats
                 if c not in ("practice", "training") and c not in extra_practices
@@ -239,6 +245,7 @@ def parse_feed(
                 # it; see `Event.upstream_modified_at` for the one thing it is
                 # good for.
                 upstream_modified_at=_dt(component, "LAST-MODIFIED"),
+                cancelled=cancelled,
                 unresolved=tuple(unresolved),
             )
         )

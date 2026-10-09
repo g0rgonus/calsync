@@ -39,7 +39,7 @@ SEQUENCE:1785600002
 | Timezone | UTC only | `DTSTART`/`DTEND` are `Z`, no `TZID` |
 | Opponent | **yes, for league matches** | embedded in `SUMMARY` — see below |
 | Child identity | **no** | comes from the feed→child binding, not the feed |
-| Cancellation | **not published at all** | no `STATUS`, and the event does *not* vanish — observed, see Trap 2 |
+| Cancellation | **yes, since 2026-09** — `STATUS:CANCELLED` | the event stays in the feed, marked; before that it was not published at all — see Trap 2 |
 
 ## Decisions this settles
 
@@ -197,7 +197,34 @@ So upstream change signals blaze on events that did not change:
 
 ## Trap 2: a cancelled event stays in the feed
 
-**Observed 2026-08-20, confirmed against the app.** A practice the app shows as
+**Now marked `STATUS:CANCELLED`, observed 2026-10-09.** Three tournament games
+cancelled in the app were still in the feed, every content field unchanged, with
+`STATUS:CANCELLED` added and `LAST-MODIFIED` moved to the moment of the edit.
+The same feed marks three practices from September the same way, so the change
+predates that observation by a month or more; the rest carry
+`STATUS:CONFIRMED`. Nothing announced it.
+
+```
+UID:360Player-event-5518971
+SUMMARY:Columbus Day Tournament Game
+STATUS:CANCELLED                <- the whole signal
+DTSTART:20261010T131000Z
+LAST-MODIFIED:20261009T081323Z
+```
+
+calsync honours it outright (`Event.cancelled`, `diff_poll`'s `called_off`): the
+event and its warm-up come off, **with no guard and no person**, however many
+arrive in one poll. The guard exists because an absence cannot tell a
+cancellation from a broken fetch; this is not an absence. It is a statement,
+made about each event, inside a feed that parsed. Ten games marked cancelled is
+a rained-out weekend, never a truncated response. The cancellation is recorded
+before the delete is sent, so `GET /v1/placements` already reports it
+`cancelled` when the Mac mirror finds it missing, and the mirror's guard does
+not count it either. A game later reinstated (`CONFIRMED` again) is created
+afresh.
+
+**Before that, the export said nothing (observed 2026-08-20, confirmed against
+the app).** A practice the app shows as
 "This event has been canceled", with its title struck through, was still in the
 feed two days later with every content field unchanged:
 
@@ -210,17 +237,19 @@ LAST-MODIFIED:20260820T195521Z  <- the only field that moved
 ```
 
 No `STATUS`, no `METHOD:CANCEL`, nothing in `SUMMARY` or `DESCRIPTION`. The
-export does not carry the cancellation in any form, so calsync cannot act on it.
-This corrects an earlier assumption here that a cancelled event disappears.
+export did not carry the cancellation in any form. This corrected an earlier
+assumption here that a cancelled event disappears.
 
 The only trace is `LAST-MODIFIED`, which moved to 1h50m *before* `DTSTART` while
 the documented churn lands 2–5s *after* `DTEND`. That makes a real edit
 distinguishable from the churn — but not identifiable: of the two pre-`DTEND`
 edits in the sample, only one was a cancellation, so it says "the coach changed
-something" and never what. It is not grounds for a delete.
+something" and never what. It is not grounds for a delete, and it is still
+reported (`upstream.py`) — an edit whose substance the feed withholds has not
+gone away just because cancellations are now spelled out.
 
-Disappearance therefore remains the only cancellation signal calsync has, and it
-is dangerous against a shared family calendar even so.
+Disappearance remains a cancellation signal for an event that genuinely leaves
+the feed, and it is dangerous against a shared family calendar even so.
 
 A fetch that returns `200` with a truncated, empty, or wrong-scope body looks
 identical to "the whole season was cancelled."
@@ -329,7 +358,8 @@ Same treatment as the iCloud app-specific password.
 4. Full `CATEGORIES` vocabulary beyond `match` / `practice`.
 5. Does the token expire?
 6. **Resolved 2026-08-20, and not as assumed:** a cancelled event stays in the
-   feed unchanged. Trap 2.
+   feed unchanged. **Changed by 2026-10-09:** it now stays in the feed marked
+   `STATUS:CANCELLED`. Trap 2.
 7. **Resolved:** `U10PL PSL Match vs Harbour FC U10` is the ICS `SUMMARY` —
    confirmed in Apple Calendar rendering the subscribed feed. Opponent parsing
    is free; no API or scrape needed.

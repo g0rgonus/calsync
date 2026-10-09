@@ -256,9 +256,10 @@ GET  /v1/placements?from=                              # built
 ```
 
 **Where calsync last put each event, and whether it is off the calendar on
-purpose** — `live`, or `withheld`, `cancelled` or `approved` (a person confirmed
-a held removal; the delete may still be landing). No content: a uid, a
-collection and a state.
+purpose** — `live`, or `withheld`, `cancelled` (calsync deleted it, or the feed
+marked it `STATUS:CANCELLED` and the delete may still be landing) or `approved`
+(a person confirmed a held removal; the delete may still be landing). No
+content: a uid, a collection and a state.
 
 It exists so **one confirmation is enough**. The Mac mirror reads Radicale and
 runs the same disappearance guard `diff.py` does, because a broken read looks

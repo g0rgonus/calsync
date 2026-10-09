@@ -1,12 +1,17 @@
 """Diff a poll against known state, with the mass-disappearance guard.
 
-Player360 has no STATUS field: a cancelled event simply vanishes from the feed
-(docs/sources/player360.md, trap 2). Disappearance is therefore the only
-cancellation signal available — and a truncated or wrong-scope 200 response
-looks exactly like a cancelled season.
+Two kinds of cancellation reach this module, and they are trusted differently.
 
-So the guard is not optional polish. It is the thing standing between a bad
-fetch and a wiped family calendar.
+An event the feed marks ``STATUS:CANCELLED`` (``called_off``) is cancelled
+outright. It is a positive statement inside a feed that parsed, about an event
+that is still there — nothing a broken fetch produces looks like it — so no
+guard applies and no person is asked, whether it is one game or a rained-out
+weekend of ten.
+
+An event that simply vanishes is the other kind, and the only kind most feeds
+offer. A truncated or wrong-scope 200 response looks exactly like a cancelled
+season, so the guard is not optional polish: it is the thing standing between a
+bad fetch and a wiped family calendar.
 """
 
 from __future__ import annotations
@@ -30,6 +35,9 @@ class Diff:
     updated: list[Event] = field(default_factory=list)
     unchanged: list[Event] = field(default_factory=list)
     cancelled: list[str] = field(default_factory=list)
+    #: Tracked events the feed itself marked cancelled. Never held: a guard
+    #: protects against absences, and these are not absent.
+    called_off: list[str] = field(default_factory=list)
 
     #: Set when a guard trips. Affected operations are withheld and must be
     #: confirmed by a human before anything reaches the calendar.
@@ -49,18 +57,6 @@ class Diff:
     @property
     def is_anomalous(self) -> bool:
         return self.anomaly is not None
-
-    def summary(self) -> str:
-        parts = [
-            f"{len(self.created)} new",
-            f"{len(self.updated)} changed",
-            f"{len(self.unchanged)} unchanged",
-        ]
-        if self.anomaly:
-            parts.append(f"HELD: {self.anomaly}")
-        else:
-            parts.append(f"{len(self.cancelled)} cancelled")
-        return ", ".join(parts)
 
     def confirm(self, expected: str | None) -> bool:
         """Release held cancellations a person has seen and agreed to.
@@ -96,6 +92,7 @@ def diff_poll(
     max_pct: float = MAX_DISAPPEARANCE_PCT,
     max_count: int = MAX_DISAPPEARANCE_COUNT,
     counts_as_evidence: Callable[[str], bool] | None = None,
+    called_off: Iterable[str] = (),
 ) -> Diff:
     """Compare a poll against ``{uid: content_hash}`` of what we already have.
 
@@ -118,10 +115,20 @@ def diff_poll(
     Only the *counting* is filtered. Withholding is not: a tripped guard still
     holds every cancellation in the poll, which is what keeps a game and its
     warm-up from being resolved differently.
+
+    ``called_off`` is every uid the feed marked cancelled — warm-ups of those
+    games included, which the caller derives. They are not in ``incoming``, and
+    they are not missing either: the tracked ones go to `Diff.called_off`
+    whatever any guard decides, and are left out of the guard's arithmetic on
+    both sides. Counting them as tracked would dilute the percentage; counting
+    them as vanished would hold a weekend of real cancellations behind the very
+    check that exists to tell a cancellation from a fault.
     """
     counts = counts_as_evidence or (lambda uid: True)
     result = Diff()
     incoming_by_uid = {e.uid: e for e in incoming}
+    announced = set(called_off) - set(incoming_by_uid)
+    result.called_off = [uid for uid in known if uid in announced]
 
     for event in incoming:
         previous = known.get(event.uid)
@@ -132,7 +139,9 @@ def diff_poll(
         else:
             result.unchanged.append(event)
 
-    missing = [uid for uid in known if uid not in incoming_by_uid]
+    missing = [
+        uid for uid in known if uid not in incoming_by_uid and uid not in announced
+    ]
 
     # Total identity turnover: nothing we knew is present, and nothing present
     # is anything we knew. A real season never rolls over this cleanly — this is
@@ -157,7 +166,7 @@ def diff_poll(
     if not missing:
         return result
 
-    tracked = sum(1 for uid in known if counts(uid))
+    tracked = sum(1 for uid in known if counts(uid) and uid not in announced)
     vanished = [uid for uid in missing if counts(uid)]
     over_count = len(vanished) > max_count
     over_pct = tracked > 0 and (len(vanished) / tracked) > max_pct
