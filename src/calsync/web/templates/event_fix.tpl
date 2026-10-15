@@ -25,7 +25,7 @@
 % for alert in alerts:
 %   if alert['kind'] == 'changed':
 <div class="question fix-alert">
-  <h3>{{ app }} changed the {{ alert['label'] }}.</h3>
+  <h3>{{ App }} changed the {{ alert['label'] }}.</h3>
   <p>It now says <strong>{{ alert['theirs'] }}</strong>. You had fixed it to
      <strong>{{ alert['mine'] }}</strong>, and the calendar still shows yours.
      Which is right?</p>
@@ -39,7 +39,7 @@
 </div>
 %   elif alert['kind'] == 'cleared':
 <div class="banner banner-good">
-  <strong>{{ app }} caught up.</strong> It now says {{ alert['theirs'] }} for the
+  <strong>{{ App }} caught up.</strong> It now says {{ alert['theirs'] }} for the
   {{ alert['label'] }}, the same as your fix, so the fix is no longer needed and
   was removed. Nothing on the calendar changed.
 </div>
@@ -109,9 +109,9 @@
   <p class="fix-status">
     <span class="tag tag-live">your fix</span>
 %     if unit['key'] == 'notes':
-    {{ app }}’s notes are different.
+    {{ App }}’s notes are different.
 %     else:
-    {{ app }} says {{ unit['team_says'] or 'nothing' }}.
+    {{ App }} says {{ unit['team_says'] or 'nothing' }}.
 %     end
     <button class="linkish" type="submit" formaction="/events/fix/undo" formnovalidate
             name="unit" value="{{ unit['key'] }}">Use {{ app }}’s instead</button>
@@ -183,7 +183,8 @@
 
   <div class="fix-sign">
     <label class="fix-in fix-in-wide">Why are you changing it?
-      <input type="text" name="reason" required placeholder="Coach texted: kickoff moved to 11"></label>
+      <input type="text" name="reason" value="{{ form.get('reason', '') }}"
+             placeholder="Coach texted: kickoff moved to 11"></label>
     <label class="fix-in fix-in-name">Your name
       <input type="text" name="actor" value="{{ actor }}" autocomplete="name"></label>
   </div>

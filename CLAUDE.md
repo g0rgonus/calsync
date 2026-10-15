@@ -16,7 +16,8 @@ feed URL, confirm three things, and the source is staged; the gate in
 table, pins and merges; `/household` edits kids and the sport catalog;
 `/settings` covers the `settings` table, and a team's own fields are on its
 source page. `/calendar` shows what has actually been written, month grid or
-agenda. Nothing in the day-to-day path needs sqlite3 any more.
+agenda, and *Fix details* on an agenda row corrects one event when the coach
+has not. Nothing in the day-to-day path needs sqlite3 any more.
 
 **The HTTP API** (`calsync api`, `src/calsync/api/`) serves `GET /v1` (the
 machine-readable contract), `GET /v1/events`, `GET /v1/events/{uid}`,
@@ -32,8 +33,8 @@ alongside `event_state`'s record of where it went (`docs/API.md`, "What calsync
 remembers"). The write half — documents, proposals, approvals, task tokens,
 `PATCH` — is deliberately unbuilt, because none of its consumers exist and a
 review gate with nothing to review cannot be shown to work. The overlay `PATCH`
-would write is built (`overlay.py`, `event_overrides`); its writer for now is
-`repo.set_override`, with a console page to follow.
+would write is built (`overlay.py`, `event_overrides`), and its writer is a
+person: *Fix details* on the agenda opens `/events/fix` (`web/fix.py`).
 
 **Inbound sources** (`calsync inbound`, `src/calsync/inbound/`,
 `docs/deployment/inbound.md`) are a source kind that is pushed to rather than
@@ -201,7 +202,7 @@ so a fresh clone needs:
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/pytest                                    # 781 tests, ~7s
+.venv/bin/pytest                                    # 793 tests, ~8s
 .venv/bin/pytest tests/test_player360.py -k content_hash    # single test
 ```
 
@@ -531,6 +532,15 @@ Decisions that span several files and are easy to undo by accident:
   rewrite. And `starts_at` stays the feed's start, for the diff and the window,
   while `shown_starts_at` is when the event is on the calendar — what retiring,
   withholding, `/v1/placements` and every receipt reader go by.
+- **The fix page is for somebody who has never seen the rest of the console**
+  (`web/fix.py`, `event_fix.tpl`). It says "TeamReach says…", never
+  "override" or "upstream", and it has no per-field switches: the form arrives
+  filled in, and `fix.plan` compares each part with the *feed's* value, so a
+  field left alone can never freeze into a fix and a field put back lifts one.
+  Only a change of **day** asks for confirmation — a new time on the same day is
+  the ordinary correction, and a confirm on every save would be clicked through.
+  Saving runs the real sync, as *Put it back* does, and a calendar that cannot
+  be reached is "saved, lands on the next sync", never a second writer.
 - **Stored content is checked independently of the feed's hash**, the same way
   placement is. `content_hash` covers the raw feed component, before venue
   enrichment — so teaching an alias or confirming an address changes what an

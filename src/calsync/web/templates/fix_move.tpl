@@ -5,7 +5,7 @@
 % # get wrong on a Saturday morning.
 
 <h1>Move {{ title }} to {{ new_day_short }}?</h1>
-<p class="lede">{{ app }} has it on {{ old_day }}. Your change puts it on a
+<p class="lede">{{ App }} has it on {{ old_day }}. Your change puts it on a
    different day for everyone who uses this calendar.</p>
 
 <div class="card fix-preview">

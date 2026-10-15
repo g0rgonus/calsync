@@ -203,3 +203,32 @@ def apply(event: Event, overlay: Overlay | None) -> Event:
         elif unit == "notes":
             fields["body"] = value["body"]
     return replace(event, **fields) if fields else event
+
+
+def same(unit: str, a: dict | None, b: dict | None) -> bool:
+    """Do two values of one unit put the same thing on the calendar?
+
+    Times compare as instants, because an offset and a ``Z`` spell one moment
+    differently. Text compares with whitespace collapsed and case kept: case
+    shows on a phone, and a coach's doubled space does not. ``venue_raw`` is
+    left out — it is the string a feed happened to type, not where the event is.
+    """
+    if a is None or b is None:
+        return a is None and b is None
+    if unit == "time":
+        return (
+            bool(a["all_day"]) == bool(b["all_day"])
+            and datetime.fromisoformat(a["starts_at"]) == datetime.fromisoformat(b["starts_at"])
+            and datetime.fromisoformat(a["ends_at"]) == datetime.fromisoformat(b["ends_at"])
+        )
+    return all(
+        _squash(a.get(column)) == _squash(b.get(column))
+        for column in UNITS[unit]
+        if column != "venue_raw"
+    )
+
+
+def _squash(value) -> str | None:
+    if value is None:
+        return None
+    return " ".join(str(value).split()) or None

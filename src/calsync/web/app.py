@@ -45,6 +45,7 @@ from ..secrets import SecretError, SecretStore
 from ..settings import Settings, set_setting
 from ..targets import TargetError
 from ..sync import sync_source
+from . import fix as fix_mod
 from . import gate
 
 HERE = Path(__file__).parent
@@ -897,6 +898,20 @@ def create_app(
             month = _month_of(request.query.get("month"), zone=zone, clock=clock)
             start, end = _month_bounds(month, zone)
 
+            def link(mode=mode, month=month, child=child_id):
+                """One place that spells a link to this page, defaults included.
+
+                Built here rather than in the template because every control on the
+                page is the current view with one thing changed, and a template that
+                reassembles three parameters by hand loses one of them the first
+                time a fourth is added.
+                """
+                parts = [f"view={mode}", f"month={month.year:04d}-{month.month:02d}"]
+                if child:
+                    parts.append(f"child={quote(child, safe='')}")
+                return "/calendar?" + "&".join(parts)
+            here = link()
+
             # Padded on both sides, then filtered exactly below. `stored_events`
             # compares ISO strings, and a feed may write an offset rather than
             # UTC — so a string bound can miss an event by its own offset. A day
@@ -958,20 +973,15 @@ def create_app(
                             and item.collection == settings.enrichment_collection,
                     "collection": item.collection,
                     "is_game": item.event.is_game,
+                    # A warm-up is fixed through its game.
+                    "fix_url": (
+                        f"/events/fix?uid={quote(item.event.warmup_for or item.event.uid, safe='')}"
+                        f"&back={quote(here, safe='')}"
+                    ),
+                    "fixed": fix_mod.calendar_note(
+                        item, repo.overrides_of(conn, item.event.uid)
+                    ),
                 })
-
-        def link(mode=mode, month=month, child=child_id):
-            """One place that spells a link to this page, defaults included.
-
-            Built here rather than in the template because every control on the
-            page is the current view with one thing changed, and a template that
-            reassembles three parameters by hand loses one of them the first
-            time a fourth is added.
-            """
-            parts = [f"view={mode}", f"month={month.year:04d}-{month.month:02d}"]
-            if child:
-                parts.append(f"child={quote(child, safe='')}")
-            return "/calendar?" + "&".join(parts)
 
         entries.sort(key=lambda e: (e["local"], e["title"]))
         by_day: dict[date, list] = {}
@@ -997,7 +1007,7 @@ def create_app(
             today=clock().astimezone(zone).date(),
             # So a decision made from this page comes back to this page, with
             # the month and the child filter still on it.
-            back=link(),
+            back=here,
             reasons=withheld_mod.REASONS,
             previous=_shift_month(month, -1),
             following=_shift_month(month, +1),
@@ -1116,6 +1126,168 @@ def create_app(
         message = problems[0] if problems else reports[0].line()
         key = "err" if problems else "ok"
         redirect(_back_to("/calendar") + key + "=" + _q(message))
+
+    # --- fixing one event --------------------------------------------------
+    #
+    # A person's correction to one event, kept however long the team app goes on
+    # saying otherwise (`overlay.py`, `web/fix.py`). Saving stores the decision
+    # and then runs the real sync, as "Put it back" does: the sync loop is the
+    # one thing that writes events, and a fix that waited twenty minutes for
+    # the poller would read as a button that did nothing.
+
+    def _fix_back(default: str = "/calendar") -> str:
+        """Where the page returns to: a calendar or review page, never elsewhere."""
+        back = _field("back") or request.query.getunicode("back") or default
+        return back if back.startswith(("/calendar", "/review")) else default
+
+    def _fix_url(uid: str, back: str, **flash) -> str:
+        url = f"/events/fix?uid={quote(uid, safe='')}&back={quote(back, safe='')}"
+        for key, text in flash.items():
+            url += f"&{key}={_q(text)}"
+        return url
+
+    def _fix_subject(conn, uid: str) -> fix_mod.Subject:
+        found = fix_mod.subject(conn, uid)
+        if found is None:
+            raise Refused("calsync has no record of writing that event")
+        if found.item.cancelled or found.state.withheld:
+            raise Refused(
+                "that event is off the calendar, so there is nothing to fix. Put "
+                "it back first if it is on after all."
+            )
+        return found
+
+    #: Everything the fix form posts, read only when present: a field the form
+    #: did not send (an opponent, for a practice) is not a request to clear it.
+    _FIX_FIELDS = ("date", "start", "end", "venue_name", "venue_field",
+                   "venue_address", "opponent", "detail", "notes", "reason", "actor")
+
+    def _fix_form() -> dict:
+        form = {name: _field(name) for name in _FIX_FIELDS if name in request.forms}
+        if "date" in form:
+            form["all_day"] = bool(_field("all_day"))
+        return form
+
+    def _fix_page(uid: str, back: str, *, form: dict | None = None, flash=None):
+        with connect() as conn:
+            found = fix_mod.subject(conn, uid)
+            if found is None:
+                raise Refused("calsync has no record of writing that event")
+            context = fix_mod.page(conn, found, now=clock(), back=back, form=form)
+        if flash is None and context["pending"]:
+            flash = {"kind": "info", "text": (
+                "Your last change is saved but not on the calendar yet — the "
+                "calendar could not be reached. It goes on at the next sync."
+            )}
+        return render("event_fix.tpl", flash=flash or _flash(), **context)
+
+    def _land(source_id: str) -> tuple[str, str]:
+        """Sync the source a fix belongs to, and say how it went in plain words."""
+        with connect() as conn:
+            enabled = _require_source(conn, source_id).enabled
+        if not enabled:
+            return "ok", ("Saved. Updates for that team are paused, so the "
+                          "calendar catches up when they resume.")
+        try:
+            reports, problems = _sync_now([source_id])
+        except Refused as exc:
+            return "err", (f"Saved, but the calendar couldn’t be updated just now "
+                           f"({exc}) — it will catch up on the next sync.")
+        if problems or any(r.status == "error" for r in reports):
+            return "err", ("Saved, but the calendar couldn’t be updated just now — "
+                           "it will catch up on the next sync.")
+        return "ok", "Calendar updated. Everyone’s phones will show the change."
+
+    @app.get("/events/fix")
+    def fix_event_page():
+        uid = request.query.getunicode("uid") or ""
+        back = _fix_back()
+        with connect() as conn:
+            parent = warmup.parent_of(uid)
+            if parent is not None:
+                # A warm-up is its game's shadow, so it is fixed through the game.
+                redirect(_fix_url(parent, back))
+            _fix_subject(conn, uid)
+        return _fix_page(uid, back)
+
+    @app.post("/events/fix")
+    def fix_event():
+        uid, back = _field("uid"), _fix_back()
+        form = _fix_form()
+        with connect() as conn:
+            found = _fix_subject(conn, uid)
+            if not found.upcoming(clock()):
+                raise Refused(
+                    "that has already happened, so it can't be changed now — "
+                    "changing it would rewrite the record of something that was "
+                    "played."
+                )
+            plan = fix_mod.plan(found, form)
+            if plan.errors:
+                return _fix_page(uid, back, form=form,
+                                 flash={"kind": "bad", "text": " ".join(plan.errors)})
+            if plan.empty:
+                redirect(_fix_url(uid, back, ok=(
+                    "Nothing to change — that is what the calendar already shows.")))
+            reason = (form.get("reason") or "").strip()
+            if plan.sets and not reason:
+                return _fix_page(uid, back, form=form, flash={"kind": "bad", "text": (
+                    "Say why you’re changing it — it’s what everyone else sees "
+                    "next to the change.")})
+            if plan.moved_day and _field("day_change") != "confirmed":
+                # The one change worth a second look: a date picker one row off
+                # is a family at the wrong field on the wrong Saturday.
+                zone = found.zone
+                was, becomes = found.current, plan.sets["time"]
+                new_start = datetime.fromisoformat(becomes["starts_at"]).astimezone(zone)
+                return render(
+                    "fix_move.tpl",
+                    title=fix_mod.page(conn, found, now=clock(), back=back)["title"],
+                    app=fix_mod.app_name(found.source_kind),
+                    App=fix_mod.app_name(found.source_kind).capitalize(),
+                    old_day=was.starts_at.astimezone(zone).strftime("%A %-d %B"),
+                    old_clock=("all day" if was.all_day
+                               else was.starts_at.astimezone(zone).strftime("%-H:%M")),
+                    new_day=new_start.strftime("%A %-d %B"),
+                    new_clock=("all day" if becomes["all_day"]
+                               else new_start.strftime("%-H:%M")),
+                    new_day_short=new_start.strftime("%A"),
+                    fields={"uid": uid, "back": back, **{
+                        k: ("1" if v is True else v) for k, v in form.items() if v is not False
+                    }},
+                )
+            actor = (form.get("actor") or "").strip() or None
+            for unit, value in plan.sets.items():
+                repo.set_override(conn, uid, unit, value, reason=reason, actor=actor)
+            for unit in plan.removes:
+                repo.remove_override(conn, uid, unit, actor=actor,
+                                     reason=reason or "put back to the team app’s")
+            conn.commit()
+            source_id = found.state.source_id
+        key, message = _land(source_id)
+        redirect(_fix_url(uid, back, **{key: message}))
+
+    @app.post("/events/fix/undo")
+    def unfix_event():
+        """Lift one part of a fix — the "use the team app's instead" link."""
+        uid, back, unit = _field("uid"), _fix_back(), _field("unit")
+        with connect() as conn:
+            found = _fix_subject(conn, uid)
+            if not found.upcoming(clock()):
+                raise Refused("that has already happened, so it can't be changed now.")
+            actor = (_field("actor") or "").strip() or None
+            if not repo.remove_override(conn, uid, unit, actor=actor,
+                                        reason="put back to the team app’s"):
+                redirect(_fix_url(uid, back, ok="That was already the team app’s."))
+            conn.commit()
+            source_id = found.state.source_id
+        key, message = _land(source_id)
+        redirect(_fix_url(uid, back, **{key: message}))
+
+    @app.post("/events/fix/edit")
+    def refix_event():
+        """Back from the day-change check, with everything typed still there."""
+        return _fix_page(_field("uid"), _fix_back(), form=_fix_form())
 
     @app.get("/review")
     def review():
@@ -1858,7 +2030,9 @@ def _shift_month(month: date, by: int) -> date:
 
 
 def _flash():
-    ok, err = request.query.get("ok"), request.query.get("err")
+    # `getunicode`, for `_field`'s reason: a message with a curly apostrophe
+    # in it came back as mojibake through plain `.get`.
+    ok, err = request.query.getunicode("ok"), request.query.getunicode("err")
     if ok:
         return {"kind": "good", "text": ok}
     if err:

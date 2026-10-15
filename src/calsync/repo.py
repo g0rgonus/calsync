@@ -722,6 +722,19 @@ def _log_override(
     )
 
 
+def last_override_actor(conn: sqlite3.Connection) -> str | None:
+    """Whoever last changed an override, so the console can offer the name again.
+
+    The console has no logins; the name is typed, and typing it every time is
+    the friction that would make somebody leave it blank.
+    """
+    row = conn.execute(
+        "SELECT actor FROM override_log WHERE actor IS NOT NULL AND actor != '' "
+        "ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    return row["actor"] if row else None
+
+
 def override_history(conn: sqlite3.Connection, uid: str) -> list[sqlite3.Row]:
     """Every change to one event's overrides, oldest first."""
     return list(conn.execute(
@@ -770,6 +783,9 @@ class StoredEvent:
     #: whatever has been saved since, so this cannot describe a correction the
     #: calendar does not have yet.
     overrides: dict | None = None
+    #: The same event as its source alone said it, before any override — what
+    #: a page offering to correct it has to show beside the correction.
+    source_event: Event | None = None
 
 
 _STORED_SQL = f"""
@@ -796,34 +812,34 @@ def _stored_event(row: sqlite3.Row) -> StoredEvent:
             field=row["venue_field"],
         )
     applied = _overlay(row["applied_overlay"])
+    source = Event(
+        uid=row["uid"],
+        activity_id=row["activity_id"],
+        starts_at=datetime.fromisoformat(row["starts_at"]),
+        ends_at=datetime.fromisoformat(row["ends_at"]),
+        is_game=bool(row["is_game"]),
+        all_day=bool(row["all_day"]),
+        tz=row["tz"],
+        venue=venue,
+        opponent=row["opponent"],
+        home=None if row["home"] is None else bool(row["home"]),
+        detail=row["detail"],
+        body=row["body"],
+        url=row["url"],
+        source_id=row["source_id"],
+        source_category=row["source_category"],
+        content_hash=row["content_hash"],
+        kit=row["kit"],
+        arrive_at=(
+            datetime.fromisoformat(row["arrive_at"]) if row["arrive_at"] else None
+        ),
+        warmup_for=row["warmup_for"],
+    )
     return StoredEvent(
         # The source layer with the applied overlay on top, which is what the
         # last accepted write put on the calendar. Composed here, once, so
         # `/calendar`, the digest and the API cannot each sum it differently.
-        event=overlay_mod.apply(Event(
-            uid=row["uid"],
-            activity_id=row["activity_id"],
-            starts_at=datetime.fromisoformat(row["starts_at"]),
-            ends_at=datetime.fromisoformat(row["ends_at"]),
-            is_game=bool(row["is_game"]),
-            all_day=bool(row["all_day"]),
-            tz=row["tz"],
-            venue=venue,
-            opponent=row["opponent"],
-            home=None if row["home"] is None else bool(row["home"]),
-            detail=row["detail"],
-            body=row["body"],
-            url=row["url"],
-            source_id=row["source_id"],
-            source_category=row["source_category"],
-            content_hash=row["content_hash"],
-            kit=row["kit"],
-            arrive_at=(
-                datetime.fromisoformat(row["arrive_at"]) if row["arrive_at"] else None
-            ),
-            warmup_for=row["warmup_for"],
-        ), applied),
-
+        event=overlay_mod.apply(source, applied),
         source_id=row["source_id"],
         activity_id=row["activity_id"],
         child_id=row["child_id"],
@@ -832,6 +848,7 @@ def _stored_event(row: sqlite3.Row) -> StoredEvent:
         withheld=row["withheld"],
         observed_at=row["observed_at"],
         overrides=applied,
+        source_event=source,
     )
 
 
