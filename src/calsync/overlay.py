@@ -232,3 +232,51 @@ def _squash(value) -> str | None:
     if value is None:
         return None
     return " ".join(str(value).split()) or None
+
+
+#: What a poll concludes about one override, against what the source says now.
+CONVERGED = "converged"    # the source now says what the fix says: lift it
+UNCHANGED = "unchanged"    # the source still says what it said when the fix was set
+CHANGED = "changed"        # the source says something else again: ask a person
+
+
+def matches(unit: str, a: dict | None, b: dict | None, *, place=None) -> bool:
+    """`same`, except that two names for one place are one place.
+
+    ``place`` resolves a name through the venue table (`repo.resolve_venue_alias`).
+    "Kingsmere" and "Kingsmere Meadow Park" are the same park once an alias says
+    so, and a feed catching up with a corrected venue under a different
+    spelling has still caught up. When either side is a place the table does
+    not know, the names are compared as text.
+    """
+    if unit == "location" and place is not None and a and b:
+        here = _known(place, a)
+        there = _known(place, b)
+        if here is not None and there is not None:
+            return here.name == there.name and (
+                _squash(a.get("venue_field")) == _squash(b.get("venue_field"))
+            )
+    return same(unit, a, b)
+
+
+def _known(place, value: dict):
+    for name in (value.get("venue_name"), value.get("venue_raw")):
+        if name:
+            found = place(name)
+            if found is not None:
+                return found
+    return None
+
+
+def judge(unit: str, *, value: dict, baseline: dict, upstream: dict, place=None) -> str:
+    """Has the source caught up with a fix, stayed put, or moved somewhere else?
+
+    In that order, which matters when the baseline and the fix agree — they
+    cannot, since a fix equal to its source is never stored, but a fix the
+    source has reached is lifted rather than kept, whatever the baseline says.
+    """
+    if matches(unit, upstream, value, place=place):
+        return CONVERGED
+    if matches(unit, upstream, baseline, place=place):
+        return UNCHANGED
+    return CHANGED

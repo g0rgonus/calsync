@@ -84,7 +84,7 @@ class Subject:
         })
 
     def source_value(self, unit: str) -> dict:
-        return _value(self.source, unit, self.state.starts_at)
+        return repo.unit_value(self.source, unit, self.state.starts_at)
 
     def upcoming(self, now: datetime) -> bool:
         # Both starts, for `retire.py`'s reason: changing either record of a
@@ -106,10 +106,6 @@ def subject(conn, uid: str) -> Subject | None:
     )
 
 
-def _value(event, unit: str, starts_at: str | None = None) -> dict:
-    """One unit of an event, in the stored representation."""
-    content = {**repo.content_of(event), "starts_at": starts_at or event.starts_at.isoformat()}
-    return {column: content[column] for column in overlay.UNITS[unit]}
 
 
 # --- the page ----------------------------------------------------------------

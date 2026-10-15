@@ -244,9 +244,19 @@ CREATE TABLE IF NOT EXISTS event_overrides (
     baseline    TEXT NOT NULL,
     reason      TEXT NOT NULL,
     actor       TEXT,
-    -- Incremented on every edit, so a writer that read an older row can tell.
+    -- Incremented on every edit by a person, so a poll that read an older row
+    -- can tell, and leaves it alone rather than clearing a value it never saw.
     revision    INTEGER NOT NULL DEFAULT 1,
     set_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    -- `active`; `changed` once the source says something that is neither the
+    -- baseline nor the override, which only a person can resolve; `orphaned`
+    -- once the event itself has gone from the source. A poll moves a row
+    -- between these and may delete one the source has caught up with. It never
+    -- changes `value`.
+    status      TEXT NOT NULL DEFAULT 'active',
+    -- What the source said when it last disagreed, and when.
+    upstream_seen    TEXT,
+    upstream_seen_at TEXT,
     PRIMARY KEY (uid, unit)
 );
 
@@ -257,7 +267,9 @@ CREATE TABLE IF NOT EXISTS override_log (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     uid         TEXT NOT NULL,
     unit        TEXT NOT NULL,
-    action      TEXT NOT NULL,            -- set | edit | remove
+    -- set | edit | remove | kept | auto_clear | changed | settled |
+    -- orphaned | returned | reattached | forgot
+    action      TEXT NOT NULL,
     old_value   TEXT,
     new_value   TEXT,
     upstream    TEXT,

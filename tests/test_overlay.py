@@ -503,3 +503,218 @@ def test_an_existing_database_learns_when_its_events_are_on(tmp_path):
     assert repo.event_state(conn, "u").shown_starts_at == "2026-08-01T10:00:00+00:00"
     row = conn.execute("SELECT shown_starts_at FROM event_state").fetchone()
     assert row[0] == "2026-08-01T10:00:00+00:00"
+
+
+# --- the feed catches up, or moves elsewhere ---------------------------------
+#
+# Three outcomes per fix, judged unit by unit after every poll: the feed now
+# says what the fix says (lift it, silently — nothing on the calendar changes);
+# it still says what it said (leave it); or it says something else again (keep
+# the fix, and ask a person which is right).
+
+
+
+def _status(conn, unit="time"):
+    item = repo.overrides_of(conn, GAME).get(unit)
+    return item.status if item else None
+
+
+def _actions(conn):
+    return [r["action"] for r in repo.override_history(conn, GAME)]
+
+
+def test_a_fix_the_feed_catches_up_with_is_lifted(conn, synced):
+    _override(conn, GAME, "time", MOVED)
+    _sync(conn, synced)
+    synced.take()
+
+    caught_up = _feed_with(GAME_START + "\nDTEND:20260829T150000Z",
+                           "DTSTART:20260829T150000Z\nDTEND:20260829T160000Z")
+    report = _sync(conn, synced, raw=caught_up)
+    assert report.fixes_cleared == 1
+    assert repo.overrides_of(conn, GAME) == {}
+    assert _actions(conn)[-1] == "auto_clear"
+    # The calendar already showed 15:00; the feed agreeing changes nothing on it.
+    assert synced.calendar[GAME].starts_at.isoformat() == MOVED["starts_at"]
+    synced.take()
+    for _ in range(2):
+        _sync(conn, synced, raw=caught_up)
+        assert synced.take() == []
+
+
+def test_a_feed_that_moves_elsewhere_keeps_the_fix_and_asks(conn, synced):
+    _override(conn, GAME, "time", MOVED)
+    _sync(conn, synced)
+
+    elsewhere = _feed_with(GAME_START + "\nDTEND:20260829T150000Z",
+                           "DTSTART:20260829T143000Z\nDTEND:20260829T153000Z")
+    report = _sync(conn, synced, raw=elsewhere)
+    assert report.fixes_changed == 1
+    item = repo.overrides_of(conn, GAME)["time"]
+    assert item.status == "changed"
+    assert item.upstream_seen["starts_at"] == "2026-08-29T14:30:00+00:00"
+    # The person's value is still what everyone sees.
+    assert synced.calendar[GAME].starts_at.isoformat() == MOVED["starts_at"]
+
+    # Asked once, not once a poll.
+    for _ in range(2):
+        assert _sync(conn, synced, raw=elsewhere).fixes_changed == 0
+    assert _actions(conn).count("changed") == 1
+
+
+def test_a_feed_that_goes_back_settles_the_question(conn, synced):
+    _override(conn, GAME, "time", MOVED)
+    _sync(conn, synced)
+    elsewhere = _feed_with(GAME_START, "DTSTART:20260829T143000Z")
+    _sync(conn, synced, raw=elsewhere)
+    assert _status(conn) == "changed"
+
+    _sync(conn, synced)
+    item = repo.overrides_of(conn, GAME)["time"]
+    assert item.status == "active" and item.upstream_seen is None
+    assert _actions(conn)[-1] == "settled"
+
+
+def test_keeping_the_fix_makes_the_new_value_the_baseline(conn, synced):
+    _override(conn, GAME, "time", MOVED)
+    _sync(conn, synced)
+    elsewhere = _feed_with(GAME_START, "DTSTART:20260829T143000Z")
+    _sync(conn, synced, raw=elsewhere)
+
+    repo.keep_override(conn, GAME, "time", actor="dan")
+    conn.commit()
+    _sync(conn, synced, raw=elsewhere)
+    assert _status(conn) == "active"
+    # Only a further change is news.
+    further = _feed_with(GAME_START, "DTSTART:20260829T144500Z")
+    assert _sync(conn, synced, raw=further).fixes_changed == 1
+
+
+def test_each_part_of_a_fix_is_judged_on_its_own(conn, synced):
+    _override(conn, GAME, "time", MOVED)
+    _override(conn, GAME, "opponent", {"opponent": "Harbour FC Blue"})
+    _sync(conn, synced)
+
+    feed = _feed_with(GAME_START + "\nDTEND:20260829T150000Z",
+                      "DTSTART:20260829T150000Z\nDTEND:20260829T160000Z")
+    feed = feed.replace(b"Match vs Harbour FC U10", b"Match vs Saltmarsh U10")
+    report = _sync(conn, synced, raw=feed)
+    assert report.fixes_cleared == 1 and report.fixes_changed == 1
+    assert set(repo.overrides_of(conn, GAME)) == {"opponent"}
+    assert _status(conn, "opponent") == "changed"
+
+
+def test_a_venue_alias_counts_as_the_feed_catching_up(conn, synced):
+    """The feed still types "Thistledown Park". Once somebody teaches the venue
+    table that it is Kingsmere, the feed has said Kingsmere all along."""
+    _override(conn, GAME, "location", {"venue_name": "Kingsmere"})
+    _sync(conn, synced)
+    assert "location" in repo.overrides_of(conn, GAME)
+
+    venue = repo.upsert_venue(conn, name="Kingsmere", address="9 Wren Rd")
+    repo.add_venue_alias(conn, venue, "Thistledown Park")
+    _sync(conn, synced)
+
+    assert repo.overrides_of(conn, GAME) == {}
+    cleared = repo.override_history(conn, GAME)[-1]
+    assert cleared["action"] == "auto_clear"
+    # The text the feed actually typed, so the clear can be explained.
+    assert "Thistledown Park" in json.loads(cleared["upstream"])["raw"]
+
+
+def test_a_dry_run_judges_nothing(conn, synced):
+    _override(conn, GAME, "time", MOVED)
+    _sync(conn, synced)
+    caught_up = _feed_with(GAME_START + "\nDTEND:20260829T150000Z",
+                           "DTSTART:20260829T150000Z\nDTEND:20260829T160000Z")
+    sync_source(conn, repo.get_source(conn, SOURCE), synced, now=NOW,
+                raw=caught_up, dry_run=True)
+    assert "time" in repo.overrides_of(conn, GAME)
+
+
+def test_a_poll_never_touches_a_fix_edited_since_it_read_it(conn, synced):
+    _override(conn, GAME, "opponent", {"opponent": "Harbour FC Blue"})
+    stale = repo.overrides_of(conn, GAME)["opponent"]
+    _override(conn, GAME, "opponent", {"opponent": "Harbour FC Green"})
+
+    assert not repo.clear_converged(conn, stale, upstream={"opponent": "x"}, raw=None)
+    assert not repo.mark_changed(conn, stale, upstream={"opponent": "x"}, at="now")
+    assert repo.overrides_of(conn, GAME)["opponent"].value == {"opponent": "Harbour FC Green"}
+
+
+def test_a_played_game_is_not_asked_about(conn, synced):
+    _override(conn, GAME, "time", MOVED)
+    _sync(conn, synced)
+    elsewhere = _feed_with(GAME_START, "DTSTART:20260829T143000Z")
+    after = datetime(2026, 8, 30, tzinfo=timezone.utc)
+    assert _sync(conn, synced, raw=elsewhere, now=after).fixes_changed == 0
+    assert _status(conn) == "active"
+
+
+# --- the event goes away -------------------------------------------------------
+
+
+def _without_game() -> bytes:
+    text = FIXTURE.read_text()
+    blocks = text.split("BEGIN:VEVENT")
+    kept = [b for b in blocks if f"UID:{GAME}" not in b]
+    return "BEGIN:VEVENT".join(kept).encode()
+
+
+def test_a_vanished_event_orphans_its_fix_and_a_return_restores_it(conn, synced):
+    _override(conn, GAME, "time", MOVED)
+    _sync(conn, synced)
+
+    report = _sync(conn, synced, raw=_without_game())
+    assert report.status == "ok", report.line()
+    assert report.fixes_orphaned == 1
+    assert _status(conn) == "orphaned"
+    assert GAME not in synced.calendar
+
+    _sync(conn, synced)
+    assert _status(conn) == "active"
+    assert synced.calendar[GAME].starts_at.isoformat() == MOVED["starts_at"]
+    assert "returned" in _actions(conn)
+
+
+def test_a_held_poll_orphans_nothing(conn, synced):
+    _override(conn, GAME, "time", MOVED)
+    _sync(conn, synced)
+    text = FIXTURE.read_text()
+    blocks = text.split("BEGIN:VEVENT")
+    truncated = ("BEGIN:VEVENT".join(blocks[:2]).rstrip() + "\nEND:VCALENDAR\n").encode()
+    assert _sync(conn, synced, raw=truncated).status == "held"
+    assert _status(conn) == "active"
+
+
+def test_a_feed_cancellation_is_not_an_orphan(conn, synced):
+    _override(conn, GAME, "time", MOVED)
+    _sync(conn, synced)
+    _sync(conn, synced, raw=_feed_with(GAME_START, GAME_START + "\nSTATUS:CANCELLED"))
+    assert _status(conn) == "active"
+
+
+def test_an_orphaned_fix_moves_to_the_event_a_person_picks(conn, synced):
+    """A coach deleting a game and adding it again mints a new id. calsync
+    never guesses the match; a person picks it, and the fix goes there."""
+    _override(conn, GAME, "time", MOVED)
+    _sync(conn, synced)
+    readded = FIXTURE.read_text().replace(f"UID:{GAME}", "UID:360Player-event-9999999")
+    _sync(conn, synced, raw=readded.encode())
+    assert _status(conn) == "orphaned"
+
+    moved = repo.reattach_overrides(conn, GAME, "360Player-event-9999999", actor="dan")
+    conn.commit()
+    assert moved == ["time"]
+    _sync(conn, synced, raw=readded.encode())
+    assert synced.calendar["360Player-event-9999999"].starts_at.isoformat() == MOVED["starts_at"]
+    assert repo.overrides_of(conn, GAME) == {}
+
+
+def test_an_orphaned_fix_can_be_forgotten(conn, synced):
+    _override(conn, GAME, "time", MOVED)
+    _sync(conn, synced)
+    _sync(conn, synced, raw=_without_game())
+    assert repo.forget_overrides(conn, GAME, actor="dan") == 1
+    assert repo.overrides_of(conn, GAME) == {}
+    assert _actions(conn)[-1] == "forgot"

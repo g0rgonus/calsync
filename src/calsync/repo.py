@@ -588,6 +588,13 @@ class Override:
     actor: str | None
     revision: int
     set_at: str
+    status: str = "active"
+    upstream_seen: dict | None = None
+    upstream_seen_at: str | None = None
+
+
+#: What an override can be waiting on a person for.
+OVERRIDE_ATTENTION = ("changed", "orphaned")
 
 
 def _override(row: sqlite3.Row) -> Override:
@@ -596,6 +603,9 @@ def _override(row: sqlite3.Row) -> Override:
         value=json.loads(row["value"]), baseline=json.loads(row["baseline"]),
         reason=row["reason"], actor=row["actor"],
         revision=row["revision"], set_at=row["set_at"],
+        status=row["status"],
+        upstream_seen=_overlay(row["upstream_seen"]),
+        upstream_seen_at=row["upstream_seen_at"],
     )
 
 
@@ -615,12 +625,32 @@ def overrides_for(conn: sqlite3.Connection, source_id: str) -> dict[str, dict]:
     return out
 
 
+def override_rows(conn: sqlite3.Connection, source_id: str) -> list[Override]:
+    """Every override on a source's events, with the state a poll judges."""
+    return [_override(row) for row in conn.execute(
+        "SELECT o.* FROM event_overrides o JOIN event_state s ON s.uid = o.uid "
+        "WHERE s.source_id = ? ORDER BY o.uid, o.unit",
+        (source_id,),
+    )]
+
+
 def overrides_of(conn: sqlite3.Connection, uid: str) -> dict[str, Override]:
     """Every override on one event, by unit."""
     return {
         row["unit"]: _override(row)
         for row in conn.execute("SELECT * FROM event_overrides WHERE uid = ?", (uid,))
     }
+
+
+def unit_value(event, unit: str, starts_at: str | None = None) -> dict:
+    """One unit of an event, in the representation overrides are stored in.
+
+    ``starts_at`` overrides the event's own — for a caller holding the source
+    start as a string, which is how `event_state` keeps it.
+    """
+    content = {**content_of(event),
+               "starts_at": starts_at or event.starts_at.isoformat()}
+    return {column: content[column] for column in overlay_mod.UNITS[unit]}
 
 
 def _source_value(conn: sqlite3.Connection, uid: str, unit: str) -> dict:
@@ -679,7 +709,12 @@ def set_override(
             reason   = excluded.reason,
             actor    = excluded.actor,
             revision = event_overrides.revision + 1,
-            set_at   = datetime('now')
+            set_at   = datetime('now'),
+            -- A person has just looked at this and decided, against the
+            -- source as it is now; whatever it was waiting on is answered.
+            status   = 'active',
+            upstream_seen    = NULL,
+            upstream_seen_at = NULL
         """,
         (uid, unit, _dumps(value), _dumps(baseline), reason, actor),
     )
@@ -720,6 +755,170 @@ def _log_override(
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         (uid, unit, action, _dumps(old), _dumps(new), _dumps(upstream), actor, reason),
     )
+
+
+# --- what a poll may do to an override ---------------------------------------
+#
+# Each of these is conditional on the revision the poll read. A person's edit
+# bumps it, so a poll that loaded a row before somebody changed it does nothing
+# to the changed row — it can never clear or flag a value it did not judge.
+# None of them changes `value`: a poll may notice, and may tidy away a fix the
+# source has caught up with, but what a person decided is theirs.
+
+
+def _poll_update(conn, item: Override, sql: str, params: tuple) -> bool:
+    cursor = conn.execute(
+        f"{sql} WHERE uid = ? AND unit = ? AND revision = ?",
+        (*params, item.uid, item.unit, item.revision),
+    )
+    return cursor.rowcount == 1
+
+
+def clear_converged(conn: sqlite3.Connection, item: Override, *, upstream: dict,
+                    raw: str | None) -> bool:
+    """The source now says what the override says; the override goes.
+
+    Nothing on the calendar changes — the two layers sum to the same event
+    before and after — which is why a poll is allowed to do it. ``raw`` is the
+    text the feed actually typed, logged so a clear that came through a venue
+    alias can be explained.
+    """
+    if not _poll_update(conn, item, "DELETE FROM event_overrides", ()):
+        return False
+    _log_override(conn, item.uid, item.unit, "auto_clear", old=item.value, new=None,
+                  upstream={**upstream, **({"raw": raw} if raw else {})},
+                  actor=None, reason="the team app now says the same")
+    return True
+
+
+def mark_changed(conn: sqlite3.Connection, item: Override, *, upstream: dict,
+                 at: str) -> bool:
+    """The source moved to something that is neither the baseline nor the fix."""
+    if not _poll_update(
+        conn, item,
+        "UPDATE event_overrides SET status = 'changed', upstream_seen = ?, "
+        "upstream_seen_at = ?",
+        (_dumps(upstream), at),
+    ):
+        return False
+    _log_override(conn, item.uid, item.unit, "changed", old=item.value, new=item.value,
+                  upstream=upstream, actor=None, reason=None)
+    return True
+
+
+def mark_settled(conn: sqlite3.Connection, item: Override, *, action: str) -> bool:
+    """Back to `active`: the source returned to the baseline, or the event came back."""
+    if not _poll_update(
+        conn, item,
+        "UPDATE event_overrides SET status = 'active', upstream_seen = NULL, "
+        "upstream_seen_at = NULL",
+        (),
+    ):
+        return False
+    _log_override(conn, item.uid, item.unit, action, old=item.value, new=item.value,
+                  upstream=None, actor=None, reason=None)
+    return True
+
+
+def mark_orphaned(conn: sqlite3.Connection, uid: str) -> int:
+    """The event has gone from the source, and its fixes have nowhere to go.
+
+    Kept rather than discarded: a person decides where they belong, or that
+    they belong nowhere. Unconditional on the revision, because it is about the
+    event rather than about any value in the row.
+    """
+    rows = list(conn.execute(
+        "SELECT unit, value FROM event_overrides WHERE uid = ? AND status != 'orphaned'",
+        (uid,),
+    ))
+    conn.execute(
+        "UPDATE event_overrides SET status = 'orphaned' WHERE uid = ?", (uid,)
+    )
+    for row in rows:
+        _log_override(conn, uid, row["unit"], "orphaned", old=json.loads(row["value"]),
+                      new=None, upstream=None, actor=None,
+                      reason="the event disappeared from the team app")
+    return len(rows)
+
+
+# --- what a person may do with one ---------------------------------------------
+
+
+def keep_override(conn: sqlite3.Connection, uid: str, unit: str, *,
+                  actor: str | None) -> Override:
+    """Keep the fix over what the source has since said.
+
+    The new upstream value becomes the baseline, so the same disagreement is
+    not raised again — only a further change upstream is news.
+    """
+    item = overrides_of(conn, uid).get(unit)
+    if item is None or item.status != "changed" or item.upstream_seen is None:
+        raise overlay_mod.OverrideError("there is nothing waiting on that any more")
+    conn.execute(
+        "UPDATE event_overrides SET baseline = ?, status = 'active', "
+        "upstream_seen = NULL, upstream_seen_at = NULL, revision = revision + 1 "
+        "WHERE uid = ? AND unit = ?",
+        (_dumps(item.upstream_seen), uid, unit),
+    )
+    _log_override(conn, uid, unit, "kept", old=item.value, new=item.value,
+                  upstream=item.upstream_seen, actor=actor,
+                  reason="kept over the team app's change")
+    return overrides_of(conn, uid)[unit]
+
+
+def reattach_overrides(conn: sqlite3.Connection, from_uid: str, to_uid: str, *,
+                       actor: str | None) -> list[str]:
+    """Move an orphaned event's fixes onto the event a person says it became.
+
+    Never chosen by calsync: a wrong match puts a wrong time on a shared
+    calendar silently. Each fix takes the new event's current source value as
+    its baseline, so what happens next is judged against the event it is on.
+    """
+    from . import warmup
+
+    moving = [o for o in overrides_of(conn, from_uid).values() if o.status == "orphaned"]
+    if not moving:
+        raise overlay_mod.OverrideError("there is nothing waiting to be moved from that event")
+    target = event_state(conn, to_uid)
+    if target is None or target.cancelled or warmup.is_synthetic(to_uid):
+        raise overlay_mod.OverrideError("that is not an event on the calendar")
+    if overrides_of(conn, to_uid):
+        raise overlay_mod.OverrideError(
+            "that event already has its own fix; change it there instead"
+        )
+    for item in moving:
+        conn.execute(
+            "UPDATE event_overrides SET uid = ?, baseline = ?, status = 'active', "
+            "upstream_seen = NULL, upstream_seen_at = NULL, revision = revision + 1 "
+            "WHERE uid = ? AND unit = ?",
+            (to_uid, _dumps(_source_value(conn, to_uid, item.unit)), from_uid, item.unit),
+        )
+        for uid in (from_uid, to_uid):
+            _log_override(conn, uid, item.unit, "reattached", old=item.value,
+                          new=item.value, upstream={"from": from_uid, "to": to_uid},
+                          actor=actor, reason=None)
+    return [item.unit for item in moving]
+
+
+def forget_overrides(conn: sqlite3.Connection, uid: str, *, actor: str | None) -> int:
+    """Drop an orphaned event's fixes: the event is gone, and so are they."""
+    moving = [o for o in overrides_of(conn, uid).values() if o.status == "orphaned"]
+    for item in moving:
+        conn.execute("DELETE FROM event_overrides WHERE uid = ? AND unit = ?",
+                     (uid, item.unit))
+        _log_override(conn, uid, item.unit, "forgot", old=item.value, new=None,
+                      upstream=None, actor=actor, reason="the event is gone")
+    return len(moving)
+
+
+def overrides_needing_attention(conn: sqlite3.Connection) -> list[Override]:
+    """Fixes waiting on a person, across every source: changed or orphaned."""
+    return [_override(row) for row in conn.execute(
+        "SELECT o.* FROM event_overrides o JOIN event_state s ON s.uid = o.uid "
+        f"WHERE o.status IN ({', '.join('?' * len(OVERRIDE_ATTENTION))}) "
+        "ORDER BY s.shown_starts_at, o.uid, o.unit",
+        OVERRIDE_ATTENTION,
+    )]
 
 
 def last_override_actor(conn: sqlite3.Connection) -> str | None:

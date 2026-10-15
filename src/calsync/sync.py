@@ -15,7 +15,7 @@ this module is where the ordering rules live, and the ordering is the safety:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 
 from . import overlay, repo, sources, warmup, withheld
@@ -62,6 +62,15 @@ class SyncReport:
     #: edited or lifted — while the feed did not (`overlay.py`). Its own count
     #: for `refreshed`'s reason: neither the feed nor the venue table moved.
     amended: int = 0
+    #: A person's fixes this poll found the feed has caught up with, and lifted
+    #: — the calendar did not change, because the two layers now agree.
+    fixes_cleared: int = 0
+    #: Fixes the feed now contradicts with a value of its own, waiting for a
+    #: person to say which is right. The fix stays on the calendar meanwhile.
+    fixes_changed: int = 0
+    #: Fixes whose event has gone from the feed, waiting for a person to say
+    #: where they belong.
+    fixes_orphaned: int = 0
     #: Of `cancelled`, how many the feed itself marked ``STATUS:CANCELLED``
     #: rather than dropped. Applied without a guard or a person, however many.
     called_off: int = 0
@@ -130,6 +139,12 @@ class SyncReport:
             parts.append(f"{self.amended} amended")
         if self.withheld:
             parts.append(f"{self.withheld} withheld")
+        if self.fixes_cleared:
+            parts.append(f"{self.fixes_cleared} override(s) cleared, the feed agrees")
+        if self.fixes_changed:
+            parts.append(f"{self.fixes_changed} override(s) the feed now disputes")
+        if self.fixes_orphaned:
+            parts.append(f"{self.fixes_orphaned} override(s) orphaned")
         return ", ".join(parts)
 
     def line(self) -> str:
@@ -605,6 +620,14 @@ def sync_source(
         report.cancelled += 1
         if uid in feed_said:
             report.called_off += 1
+        else:
+            # Gone, rather than called off: a person's fix to it has nowhere
+            # to go until somebody says where — or the same event comes back.
+            # Only once the target has accepted the delete, and so never for a
+            # held poll, whose missing events are not known to be gone at all.
+            report.fixes_orphaned += repo.mark_orphaned(conn, uid)
+
+    _judge_overrides(conn, source.id, sourced, now=now, report=report)
 
     # Whatever is withheld and still on the calendar comes off now — the same
     # call the console makes the moment somebody presses the button, repeated
@@ -651,6 +674,58 @@ def sync_source(
 
     conn.commit()
     return report
+
+
+def _judge_overrides(conn, source_id: str, sourced: dict[str, Event], *,
+                     now: datetime, report: SyncReport) -> None:
+    """Hold each of a person's fixes up against what the feed says now.
+
+    The only writes a poll makes to the overlay, and none of them changes what
+    a fix says (`overlay.py`):
+
+    - **The feed has caught up** — it now says what the fix says. The fix is
+      lifted. The calendar does not change, since the layers already sum to
+      the same event, so this is safe to do without anybody.
+    - **The feed has moved somewhere else** — neither its old value nor the
+      fix. The fix stays on the calendar and is marked for a person to decide;
+      only they can tell which of the two is true.
+    - **The feed has gone back** to what it said when the fix was set. The
+      question answers itself, and the mark comes off quietly.
+
+    Judged after the writes, against events actually in this poll. An event
+    missing from it — out of the window, called off, withheld by a guard —
+    says nothing about whether its fix is still needed, and is left alone.
+    """
+    place = lambda name: repo.resolve_venue_alias(conn, name)  # noqa: E731
+    for item in repo.override_rows(conn, source_id):
+        event = sourced.get(item.uid)
+        if event is None:
+            continue
+        if item.status == "orphaned":
+            # The same event came back under the same id: exact identity, so
+            # nothing to ask. Judged below like any other from here.
+            repo.mark_settled(conn, item, action="returned")
+            item = replace(item, status="active")
+        upstream = repo.unit_value(event, item.unit)
+        verdict = overlay.judge(item.unit, value=item.value, baseline=item.baseline,
+                                upstream=upstream, place=place)
+        if verdict == overlay.CONVERGED:
+            raw = event.venue.raw if item.unit == "location" and event.venue else None
+            if repo.clear_converged(conn, item, upstream=upstream, raw=raw):
+                report.fixes_cleared += 1
+        elif verdict == overlay.UNCHANGED:
+            if item.status == "changed":
+                repo.mark_settled(conn, item, action="settled")
+        elif event.starts_at < now:
+            # A game already played: nobody can act on the disagreement, and
+            # asking would be a question with no useful answer.
+            continue
+        elif not (item.status == "changed"
+                  and overlay.matches(item.unit, upstream, item.upstream_seen, place=place)):
+            # Once per new value. The same disagreement on every poll is one
+            # question, not one every twenty minutes.
+            if repo.mark_changed(conn, item, upstream=upstream, at=now.isoformat()):
+                report.fixes_changed += 1
 
 
 def sync_all(
