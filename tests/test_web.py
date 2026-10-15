@@ -2803,3 +2803,31 @@ def test_a_feed_has_no_key_to_replace_and_inbound_is_not_a_feed_type(client, tmp
     assert "has no key" in refused["body"]
     confirm = client.post("/onboard", {"url": FEED_URL})
     assert 'value="inbound"' not in confirm["body"]
+
+
+def test_a_household_read_key_is_shown_once_and_can_be_replaced_or_removed(
+        client, tmp_path, secrets_path):
+    import re as _re
+
+    from calsync.inbound import events as inbound_events
+
+    page = client.post("/settings/read-key")
+    assert page["status"] == 200
+    assert page["headers"].get("Cache-Control") == "no-store"
+    key = _re.search(r"csk_[A-Za-z0-9_-]{20,}", page["body"]).group(0)
+    conn = db.connect(tmp_path / "calsync.db")
+    assert repo.read_key_hash(conn) == inbound_events.hash_key(key)
+    conn.close()
+    assert key.encode() not in (tmp_path / "calsync.db").read_bytes()
+    assert key not in secrets_path.read_text()
+    settings = client.get("/settings")["body"]
+    assert "A read key is set" in settings and key not in settings
+
+    again = client.post("/settings/read-key")
+    assert "previous read key stopped working" in again["body"]
+
+    client.post("/settings/read-key/remove")
+    conn = db.connect(tmp_path / "calsync.db")
+    assert repo.read_key_hash(conn) is None
+    conn.close()
+    assert "Make a read key" in client.get("/settings")["body"]

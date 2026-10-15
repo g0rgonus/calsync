@@ -141,6 +141,13 @@ P = {
     "allow_overlap": Param("allow_overlap", "query", "true to create an event that "
                            "overlaps a live one of the same type on purpose.",
                            example="true"),
+    "window_from": Param("from", "query", "Start of the window: a date (midnight UTC) "
+                         "or an RFC 3339 time. Default now.", example="2026-11-14"),
+    "window_to": Param("to", "query", "End of the window, same form. Default 14 days "
+                       "on; the widest window is the sync window.", example="2026-11-16"),
+    "child": Param("child", "query", "Only this kid's events (calsync's child id).",
+                   example="jesse"),
+    "activity": Param("activity", "query", "Only this team's events (activity id)."),
     "If-Match": Param("If-Match", "header", "Write only if the event's ETag still "
                       "matches; 412 otherwise."),
     "If-None-Match": Param("If-None-Match", "header", "* makes a PUT create-only; 412 "
@@ -172,6 +179,16 @@ ROUTES: tuple[Route, ...] = (
     Route("GET", PREFIX + "/openapi.json", "openapi", "OpenAPI 3.1 spec.",
           "Import it into an assistant platform to get these calls as tools.",
           responses={200: ("The spec", None)}, auth=False),
+    Route("GET", PREFIX + "/calendar", "getCalendar",
+          "Every team's events, for every kid. Read-only.",
+          "Needs the household read key, made on the console's settings page; a "
+          "team key is refused. The same answer as the read API's GET /v1/events: "
+          "each event's child, team, times, venue, notes, rendered title, calendar "
+          "and whether it is cancelled. Only what calsync wrote — hand-made "
+          "family appointments are not in calsync and so are not here.",
+          params=("window_from", "window_to", "child", "activity"),
+          responses={200: ("The events", "Calendar"), 400: ("Bad or too-wide window", _E),
+                     401: ("Not the household read key", _E)}),
     Route("GET", PREFIX + "/sources/{source_id}", "getSource",
           "Which team this key writes to.",
           "Child, sport, timezone, and whether it is still on the staging calendar. "
@@ -373,6 +390,18 @@ def openapi(server: str) -> dict:
                         ("child", "string"), ("tz", "string"), ("enabled", "boolean"),
                         ("staged_to", "string"), ("last_push_at", "string"))}},
                 "Error": error,
+                "Calendar": {"type": "object", "description": "The read API's "
+                             "GET /v1/events body.", "properties": {
+                    "from": {"type": "string", "format": "date-time"},
+                    "to": {"type": "string", "format": "date-time"},
+                    "count": {"type": "integer"},
+                    "events": {"type": "array", "items": {"type": "object"}},
+                    "sources": {"type": "array", "items": {"type": "object"},
+                                "description": "Freshness of every team behind the "
+                                               "events, including any that is stale."},
+                    "retained_from": {"type": "string", "description": "Present when "
+                                      "the window started before what is kept."},
+                }},
             },
         },
     }
@@ -387,10 +416,13 @@ def _curl(server: str, r: Route) -> str:
         path = path.replace("{" + name + "}", P[name].example)
     if "from" in r.params:
         path += "?from=2026-10-27&to=2026-10-27"
+    if "window_from" in r.params:
+        path += "?from=2026-11-14&to=2026-11-16"
     lines = [f"curl -X {r.method} '{server}{path}' \\"]
     if r.auth:
         lines.append('  -u "$PROXY_USER:$PROXY_PASS" \\')
-        lines.append(f'  -H "{KEY_HEADER}: $CALSYNC_KEY"' + (" \\" if r.body else ""))
+        key = "$CALSYNC_READ_KEY" if r.op == "getCalendar" else "$CALSYNC_KEY"
+        lines.append(f'  -H "{KEY_HEADER}: {key}"' + (" \\" if r.body else ""))
     if r.body:
         lines.append("  -H 'Content-Type: application/json' \\")
         lines.append("  -d '" + json.dumps(r.example, indent=2, ensure_ascii=False)
@@ -482,6 +514,9 @@ Also as <a href="{PREFIX}">JSON</a> and <a href="{PREFIX}/openapi.json">OpenAPI 
 <div class=card>
 <p><code>{KEY_HEADER}: &lt;key&gt;</code> — the team's key, shown once in the console when
 the team is created. One key opens one team.</p>
+<p>Reading the whole household's calendar (<code>GET {PREFIX}/calendar</code>) takes a
+different key: the <strong>household read key</strong>, made on the console's settings
+page. It reads every team and writes nothing; a team key is refused there.</p>
 <p><code>Authorization</code> is never read. It belongs to the proxy in front (Pangolin's
 Basic Header Auth: <code>-u user:pass</code>), so the two never collide.</p>
 </div>

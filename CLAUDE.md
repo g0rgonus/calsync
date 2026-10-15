@@ -53,7 +53,10 @@ sessions name it in `part_of`, and the adapter emits the meet as cancelled while
 any live part exists (`events.superseded`) — an explicit removal, never an
 absence, so a weekend of meets replaced at once cannot trip the guard. Examples
 there are invented like the fixtures: the docs page and the spec are served
-publicly from a public repo.
+publicly from a public repo. `GET /inbound/v1/calendar` is the one read across
+teams: it takes a separate household read key (hash in a `settings` row the
+console writes, never seeded from the environment) and returns
+`api.app.events_body` — the read API's own answer, not a second rendering.
 
 Events calsync **cannot place** are held in an `enrichment` collection instead
 of being filed under a guess, and `/review` is where a human answers the
@@ -196,7 +199,7 @@ so a fresh clone needs:
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/pytest                                    # 743 tests, ~7s
+.venv/bin/pytest                                    # 752 tests, ~7s
 .venv/bin/pytest tests/test_player360.py -k content_hash    # single test
 ```
 

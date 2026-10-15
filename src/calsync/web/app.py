@@ -841,6 +841,8 @@ def create_app(
             pushover_ready=notify.load(conn).available(secrets),
             tz_choices=zones.choices(settings.default_tz),
             tz_loadable=zones.loadable(settings.default_tz),
+            read_key_set=repo.read_key_hash(conn) is not None,
+            read_key_used=repo.read_key_used_at(conn),
             api_token_ref=Settings.load(conn).api_token_ref,
             api_has_token=secrets.has(Settings.load(conn).api_token_ref),
             pushed=pushed,
@@ -1301,6 +1303,29 @@ def create_app(
                 secrets.put(ref, token)
         _saved("api", "API settings saved.")
 
+    @app.post("/settings/read-key")
+    def make_read_key():
+        """A household read key for tools: every team's calendar, no writes.
+
+        Rendered in this response, never redirected to, for the team-key
+        page's reason: this is the only time the key exists in the clear.
+        """
+        key = inbound_events.new_key()
+        with connect() as conn:
+            replaced = repo.read_key_hash(conn) is not None
+            repo.set_read_key_hash(conn, inbound_events.hash_key(key))
+        response.set_header("Cache-Control", "no-store")
+        return render(
+            "read_key.tpl", key=key, replaced=replaced,
+            header=inbound_app.KEY_HEADER, prefix=inbound_app.PREFIX, flash=None,
+        )
+
+    @app.post("/settings/read-key/remove")
+    def remove_read_key():
+        with connect() as conn:
+            repo.set_read_key_hash(conn, None)
+        _saved("read-key", "Read key removed. Nothing can read the whole calendar now.")
+
     @app.post("/settings/notifications/test")
     def test_notification():
         """Send a real push.
@@ -1752,7 +1777,7 @@ def _q(value: str) -> str:
 #: in `settings.tpl`, so a name here that is not a heading there sends a save to
 #: the top of the page — which is the behaviour this exists to remove.
 SETTINGS_SECTIONS = (
-    "calendar", "titles", "safety", "seasons", "notifications", "api", "matrix",
+    "calendar", "titles", "safety", "seasons", "notifications", "api", "read-key", "matrix",
 )
 
 

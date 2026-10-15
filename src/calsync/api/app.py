@@ -121,35 +121,7 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None) -> Bo
     @app.get("/v1/events")
     def list_events():
         with connect() as conn:
-            settings = Settings.load(conn)
-            now = clock()
-            window = _window(request.query, now=now, settings=settings)
-            stored = repo.stored_events(
-                conn,
-                start=window["start"].isoformat(),
-                end=window["end"].isoformat(),
-                # `getunicode`, not `.get`: Bottle decodes as latin-1 by
-                # default, which mangles any id carrying an accent.
-                child_id=request.query.getunicode("child") or None,
-                activity_id=request.query.getunicode("activity") or None,
-            )
-            body = {
-                "from": window["start"].isoformat(),
-                "to": window["end"].isoformat(),
-                "count": len(stored),
-                "events": [_event_json(conn, item, settings) for item in stored],
-                "sources": _sources_json(conn, stored, now=now),
-            }
-            if window["clamped"]:
-                # Said out loud rather than silently returning fewer events. A
-                # schedule read that quietly omits a day reads as "nothing on",
-                # which is the one wrong answer this kind of response can give.
-                body["retained_from"] = window["start"].isoformat()
-                body["retention_note"] = (
-                    "stored content is kept only for the sync window; "
-                    f"nothing is retained before {window['start'].isoformat()}"
-                )
-            return _dump(body)
+            return _dump(events_body(conn, request.query, now=clock()))
 
     @app.get("/v1/events/<uid:path>")
     def get_event(uid):
@@ -384,6 +356,44 @@ _ANSWER_SHAPES = {
 
 
 # --- serialization ----------------------------------------------------------
+
+
+def events_body(conn, query, *, now: datetime) -> dict:
+    """What `GET /v1/events` answers, for any caller that serves it.
+
+    Module-level so the inbound service's household read can return exactly
+    this rather than a second rendering of the same rows: two descriptions of
+    one calendar are two things to keep in step, and the one that drifted
+    would be the one a client planned a day around.
+    """
+    settings = Settings.load(conn)
+    window = _window(query, now=now, settings=settings)
+    stored = repo.stored_events(
+        conn,
+        start=window["start"].isoformat(),
+        end=window["end"].isoformat(),
+        # `getunicode`, not `.get`: Bottle decodes as latin-1 by
+        # default, which mangles any id carrying an accent.
+        child_id=query.getunicode("child") or None,
+        activity_id=query.getunicode("activity") or None,
+    )
+    body = {
+        "from": window["start"].isoformat(),
+        "to": window["end"].isoformat(),
+        "count": len(stored),
+        "events": [_event_json(conn, item, settings) for item in stored],
+        "sources": _sources_json(conn, stored, now=now),
+    }
+    if window["clamped"]:
+        # Said out loud rather than silently returning fewer events. A
+        # schedule read that quietly omits a day reads as "nothing on",
+        # which is the one wrong answer this kind of response can give.
+        body["retained_from"] = window["start"].isoformat()
+        body["retention_note"] = (
+            "stored content is kept only for the sync window; "
+            f"nothing is retained before {window['start'].isoformat()}"
+        )
+    return body
 
 
 def _dump(body: dict) -> str:

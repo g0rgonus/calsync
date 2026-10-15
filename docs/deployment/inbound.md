@@ -44,6 +44,23 @@ The key is 256 random bits, shown once in the console; calsync stores only its
 SHA-256. Lost keys are replaced (**Replace the API key** on the team's page),
 never recovered, and the old one stops working at once.
 
+### The household read key
+
+`GET /inbound/v1/calendar` reads **every team's events, for every kid**. It returns
+exactly the read API's `GET /v1/events` body, built by the same function, with the
+same bounded window and the `child` / `activity` filters. It takes its own key,
+sent in the same `X-Calsync-Key` header:
+
+- made, replaced or removed on the console's **settings** page, under "Household
+  read key", and shown once there, with only its hash stored;
+- **read-only**: it cannot write, and it opens no team's endpoints;
+- **a team key is refused here**, because each team key opens one team, and the
+  whole family's schedule is a wider grant;
+- "last used" on the settings page counts its reads.
+
+It holds only what calsync wrote. Appointments added by hand in a calendar app
+are not in calsync, so they are not here either.
+
 A 401 carries `WWW-Authenticate: CalsyncKey`, not `Basic`, so a client in
 "extended compatibility" mode does not answer it by resending the proxy's
 password in a loop. An unknown source and a wrong key are the same 401.
@@ -86,6 +103,7 @@ DELETE /inbound/v1/sources/{source}/events/{id}                      204; 404 if
 PUT    /inbound/v1/sources/{source}/events/{id}/occurrences/{date}   change one date of a series
 DELETE /inbound/v1/sources/{source}/events/{id}/occurrences/{date}   cancel one date; 204
 GET    /inbound/v1/sources/{source}                                  which team this key writes to
+GET    /inbound/v1/calendar?from=&to=&child=&activity=               every team's events (household read key)
 GET    /inbound/v1                                                   this list, no key needed
 ```
 
