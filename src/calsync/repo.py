@@ -781,20 +781,28 @@ def _poll_update(conn, item: Override, sql: str, params: tuple) -> bool:
 
 
 def clear_converged(conn: sqlite3.Connection, item: Override, *, upstream: dict,
-                    raw: str | None) -> bool:
+                    raw: str | None, exact: bool = True) -> bool:
     """The source now says what the override says; the override goes.
 
     Nothing on the calendar changes — the two layers sum to the same event
     before and after — which is why a poll is allowed to do it. ``raw`` is the
     text the feed actually typed, logged so a clear that came through a venue
     alias can be explained.
+
+    ``exact`` is whether the two say the same thing to the letter, not merely
+    name the same place. Only then does the fix leave the receipt here: an
+    alias match still has the fix's spelling and address on the calendar, and
+    taking it off the receipt would make the next poll think the calendar
+    already showed the feed's — so it would never be written, and the calendar
+    and the API would disagree for good. Left on, the next poll sees the
+    difference and rewrites the event once.
     """
     if not _poll_update(conn, item, "DELETE FROM event_overrides", ()):
         return False
-    # Off the receipt too, now rather than at the next write: what the
-    # calendar holds is unchanged, but it is the source's value from here on,
-    # and the API should stop crediting a person with it this poll, not next.
-    state = event_state(conn, item.uid)
+    # Off the receipt too when the match is exact, now rather than at the next
+    # write: the calendar holds that value either way, it is the source's from
+    # here on, and the API should stop crediting a person with it this poll.
+    state = event_state(conn, item.uid) if exact else None
     if state is not None and state.applied_overlay and item.unit in state.applied_overlay:
         remaining = {u: v for u, v in state.applied_overlay.items() if u != item.unit}
         conn.execute("UPDATE event_state SET applied_overlay = ? WHERE uid = ?",

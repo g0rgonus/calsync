@@ -802,3 +802,26 @@ def test_a_time_typed_across_the_november_change_is_the_local_time(conn, synced)
     _sync(conn, synced)
     assert synced.calendar[GAME].starts_at == datetime(2026, 11, 7, 15, tzinfo=timezone.utc)
     assert "Start 10:00 EST" in synced.calendar[GAME].body
+
+
+def test_a_fix_lifted_through_an_alias_rewrites_the_calendar_once(conn, synced):
+    """An alias match is the same *place*, not the same text: the calendar
+    still shows the fix's spelling and address. Lifting it has to let the next
+    poll write the feed's version, or the calendar and the API disagree with
+    no further change ever coming to settle it."""
+    _override(conn, GAME, "location", {"venue_name": "Kingsmere"})
+    _sync(conn, synced)
+    assert synced.calendar[GAME].location_text == "Kingsmere"
+
+    venue = repo.upsert_venue(conn, name="Kingsmere", address="9 Wren Rd")
+    repo.add_venue_alias(conn, venue, "Thistledown Park")
+    _sync(conn, synced)
+    assert repo.overrides_of(conn, GAME) == {}
+    synced.take()
+
+    _sync(conn, synced)
+    assert GAME in synced.take()
+    assert synced.calendar[GAME].location_text == "Kingsmere, 9 Wren Rd"
+    assert repo.stored_event(conn, GAME).event.venue.address == "9 Wren Rd"
+    _sync(conn, synced)
+    assert synced.take() == []

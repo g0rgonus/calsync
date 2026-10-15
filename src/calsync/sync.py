@@ -684,8 +684,9 @@ def _judge_overrides(conn, source_id: str, sourced: dict[str, Event], *,
     a fix says (`overlay.py`):
 
     - **The feed has caught up** — it now says what the fix says. The fix is
-      lifted. The calendar does not change, since the layers already sum to
-      the same event, so this is safe to do without anybody.
+      lifted. Safe to do without anybody: an exact match changes nothing on
+      the calendar, and one through a venue alias names the same place, which
+      the next poll then writes in the feed's spelling.
     - **The feed has moved somewhere else** — neither its old value nor the
       fix. The fix stays on the calendar and is marked for a person to decide;
       only they can tell which of the two is true.
@@ -712,7 +713,8 @@ def _judge_overrides(conn, source_id: str, sourced: dict[str, Event], *,
                                 upstream=upstream, place=place)
         if verdict == overlay.CONVERGED:
             raw = event.venue.raw if item.unit == "location" and event.venue else None
-            if repo.clear_converged(conn, item, upstream=upstream, raw=raw):
+            exact = overlay.same(item.unit, upstream, item.value)
+            if repo.clear_converged(conn, item, upstream=upstream, raw=raw, exact=exact):
                 report.fixes_cleared += 1
         elif verdict == overlay.UNCHANGED:
             if item.status == "changed":

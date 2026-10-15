@@ -3276,3 +3276,26 @@ def test_the_history_names_whoever_answered(writing, tmp_path):
     last = repo.override_history(db.connect(tmp_path / "calsync.db"), uid)[-1]
     assert (last["action"], last["actor"]) == ("kept", "Alex")
     assert 'name="actor"' in client.get(f"/events/fix?uid={quote(uid, safe='')}")["body"]
+
+
+def test_going_back_from_the_day_check_keeps_the_pages_stamp(writing, tmp_path):
+    """The form comes back with what was typed — and with the stamp of the page
+    it was typed on. A fresh one would quietly absorb somebody else's save made
+    while the day check was showing."""
+    client, calendar = writing
+    synced(client, tmp_path, calendar)
+    uid = _a_game_to_fix(tmp_path)
+    form = _filled_in(tmp_path, uid)
+    next_day = (date.fromisoformat(form["date"]) + timedelta(days=1)).isoformat()
+    form = {**form, "date": next_day, "reason": "replayed"}
+    assert "Yes, move it to" in client.post("/events/fix", form)["body"]
+
+    # Meanwhile, somebody else saves a fix to the same event.
+    client.post("/events/fix", {**_filled_in(tmp_path, uid), "opponent": "Hawks",
+                                "reason": "other person"})
+
+    back = client.post("/events/fix/edit", {**form, "day_change": "edit"})["body"]
+    assert f'name="version" value="{form["version"]}"' in back
+    page = client.post("/events/fix", {**form, "day_change": "confirmed"})["body"]
+    assert "changed this event while you had it open" in page
+    assert set(_fixed(tmp_path, uid)) == {"opponent"}

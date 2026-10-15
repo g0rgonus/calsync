@@ -1192,6 +1192,12 @@ def create_app(
             if found is None:
                 raise Refused("calsync has no record of writing that event")
             context = fix_mod.page(conn, found, now=clock(), back=back, form=form)
+        if form and form.get("version"):
+            # Shown again from a posted form — back from the day check, or with
+            # an error to correct — so it is still the page that form was typed
+            # on. A fresh stamp would let the next save absorb whatever
+            # somebody else changed in between.
+            context["version"] = form["version"]
         if flash is None and context["pending"]:
             flash = {"kind": "info", "text": (
                 "Your last change is saved but not on the calendar yet — the "
