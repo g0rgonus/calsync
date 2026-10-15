@@ -117,8 +117,14 @@
          family calendar — calsync could not tell which one it belongs in.
          <a href="/review">Answer that</a> and it moves.</p>
 % end
+% if entry.get('fixed') and not entry['cancelled'] and not entry['withheld']:
+      <p class="note"><span class="tag tag-fixed">fixed</span> {{ entry['fixed'] }}</p>
+% end
 % if entry['upcoming'] and not entry['cancelled'] and not entry['withheld']:
       <div class="row-actions">
+% if entry.get('fix_url'):
+        <a class="btn btn-quiet" href="{{ entry['fix_url'] }}">Fix details</a>
+% end
 % for reason, label in reasons.items():
         <form method="post" action="/events/withhold" class="inline">
           <input type="hidden" name="uid" value="{{ entry['uid'] }}">
