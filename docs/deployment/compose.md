@@ -52,7 +52,8 @@ authenticating proxy fronts the host is what stands in front of it.
 | `calsync` | The poller. One-off commands use the same service — `docker compose run --rm calsync status`, `… stage tr-otters`, `… import /config/calsync.yaml`. |
 | `web` | The console, port 8730 in-container. It and the poller are two writers on one SQLite file; `db.connect` sets the busy timeout that allows for that. |
 | `api` | The read API, port 8731 in-container, served at `/v1`. `CALSYNC_API_REPLICAS=0` turns it off. |
-| `proxy` | Caddy. The only published port. |
+| `inbound` | Off unless `CALSYNC_INBOUND_REPLICAS=1`. The inbound API on its own published port, 8732 — deliberately outside `proxy`, so it shares no origin with the console and a firewall can admit it alone. [`inbound.md`](inbound.md). |
+| `proxy` | Caddy. The only published port unless `inbound` is on. |
 | `feeds` | `--profile demo` only. Replays the recorded fixtures with their dates shifted onto this week. Needs a checkout — it mounts `demo/` and `tests/fixtures/`. |
 
 There is no init container. Every service starts, stays up, and is expected to
@@ -137,6 +138,8 @@ The first three are required.
 | `CALSYNC_SECRET_API_TOKEN` | The read API's bearer token. |
 | `CALSYNC_RADICALE_ANONYMOUS_READ` | `1` drops the password on reads — subscribe a phone with a bare URL. Writes still need the writer's credential. `radicale.md` §3. |
 | `CALSYNC_API_REPLICAS` | `0` turns the read API off. Defaults to 1. |
+| `CALSYNC_INBOUND_REPLICAS` | `1` turns the inbound API on. Defaults to 0. |
+| `CALSYNC_INBOUND_PORT`, `CALSYNC_INBOUND_BIND` | Host port (8732) and host address (`0.0.0.0`) it is published on. |
 | `CALSYNC_SETTING_RADICALE_URL` | Only to point calsync at a CalDAV server it does not run. |
 | `CALSYNC_SETTING_MATRIX_*`, `CALSYNC_SECRET_MATRIX_ACCESS_TOKEN` | All four or none. Outbound only (`docs/MATRIX.md` §7). |
 | `CALSYNC_SETTING_DIGEST_SEND_AT` | `HH:MM` local. Empty means never. The poller carries it; there is no cron. |

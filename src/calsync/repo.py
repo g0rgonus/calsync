@@ -1440,3 +1440,110 @@ def resolve_stale_tasks(
         params.extend(live_ids)
     cursor = conn.execute(sql, params)
     return cursor.rowcount
+
+
+# --- inbound sources ----------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class InboundItem:
+    """One event a tool has pushed, as stored. See `calsync.inbound.events`."""
+
+    external_id: str
+    state: dict
+    cancelled: bool
+    etag: str
+    created_at: str
+    updated_at: str
+
+
+def _inbound_item(row: sqlite3.Row) -> InboundItem:
+    return InboundItem(
+        external_id=row["external_id"],
+        state=json.loads(row["state"]),
+        cancelled=bool(row["cancelled"]),
+        etag=row["etag"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def inbound_items(conn: sqlite3.Connection, source_id: str) -> list[InboundItem]:
+    rows = conn.execute(
+        "SELECT * FROM inbound_events WHERE source_id = ? ORDER BY external_id",
+        (source_id,),
+    ).fetchall()
+    return [_inbound_item(r) for r in rows]
+
+
+def inbound_item(conn: sqlite3.Connection, source_id: str, external_id: str) -> InboundItem | None:
+    row = conn.execute(
+        "SELECT * FROM inbound_events WHERE source_id = ? AND external_id = ?",
+        (source_id, external_id),
+    ).fetchone()
+    return _inbound_item(row) if row else None
+
+
+def save_inbound_item(
+    conn: sqlite3.Connection, source_id: str, external_id: str, *,
+    state: dict, cancelled: bool, etag: str, now: str,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO inbound_events
+            (source_id, external_id, state, cancelled, etag, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (source_id, external_id) DO UPDATE SET
+            state = excluded.state, cancelled = excluded.cancelled,
+            etag = excluded.etag, updated_at = excluded.updated_at
+        """,
+        (source_id, external_id, json.dumps(state, sort_keys=True), int(cancelled),
+         etag, now, now),
+    )
+
+
+def inbound_payload(conn: sqlite3.Connection, source_id: str) -> bytes:
+    """What the sync loop parses for an inbound source, in place of a fetch."""
+    items = [
+        {"external_id": i.external_id, "state": i.state, "cancelled": i.cancelled}
+        for i in inbound_items(conn, source_id)
+    ]
+    return json.dumps({"items": items}, sort_keys=True).encode()
+
+
+def last_push(conn: sqlite3.Connection, source_id: str) -> str | None:
+    row = conn.execute(
+        "SELECT MAX(updated_at) AS at FROM inbound_events WHERE source_id = ?",
+        (source_id,),
+    ).fetchone()
+    return row["at"] if row else None
+
+
+def inbound_key_hash(conn: sqlite3.Connection, source_id: str) -> str | None:
+    row = conn.execute(
+        "SELECT inbound_key_sha256 FROM sources WHERE id = ?", (source_id,)
+    ).fetchone()
+    return row["inbound_key_sha256"] if row else None
+
+
+def set_inbound_key_hash(conn: sqlite3.Connection, source_id: str, digest: str) -> None:
+    """Replace the key. The old one stops working the moment this commits, and
+    "last used" starts again — it describes this key, not the team."""
+    conn.execute(
+        "UPDATE sources SET inbound_key_sha256 = ?, inbound_key_used_at = NULL "
+        "WHERE id = ?", (digest, source_id)
+    )
+    conn.commit()
+
+
+def inbound_key_used_at(conn: sqlite3.Connection, source_id: str) -> str | None:
+    row = conn.execute(
+        "SELECT inbound_key_used_at FROM sources WHERE id = ?", (source_id,)
+    ).fetchone()
+    return row["inbound_key_used_at"] if row else None
+
+
+def touch_inbound_key(conn: sqlite3.Connection, source_id: str, at: str) -> None:
+    conn.execute(
+        "UPDATE sources SET inbound_key_used_at = ? WHERE id = ?", (at, source_id)
+    )

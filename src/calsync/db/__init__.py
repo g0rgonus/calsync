@@ -64,6 +64,12 @@ ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # v11 and written at the same point, before the delete — but nobody
     # approved it, so it is not that column.
     ("event_state", "cancelled_upstream_at", "TEXT"),
+    # v13: the SHA-256 of an inbound source's API key. Only the hash: the key is
+    # shown once when it is made, and a lost one is replaced, not recovered.
+    ("sources", "inbound_key_sha256", "TEXT"),
+    # v13: when that key last got past the check, read or write. The console
+    # shows it, because a leaked key used only to read leaves no other trace.
+    ("sources", "inbound_key_used_at", "TEXT"),
     # v5 adds `event_content`, which is a new table rather than new columns, so
     # `schema.sql`'s CREATE TABLE IF NOT EXISTS covers it and nothing belongs
     # here. Existing rows backfill themselves: the sync loop treats missing

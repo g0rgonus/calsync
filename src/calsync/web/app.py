@@ -19,7 +19,7 @@ from wsgiref.simple_server import WSGIRequestHandler, WSGIServer, make_server
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import bottle
-from bottle import Bottle, redirect, request, static_file, template
+from bottle import Bottle, redirect, request, response, static_file, template
 
 from .. import __version__
 from .. import config as config_mod
@@ -28,6 +28,8 @@ from .. import (
     warmup, withheld as withheld_mod, zones,
 )
 from ..fetch import FetchError, http_fetch, render_url
+from ..inbound import app as inbound_app
+from ..inbound import events as inbound_events
 from ..inspection import InspectionError, inspect_feed
 from ..normalize import title as title_norm
 from ..normalize import venue as venue_norm
@@ -300,7 +302,7 @@ def create_app(
                 plan=plan,
                 children=repo.list_children(conn),
                 sports=repo.list_sports(conn),
-                kinds=sources.available(),
+                kinds=sources.fetched(),
                 default_tz=settings.default_tz,
                 tz_choices=zones.choices(settings.default_tz),
             )
@@ -345,6 +347,71 @@ def create_app(
 
         redirect(f"/sources/{created.source_id}?ok=" + _q("Created and staged."))
 
+    @app.post("/onboard/inbound")
+    def onboard_inbound():
+        """A team whose events a tool will send, rather than a feed to read.
+
+        Same draft, same staging, same activity row as a feed — only there is
+        no URL to inspect, so the three things a feed would have told us are
+        asked for directly. The answer is the key page, rendered in this
+        response rather than redirected to: a key in a redirect's query string
+        lands in the browser's history, and this is the only time it exists.
+        """
+        with connect() as conn:
+            child_id = _field("child")
+            sport = _field("sport")
+            previous = clone_forward(conn, child_id, sport)
+            draft = Draft(
+                url="",
+                child_id=child_id,
+                sport=sport,
+                team_name=_field("team_name").strip(),
+                kind="inbound",
+                tz=_require_zone(
+                    _field("tz").strip()
+                    or (previous.tz if previous else "")
+                    or Settings.load(conn).default_tz
+                ),
+                staging_collection="onboarding",
+                emoji=previous.emoji if previous else None,
+                league=previous.league if previous else None,
+                age_group=previous.age_group if previous else None,
+                alarm_game_min=previous.alarm_game_min if previous else 90,
+                alarm_practice_min=previous.alarm_practice_min if previous else 30,
+            )
+            created = create_source(conn, draft, secrets=secrets)
+            return _key_page(conn, created.source_id, created.key, fresh=True)
+
+    @app.post("/sources/<source_id>/inbound-key")
+    def replace_inbound_key(source_id):
+        """A new key for an inbound source. The old one stops working at once."""
+        with connect() as conn:
+            source = _require_source(conn, source_id)
+            if source.kind not in sources.PUSHED:
+                raise Refused("this team is read from a feed; it has no key to replace")
+            key = inbound_events.new_key()
+            repo.set_inbound_key_hash(conn, source_id, inbound_events.hash_key(key))
+            return _key_page(conn, source_id, key, fresh=False)
+
+    def _key_page(conn, source_id: str, key: str, *, fresh: bool):
+        source = _require_source(conn, source_id)
+        activity = repo.get_activity(conn, source.activity_id)
+        # Not cached anywhere, and not offered back: this page is the key's
+        # only copy in the clear.
+        response.set_header("Cache-Control", "no-store")
+        return render(
+            "inbound_key.tpl",
+            source=source,
+            activity=activity,
+            child=repo.get_child(conn, activity.child_id),
+            key=key,
+            fresh=fresh,
+            header=inbound_app.KEY_HEADER,
+            prefix=inbound_app.PREFIX,
+            port=inbound_app.DEFAULT_PORT,
+            flash=None,
+        )
+
     # --- one source --------------------------------------------------------
 
     @app.get("/sources/<source_id>")
@@ -375,6 +442,10 @@ def create_app(
                 # different by the time anybody retires anything.
                 upcoming=retire.live_events(conn, source_id, now=clock()),
                 polls=repo.recent_polls(conn, source_id),
+                pushed=source.kind in sources.PUSHED,
+                last_push=repo.last_push(conn, source_id),
+                key_used=repo.inbound_key_used_at(conn, source_id),
+                pushed_items=len(repo.inbound_items(conn, source_id)),
                 held=_held_rows(
                     conn, source_id, report, zone=_zone(activity.tz), now=clock(),
                 ),
@@ -491,11 +562,12 @@ def create_app(
                 redirect(f"/sources/{source_id}?ok=" + _q("Already live."))
             report = _preview(conn, source, secrets, fetcher, clock)
             if not report.promotable and not force:
-                reason = (
-                    "no games have appeared yet"
-                    if report.fixtures_seen == 0
-                    else "the parse still has gaps"
-                )
+                if report.pushed and report.events_seen == 0:
+                    reason = "nothing has been sent yet"
+                elif not report.pushed and report.fixtures_seen == 0:
+                    reason = "no games have appeared yet"
+                else:
+                    reason = "the parse still has gaps"
                 redirect(f"/sources/{source_id}?err=" + _q(f"Not promoted: {reason}."))
             repo.set_staging(conn, source_id, None)
         redirect(

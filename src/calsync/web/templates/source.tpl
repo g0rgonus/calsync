@@ -299,10 +299,19 @@
 <h2>The source</h2>
 <div class="card">
   <table class="derived">
+% if pushed:
+    <tr>
+      <th>Inbound API</th>
+      <td colspan="2">{{ pushed_items }} {{ 'event' if pushed_items == 1 else 'events' }} sent ·
+        last push {{ last_push or 'never' }} ·
+        key last used {{ key_used or 'never' }}</td>
+    </tr>
+% else:
     <tr>
       <th>Feed</th>
       <td colspan="2"><span class="raw">{{ source.url_template or '—' }}</span></td>
     </tr>
+% end
     <tr>
       <th>Names for this team</th>
       <td colspan="2">
@@ -323,6 +332,11 @@
   </table>
 
   <div class="btn-row" style="margin-top:1.2rem">
+% if pushed:
+    <form method="post" action="/sources/{{ source.id }}/inbound-key">
+      <button class="btn btn-quiet" type="submit">Replace the API key</button>
+    </form>
+% end
     <form method="post" action="/sources/{{ source.id }}/enabled">
       <input type="hidden" name="enabled" value="{{ '0' if source.enabled else '1' }}">
       <button class="btn btn-quiet" type="submit">

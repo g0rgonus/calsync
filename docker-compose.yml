@@ -107,6 +107,23 @@ services:
       test: ["CMD", "python", "-c",
              "import http.client as h; c=h.HTTPConnection('localhost',8731,timeout=3); c.request('GET','/v1/events'); raise SystemExit(0 if c.getresponse().status==401 else 1)"]
 
+  # Where a tool pushes a team's events (docs/deployment/inbound.md). Its own
+  # published port, outside `proxy`, so a firewall rule can admit this and
+  # nothing else. Off until CALSYNC_INBOUND_REPLICAS=1.
+  inbound:
+    <<: *calsync
+    command: ["inbound", "--host", "0.0.0.0", "--port", "8732"]
+    deploy:
+      replicas: ${CALSYNC_INBOUND_REPLICAS:-0}
+    ports:
+      - ${CALSYNC_INBOUND_BIND:-0.0.0.0}:${CALSYNC_INBOUND_PORT:-8732}:8732
+    volumes:
+      - calsync-data:/data
+    healthcheck:
+      <<: *health
+      test: ["CMD", "python", "-c",
+             "import urllib.request;urllib.request.urlopen('http://localhost:8732/inbound/v1')"]
+
   proxy:
     image: caddy:2-alpine
     restart: unless-stopped

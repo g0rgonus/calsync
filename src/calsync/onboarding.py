@@ -22,7 +22,8 @@ from datetime import datetime, timezone
 from urllib.parse import quote, unquote, urlparse, urlunparse
 
 from . import config as config_mod
-from . import repo
+from . import repo, sources
+from .inbound import events as inbound
 from .fetch import FetchError, render_url
 from .routing import slugify
 from .secrets import SecretError, SecretStore
@@ -37,7 +38,7 @@ OPAQUE_MIN = 12
 
 #: Short prefixes so a source id reads like ``tr-otters`` rather than
 #: ``teamreach-otters-spring-2026``. Anything unlisted uses its own kind.
-_KIND_PREFIX = {"teamreach": "tr", "player360": "p360"}
+_KIND_PREFIX = {"teamreach": "tr", "player360": "p360", "inbound": "in"}
 
 _WORDY = re.compile(r"^[a-z][a-z-]*$", re.IGNORECASE)
 
@@ -308,6 +309,9 @@ class Created:
     source_id: str
     secret_refs: tuple[str, ...] = ()
     log: tuple[str, ...] = field(default=())
+    #: An inbound source's API key, in the clear, exactly once. Only its hash
+    #: is stored; whoever renders this is the last thing that sees it.
+    key: str | None = field(default=None, repr=False)
 
 
 def clone_forward(conn, child_id: str, sport: str) -> "Draft | None":
@@ -345,7 +349,8 @@ def create(conn, draft: Draft, *, secrets: SecretStore) -> Created:
     """
     if not draft.team_name.strip():
         raise OnboardingError("the team needs a name")
-    if not draft.url.strip():
+    pushed = draft.kind in sources.PUSHED
+    if not pushed and not draft.url.strip():
         raise OnboardingError("the feed URL is missing")
 
     activity_id, source_id = propose_ids(
@@ -356,7 +361,11 @@ def create(conn, draft: Draft, *, secrets: SecretStore) -> Created:
         kind=draft.kind,
     )
 
-    template, pending = templatise(draft.url, draft.secret_keys, source_id.replace("-", "_"))
+    # A pushed source has no URL and so nothing to vault. Its credential is the
+    # key made below, and that never goes near the secret store: the database
+    # keeps a hash, and the key itself exists only on the page that shows it.
+    template, pending = (None, {}) if pushed else templatise(
+        draft.url, draft.secret_keys, source_id.replace("-", "_"))
     for ref, value in pending.items():
         secrets.put(ref, value)
 
@@ -391,7 +400,7 @@ def create(conn, draft: Draft, *, secrets: SecretStore) -> Created:
                     "id": source_id,
                     "activity": activity_id,
                     "kind": draft.kind,
-                    "shape": "feed",
+                    "shape": "push" if pushed else "feed",
                     "poll_interval": f"{draft.poll_interval_s}s",
                     "url_template": template,
                     # Only set when there is one ref; several become
@@ -407,9 +416,15 @@ def create(conn, draft: Draft, *, secrets: SecretStore) -> Created:
     # fixtures appear and parse (docs/ONBOARDING.md §5) — which may be weeks.
     repo.set_staging(conn, source_id, draft.staging_collection or None)
 
+    key = None
+    if pushed:
+        key = inbound.new_key()
+        repo.set_inbound_key_hash(conn, source_id, inbound.hash_key(key))
+
     return Created(
         activity_id=activity_id,
         source_id=source_id,
         secret_refs=tuple(sorted(pending)),
         log=tuple(log),
+        key=key,
     )

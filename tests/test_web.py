@@ -2754,3 +2754,52 @@ def test_a_save_that_names_no_section_still_confirms_at_the_top(client):
 def test_an_unknown_section_confirms_nothing_rather_than_500ing(client):
     body = client.get("/settings?ok=Saved.&at=nonsense")["body"]
     assert "Saved." not in body
+
+
+# --- inbound sources --------------------------------------------------------
+
+
+def test_an_inbound_team_gets_a_key_shown_once_and_stored_only_as_a_hash(
+        client, tmp_path, secrets_path):
+    import re as _re
+
+    from calsync.inbound import events as inbound_events
+
+    page = client.post("/onboard/inbound", {
+        "team_name": "Dolphins", "child": "parker", "sport": "swimming",
+    })
+    assert page["status"] == 200
+    assert page["headers"].get("Cache-Control") == "no-store"
+    key = _re.search(r"csk_[A-Za-z0-9_-]{20,}", page["body"]).group(0)
+
+    conn = db.connect(tmp_path / "calsync.db")
+    source = next(s for s in repo.list_sources(conn) if s.kind == "inbound")
+    assert source.staging_collection == "onboarding"
+    assert source.url_template is None
+    assert repo.inbound_key_hash(conn, source.id) == inbound_events.hash_key(key)
+    # The key itself is nowhere: not in the database file, not in the secret store.
+    conn.close()
+    assert key.encode() not in (tmp_path / "calsync.db").read_bytes()
+    assert key not in secrets_path.read_text()
+
+    # The team's page knows it has no feed, and what it is waiting for.
+    body = client.get(f"/sources/{source.id}")["body"]
+    assert "Inbound API" in body and "Nothing has been sent yet" in body
+    assert key not in body
+
+    # A new key replaces the old one outright.
+    again = client.post(f"/sources/{source.id}/inbound-key")
+    fresh = _re.search(r"csk_[A-Za-z0-9_-]{20,}", again["body"]).group(0)
+    assert fresh != key
+    conn = db.connect(tmp_path / "calsync.db")
+    assert repo.inbound_key_hash(conn, source.id) == inbound_events.hash_key(fresh)
+
+
+def test_a_feed_has_no_key_to_replace_and_inbound_is_not_a_feed_type(client, tmp_path):
+    onboard(client)
+    conn = db.connect(tmp_path / "calsync.db")
+    feed_source = repo.list_sources(conn)[0].id
+    refused = client.post(f"/sources/{feed_source}/inbound-key")
+    assert "has no key" in refused["body"]
+    confirm = client.post("/onboard", {"url": FEED_URL})
+    assert 'value="inbound"' not in confirm["body"]

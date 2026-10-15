@@ -22,6 +22,44 @@
   <button class="btn" type="submit">Read the feed</button>
 </form>
 
+<h2>Or: a tool sends the schedule</h2>
+<form method="post" action="/onboard/inbound" class="card">
+  <p class="note" style="margin-top:0">
+    For a team with no feed — a PDF from the coach, an email, a whiteboard — that
+    an assistant reads and sends to calsync one event at a time. You get an API
+    key for this one team; the events go to the staging calendar like any feed's.
+  </p>
+  <label class="field">
+    <span class="label">Team name — what shows up in the calendar</span>
+    <input type="text" name="team_name" required autocomplete="off">
+  </label>
+  <div class="row">
+    <label class="field">
+      <span class="label">Whose team</span>
+      <select name="child" required>
+        <option value="">choose…</option>
+% for child in children:
+        <option value="{{ child.id }}">{{ child.name }}</option>
+% end
+      </select>
+    </label>
+    <label class="field">
+      <span class="label">Sport</span>
+      <select name="sport" required>
+        <option value="">choose…</option>
+% for sport in sports:
+        <option value="{{ sport['id'] }}">{{ sport['emoji'] }} {{ sport['name'] }}</option>
+% end
+      </select>
+    </label>
+  </div>
+  <p class="note" style="margin-top:-0.4rem">
+    The timezone carries over from this kid's last team in the sport, or the
+    household default. Change it on the team's page.
+  </p>
+  <button class="btn" type="submit">Create and show the key</button>
+</form>
+
 % if not children:
 <h2>No kids on file</h2>
 <div class="card">

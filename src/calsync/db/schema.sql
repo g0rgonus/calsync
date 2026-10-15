@@ -264,3 +264,20 @@ CREATE TABLE IF NOT EXISTS tasks (
 );
 CREATE INDEX IF NOT EXISTS tasks_state ON tasks(state);
 CREATE INDEX IF NOT EXISTS tasks_source ON tasks(source_id);
+
+-- What a tool has pushed to an inbound source (`calsync.inbound`): one row per
+-- event the sender named, keyed by its own id. This is the inbound source's
+-- equivalent of a feed, and the sync loop reads it where it would otherwise
+-- fetch. Rows are never deleted while the source exists — a DELETE from the
+-- sender sets `cancelled` — so nothing can leave the store by omission, which
+-- is the one way an absence could reach the disappearance guard.
+CREATE TABLE IF NOT EXISTS inbound_events (
+    source_id    TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+    external_id  TEXT NOT NULL,
+    state        TEXT NOT NULL,              -- JSON: event, overrides, retired
+    cancelled    INTEGER NOT NULL DEFAULT 0,
+    etag         TEXT NOT NULL,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL,
+    PRIMARY KEY (source_id, external_id)
+);
