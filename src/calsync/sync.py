@@ -42,6 +42,13 @@ class SyncReport:
     #: Games seen in this poll. Zero means the fixture path is unproven — a
     #: coach publishes practices first and adds the schedule later.
     fixtures_seen: int = 0
+    #: The source is pushed to rather than fetched (`sources.PUSHED`). Its
+    #: sender states each event's type outright, so there is no fixture parsing
+    #: to prove; what the gate waits for instead is the first push.
+    pushed: bool = False
+    #: Events in this poll that are on, in the window. For a pushed source this
+    #: is the gate's evidence, where a feed's is `fixtures_seen`.
+    events_seen: int = 0
     #: Events relocated because their collection changed, not their content —
     #: promotion off the onboarding calendar, or a routing template change.
     moved: int = 0
@@ -98,7 +105,7 @@ class SyncReport:
             self.status == "ok"
             and self.is_clean
             and not self.errors
-            and self.fixtures_seen > 0
+            and (self.events_seen > 0 if self.pushed else self.fixtures_seen > 0)
         )
 
     def tally(self) -> str:
@@ -207,6 +214,23 @@ def _guard_thresholds(source: repo.Source, settings: Settings) -> tuple[float, i
     return pct, int(count)
 
 
+def _pushed(conn, source: repo.Source) -> bytes:
+    """An inbound source's store, read where a feed would be fetched.
+
+    Items are never removed from it, so an empty store beside events this
+    source has already written means the store was damaged — and handing the
+    diff zero events would read as every one of them cancelled. Refused here
+    for the same reason an empty feed is.
+    """
+    payload = repo.inbound_payload(conn, source.id)
+    if not repo.inbound_items(conn, source.id) and repo.tracked_events(conn, source.id):
+        raise FetchError(
+            f"inbound source {source.id} has events on the calendar but nothing "
+            "stored; refusing to read that as every one of them cancelled"
+        )
+    return payload
+
+
 def sync_source(
     conn,
     source: repo.Source,
@@ -230,7 +254,10 @@ def sync_source(
     moved since, the poll stays held and nothing is cancelled. Only a person
     reaches this — the console's confirm button — never the poller.
     """
-    report = SyncReport(source_id=source.id, staged_to=source.staging_collection)
+    report = SyncReport(
+        source_id=source.id, staged_to=source.staging_collection,
+        pushed=source.kind in sources.PUSHED,
+    )
     settings = Settings.load(conn)
     activity: Activity = repo.get_activity(conn, source.activity_id)
     # One child per activity: the schema binds them 1:1. Shared events (two kids
@@ -240,6 +267,8 @@ def sync_source(
 
     # --- fetch + parse: any failure aborts before the diff ------------------
     try:
+        if raw is None and report.pushed:
+            raw = _pushed(conn, source)
         if raw is None:
             if not source.url_template:
                 raise FetchError(f"source {source.id} has no url_template and no payload")
@@ -294,6 +323,7 @@ def sync_source(
         # confirmed pin and survives the venue being spelled differently later.
         if not _enrich_venue(conn, event) and not withheld.is_withheld(event.uid, off):
             unresolved_venues.add(event.venue.name or event.venue.raw)
+        report.events_seen += 1
         if event.is_game:
             report.fixtures_seen += 1
         # Matching `routing.collection_for`'s precedence, staging included: a

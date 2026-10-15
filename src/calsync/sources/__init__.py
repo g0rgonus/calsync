@@ -32,6 +32,17 @@ def available() -> list[str]:
     return sorted(_PARSERS)
 
 
+#: Kinds that are pushed to rather than fetched. They have no URL, so the sync
+#: loop reads their store instead (`repo.inbound_payload`), and onboarding
+#: offers them as a choice of their own rather than in the feed-kind picker.
+PUSHED = frozenset({"inbound"})
+
+
+def fetched() -> list[str]:
+    """The kinds a pasted feed URL can be read as."""
+    return [kind for kind in available() if kind not in PUSHED]
+
+
 def parse(
     kind: str,
     data: str | bytes,
@@ -56,4 +67,4 @@ def parse(
     return parser(data, activity, source_id=source_id, config=config)
 
 
-from . import player360, teamreach  # noqa: E402,F401  (populate the registry)
+from . import inbound, player360, teamreach  # noqa: E402,F401  (populate the registry)

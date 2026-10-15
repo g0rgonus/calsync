@@ -158,7 +158,39 @@ def _venues(report: SyncReport) -> Condition:
     )
 
 
+def _pushed(report: SyncReport) -> Condition:
+    """The inbound equivalent of "games seen".
+
+    A sender states each event's type, so there is no opponent parsing that a
+    game would prove. What is unproven until the first push is everything
+    else — that the tool can reach calsync at all, with the right key.
+    """
+    if report.events_seen > 0:
+        return Condition(
+            key="games",
+            label="Events received",
+            state=MET,
+            headline=(
+                f"{report.events_seen} "
+                f"{_plural(report.events_seen, 'event', 'events')} sent so far."
+            ),
+            detail="The tool can reach calsync with this team's key.",
+        )
+    return Condition(
+        key="games",
+        label="Events received",
+        state=WAITING,
+        headline="Nothing has been sent yet.",
+        detail=(
+            "Give the tool this team's source id and key. Its first event "
+            "appears here, and on the staging calendar, the moment it arrives."
+        ),
+    )
+
+
 def _games(report: SyncReport) -> Condition:
+    if report.pushed:
+        return _pushed(report)
     if report.fixtures_seen > 0:
         return Condition(
             key="games",
@@ -201,7 +233,7 @@ def conditions(report: SyncReport, activity: Activity) -> tuple[Condition, ...]:
                 ("team", "Team matched"),
                 ("types", "Types known"),
                 ("venues", "Venues placed"),
-                ("games", "Games seen"),
+                ("games", "Events received" if report.pushed else "Games seen"),
             )
         )
     return (_team(report, activity), _types(report), _venues(report), _games(report))
@@ -221,6 +253,9 @@ def summarise(conditions_: tuple[Condition, ...]) -> tuple[str, str]:
     if asking:
         count = len(asking)
         return "asking", f"{count} {_plural(count, 'question', 'questions')}"
-    if any(c.state == WAITING for c in conditions_):
+    waiting = [c for c in conditions_ if c.state == WAITING]
+    if waiting:
+        if waiting[0].label == "Events received":
+            return "waiting", "waiting for a push"
         return "waiting", "waiting for games"
     return "ready", "ready to promote"

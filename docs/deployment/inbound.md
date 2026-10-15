@@ -1,0 +1,175 @@
+# The inbound API
+
+A team with no feed — a PDF from the coach, an email, a whiteboard photo — can
+still be a calsync source. Onboard it in the console as **"a tool sends the
+schedule"**, hand the tool the source id and key it shows you, and the tool
+sends events one at a time. They go through the same sync loop as a feed:
+staged first, titled by your template, routed by your rules, guarded the same
+way.
+
+## Turning it on
+
+```bash
+# .env
+CALSYNC_INBOUND_REPLICAS=1
+# optional
+CALSYNC_INBOUND_PORT=8732
+CALSYNC_INBOUND_BIND=0.0.0.0     # or the one host address the proxy reaches
+```
+
+`docker compose up -d` then publishes port 8732 on the host. It is **not**
+behind `proxy` and does not share the console's port: nothing on 8732 but the
+routes below, so a firewall rule admitting 8732 admits nothing else. Off by
+default so an upgrade never opens a port.
+
+## Documentation on the service itself
+
+No key needed, generated from one table in `src/calsync/inbound/contract.py`
+and tested against the routes, so none of them can drift from the API:
+
+| | |
+|---|---|
+| `/inbound/v1/docs` | A page for a person: every call with a ready-to-paste curl, the fields, the safeguards, a season worked through. |
+| `/inbound/v1/openapi.json` | OpenAPI 3.1, for an assistant platform that imports a spec as tools. Its `servers` entry is whatever address it was fetched through, so fetch it through Pangolin. |
+| `/inbound/v1` | The same, as compact JSON. |
+
+## Auth
+
+| Header | |
+|---|---|
+| `X-Calsync-Key` | The source's key. One key opens one team. |
+| `Authorization` | **Never read.** Left to whatever proxy is in front. |
+
+The key is 256 random bits, shown once in the console; calsync stores only its
+SHA-256. Lost keys are replaced (**Replace the API key** on the team's page),
+never recovered, and the old one stops working at once.
+
+A 401 carries `WWW-Authenticate: CalsyncKey`, not `Basic`, so a client in
+"extended compatibility" mode does not answer it by resending the proxy's
+password in a loop. An unknown source and a wrong key are the same 401.
+
+## Pangolin
+
+The resource for this service:
+
+- **Target**: the calsync host, port 8732 (`CALSYNC_INBOUND_PORT`), HTTP.
+- **Basic Header Auth**: on, with its own user and a long random password
+  (`openssl rand -base64 24`). Extended compatibility on. This is Pangolin's
+  credential, not calsync's — they are deliberately separate.
+- **No SSO-only rule on `/inbound/*`.** A tool cannot complete a login page;
+  the Basic header has to be enough to reach the target.
+- Not the console's resource. Do not route `/inbound` through the resource that
+  fronts port 8730: that one has no login behind Pangolin's.
+
+The tool then sends both credentials, each in its own header:
+
+```bash
+curl -u 'calsync-bot:PANGOLIN_PASSWORD' \
+     -H 'X-Calsync-Key: csk_…' \
+     https://inbound.example.org/inbound/v1/sources/in-dolphins
+```
+
+A JSON body naming the team is success. HTML (a login page) means the Pangolin
+rule is still SSO-gated; a JSON 401 with `bad_credential` means Pangolin let
+you through and the calsync key is wrong; a Pangolin 401 means its own
+credential is wrong. Custom `X-` headers pass through Pangolin's proxy
+unchanged, which is what this design relies on — confirm with the call above
+after any Pangolin upgrade.
+
+## Events
+
+```
+PUT    /inbound/v1/sources/{source}/events/{id}                      201 created, 200 replaced/unchanged
+GET    /inbound/v1/sources/{source}/events/{id}                      with occurrences and overrides
+GET    /inbound/v1/sources/{source}/events                           everything sent, cancelled included
+DELETE /inbound/v1/sources/{source}/events/{id}                      204; 404 if never sent
+PUT    /inbound/v1/sources/{source}/events/{id}/occurrences/{date}   change one date of a series
+DELETE /inbound/v1/sources/{source}/events/{id}/occurrences/{date}   cancel one date; 204
+GET    /inbound/v1/sources/{source}                                  which team this key writes to
+GET    /inbound/v1                                                   this list, no key needed
+```
+
+`{id}` is the tool's own: 1–128 of `A-Z a-z 0-9 . _ -`. Repeating a PUT is
+free — same ETag, no calendar write. That is why the tool picks the id rather
+than calsync issuing one: a create that times out can be sent again without
+making a second event.
+
+### List, match, then write
+
+A tool is not expected to remember its ids. To change something, it lists
+first, finds the event, and writes to the id it found:
+
+1. `GET …/events?from=2026-10-27&to=2026-10-27` — only events with a date in
+   that window, carrying only those dates. Each has its `external_id`, its
+   fields and its `etag`.
+2. Pick the one that matches.
+3. `PUT …/events/{external_id}` to change it, or
+   `…/events/{external_id}/occurrences/2026-10-27` for that one date.
+
+Three safeguards for a tool that skips step 1:
+
+| | |
+|---|---|
+| **Duplicate check** | A PUT to an id calsync has never seen, overlapping a live event of the same type on the same day, is **409 `possible_duplicate`**, naming the existing id and dates. Nothing is written. Update that id instead — or, if both events are real (two practices that day), resend with `?allow_overlap=true`. |
+| `If-None-Match: *` | Create-only: **412 `already_exists`** if the id has been used, rather than replacing that event. |
+| `If-Match: "<etag>"` | Conditional: **412 `etag_mismatch`** if the event changed since it was read. |
+
+| Field | |
+|---|---|
+| `type` | `practice` or `game`. Required. |
+| `start`, `end` | Local wall-clock ISO 8601 (`2026-10-20T17:45:00`) in `tz`. An offset is accepted and converted. A bare date is all-day; its `end` is the last day. |
+| `tz` | IANA zone. Defaults to the team's. |
+| `label` | The short word in the title — "Swim", "Dryland". |
+| `location` | Free text, resolved through the venue table like any feed's. |
+| `opponent`, `home` | Games only. Leave `home` out when unknown. |
+| `notes`, `url` | Into the event body. |
+| `rrule` | `FREQ=DAILY\|WEEKLY`, `INTERVAL`, `BYDAY`, `WKST=MO`, and exactly one of `UNTIL` or `COUNT`. calsync expands it into one event per date; there is no default season end. |
+| `exdates` | Dates the series skips. |
+
+Refused, by name, with the reason: `title`, `calendar`, `child`, `team`,
+`status`, `uid`. calsync composes the title and picks the calendar; one source
+is one team for one child; cancelling is a `DELETE`.
+
+Errors are JSON: `{"error": {"code", "detail", "errors": [{"field", "code", "detail"}]}}`.
+
+### Examples
+
+```bash
+H=(-u 'calsync-bot:PANGOLIN_PASSWORD' -H 'X-Calsync-Key: csk_…' -H 'Content-Type: application/json')
+U=https://inbound.example.org/inbound/v1/sources/in-dolphins
+
+# A weekly practice for the season
+curl "${H[@]}" -X PUT "$U/events/tue-swim" -d '{
+  "type": "practice", "label": "AG Yellow swim",
+  "start": "2026-10-20T17:45:00", "end": "2026-10-20T19:30:00",
+  "location": "Fort Eustis Aquatic Center",
+  "rrule": "FREQ=WEEKLY;BYDAY=TU;UNTIL=20270531T235959Z",
+  "notes": "Arrive 10–15 min early"}'
+
+# One week moves to 18:30 at a different pool
+curl "${H[@]}" -X PUT "$U/events/tue-swim/occurrences/2026-10-27" \
+  -d '{"start": "2026-10-27T18:30:00", "location": "Gosnold Pool"}'
+
+# Thanksgiving week is off
+curl "${H[@]}" -X DELETE "$U/events/tue-swim/occurrences/2026-11-24"
+
+# What was sent, with every date it produces
+curl "${H[@]}" "$U/events/tue-swim"
+```
+
+## What it will and will not do
+
+- **One key, one team.** A key cannot read or write another source, touch
+  configuration, promote, approve anything, or reach the console.
+- **Staged first.** A new inbound team writes to the onboarding calendar until
+  you promote it, like a feed.
+- **A cancellation is explicit and is obeyed.** `DELETE` is treated like a
+  feed's `STATUS:CANCELLED`: applied without the disappearance guard, because
+  it is not an absence. A series shortened or moved by a PUT cancels the dates
+  it no longer produces the same way.
+- **Throttled**: 60 writes a minute per team (429 with `Retry-After`).
+- **Logged**: source, event id, action and outcome, plus refused keys with the
+  caller's address. Never the key, never a body.
+- **Not TLS.** The service speaks plain HTTP; Pangolin terminates TLS. Keep the
+  hop from Pangolin's connector to 8732 on a network you trust, and use
+  `CALSYNC_INBOUND_BIND` and the firewall to admit only that connector.

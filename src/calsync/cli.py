@@ -359,7 +359,10 @@ def cmd_promote(args) -> int:
     _emit(report)
 
     if not report.promotable and not args.force:
-        if report.fixtures_seen == 0:
+        if report.pushed and report.events_seen == 0:
+            print("\nnot promoting: nothing has been sent to this inbound source yet.")
+            print("Give the tool its source id and key, or --force.")
+        elif not report.pushed and report.fixtures_seen == 0:
             print("\nnot promoting: no fixtures in the feed yet, so the opponent and")
             print("home/away parsing has never run. Wait for the game schedule, or --force.")
         else:
@@ -644,6 +647,20 @@ def cmd_api(args) -> int:
     return 0
 
 
+def cmd_inbound(args) -> int:
+    """Serve the inbound API (`calsync.inbound`).
+
+    Its own port, not a path behind the stack's proxy: this is the one listener
+    meant to be reachable from outside, and a port of its own is what lets a
+    firewall rule admit that and nothing else. Starts with no credential —
+    keys belong to sources, made in the console.
+    """
+    from .inbound.app import create_app, serve
+
+    serve(create_app(args.db, secrets=_secrets(args)), host=args.host, port=args.port)
+    return 0
+
+
 def cmd_status(args) -> int:
     conn = db.open_db(args.db)
     sources = repo.list_sources(conn, enabled_only=False)
@@ -771,6 +788,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_api.add_argument("--port", type=int, default=8731)
     p_api.add_argument("--secrets", help="path to a secrets JSON file")
     p_api.set_defaults(fn=cmd_api)
+
+    p_in = sub.add_parser(
+        "inbound", help="serve the inbound API that tools push a team's events to")
+    p_in.add_argument("--host", default="127.0.0.1",
+                      help="bind address; 0.0.0.0 only behind a firewall rule or proxy")
+    p_in.add_argument("--port", type=int, default=8732)
+    p_in.add_argument("--secrets", help="path to a secrets JSON file")
+    p_in.set_defaults(fn=cmd_inbound)
 
     p_init_deploy = sub.add_parser(
         "init-deploy", help="write out compose + server config for a deployment")

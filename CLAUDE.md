@@ -33,6 +33,23 @@ remembers"). The write half — documents, proposals, approvals, task tokens,
 `PATCH` and its amendment overlay — is deliberately unbuilt, because none of its
 consumers exist and a review gate with nothing to review cannot be shown to work.
 
+**Inbound sources** (`calsync inbound`, `src/calsync/inbound/`,
+`docs/deployment/inbound.md`) are a source kind that is pushed to rather than
+fetched: a tool holding one team's key sends events one at a time on a port of
+its own, outside the proxy. The sync loop reads the stored items where it would
+fetch (`sync._pushed`), so staging, titles, routing, warm-ups and the guards are
+the ordinary path. Four things are the design: the sender **describes** an event
+and never renders one (`title`, `calendar`, `child` are refused by name);
+`Authorization` is **never read**, because the proxy in front owns it, and a
+401 never says `Basic`; a series is **expanded into one event per date**
+(`recurrence.py`, a refused-not-approximated RRULE subset); and items are never
+removed from the store — a `DELETE` is an explicit cancellation like
+`STATUS:CANCELLED`, and a PUT that stops producing a date records it in
+`retired` so the date is cancelled rather than becoming an absence the
+disappearance guard would hold. Its JSON description, `/docs` page and `openapi.json`
+are all generated from `inbound/contract.py`, which a test holds against the
+route table and whose examples it runs through the real validator.
+
 Events calsync **cannot place** are held in an `enrichment` collection instead
 of being filed under a guess, and `/review` is where a human answers the
 question that releases them. That is the human half of the Hermes design
