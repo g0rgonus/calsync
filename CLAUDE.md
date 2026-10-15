@@ -48,7 +48,12 @@ removed from the store — a `DELETE` is an explicit cancellation like
 `retired` so the date is cancelled rather than becoming an absence the
 disappearance guard would hold. Its JSON description, `/docs` page and `openapi.json`
 are all generated from `inbound/contract.py`, which a test holds against the
-route table and whose examples it runs through the real validator.
+route table and whose examples it runs through the real validator. A meet's
+sessions name it in `part_of`, and the adapter emits the meet as cancelled while
+any live part exists (`events.superseded`) — an explicit removal, never an
+absence, so a weekend of meets replaced at once cannot trip the guard. Examples
+there are invented like the fixtures: the docs page and the spec are served
+publicly from a public repo.
 
 Events calsync **cannot place** are held in an `enrichment` collection instead
 of being filed under a guess, and `/review` is where a human answers the
@@ -191,7 +196,7 @@ so a fresh clone needs:
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/pytest                                    # 729 tests, ~7s
+.venv/bin/pytest                                    # 743 tests, ~7s
 .venv/bin/pytest tests/test_player360.py -k content_hash    # single test
 ```
 

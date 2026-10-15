@@ -38,7 +38,7 @@ TYPES = ("practice", "game")
 #: What the sender may send. Everything else is refused, by name, below.
 FIELDS = {
     "type", "label", "start", "end", "tz", "location", "opponent", "home",
-    "notes", "url", "rrule", "exdates",
+    "notes", "url", "rrule", "exdates", "part_of",
 }
 OVERRIDE_FIELDS = {"start", "end", "location", "notes", "label"}
 
@@ -239,6 +239,12 @@ def validate_event(body, *, default_tz: str) -> dict:
             else:
                 exdates.append(text)
 
+    part_of = body.get("part_of")
+    if part_of is not None and (not isinstance(part_of, str) or not EXTERNAL_ID.match(part_of)):
+        errors.append(_err("part_of", "bad_id", "the external_id of another event on "
+                                                 "this source"))
+        part_of = None
+
     stored = {
         "type": kind,
         "label": _text(body, "label", errors),
@@ -253,6 +259,10 @@ def validate_event(body, *, default_tz: str) -> dict:
         "rrule": rrule.strip() if isinstance(rrule, str) else None,
         "exdates": sorted(set(exdates)),
     }
+    # Only when given, so an event stored before part_of existed keeps its
+    # ETag and an identical resend stays a no-op.
+    if part_of:
+        stored["part_of"] = part_of
     if errors:
         raise Invalid(errors)
     return stored
@@ -496,9 +506,14 @@ def overlaps(source_id: str, external_id: str, state: dict, others, *,
     """
     mine = instances(source_id, external_id, state, default_tz=default_tz)
     kind = state["event"].get("type")
+    parent = state["event"].get("part_of")
     found = []
     for other_id, other in others:
         if other["event"].get("type") != kind:
+            continue
+        # A session overlaps the meet it belongs to by design. Two sessions of
+        # one meet at the same time still count: that is a real mistake.
+        if other_id == parent or other["event"].get("part_of") == external_id:
             continue
         for theirs in instances(source_id, other_id, other, default_tz=default_tz):
             for ours in mine:
@@ -509,3 +524,62 @@ def overlaps(source_id: str, external_id: str, state: dict, others, *,
                     })
                     break
     return found
+
+
+# --- part_of -------------------------------------------------------------------------
+
+
+def parent_problems(external_id: str, event: dict, items: dict) -> list[dict]:
+    """Why ``event``'s ``part_of`` cannot be accepted, or nothing.
+
+    ``items`` is ``{external_id: state}`` for every item on the source, this one
+    included if it exists. One level only: a meet has sessions, and a session
+    has no sessions of its own. That keeps "is this on the calendar?" a single
+    lookup rather than a walk up a tree.
+    """
+    parent = event.get("part_of")
+    if not parent:
+        return []
+    if parent == external_id:
+        return [_err("part_of", "self", "an event cannot be part of itself")]
+    if parent not in items:
+        return [_err("part_of", "no_such_event",
+                     f"nothing has been sent with id {parent!r} on this source; "
+                     "send the meet first")]
+    if items[parent]["event"].get("part_of"):
+        return [_err("part_of", "too_deep",
+                     f"{parent!r} is itself part of another event; point at that one")]
+    if any(s["event"].get("part_of") == external_id
+           for other_id, s in items.items() if other_id != external_id):
+        return [_err("part_of", "has_parts",
+                     "other events are part of this one, so it cannot be part of "
+                     "something else")]
+    return []
+
+
+def live_parts(items) -> dict[str, list[str]]:
+    """``{meet: [its live parts]}``, for every event that has any.
+
+    ``items`` is ``(external_id, state, cancelled)``.
+    """
+    parts: dict[str, list[str]] = {}
+    for external_id, state, cancelled in items:
+        parent = state["event"].get("part_of")
+        if parent and not cancelled:
+            parts.setdefault(parent, []).append(external_id)
+    return {parent: sorted(ids) for parent, ids in parts.items()}
+
+
+def superseded(items) -> set[str]:
+    """Events taken off the calendar because their parts have arrived.
+
+    A meet announced as an all-day placeholder is replaced by its sessions
+    while at least one *live* part points at it, and comes back if every part
+    is withdrawn — the meet is still on even when the session list is pulled.
+
+    **The whole meet, not the days that have sessions.** The placeholder is
+    one multi-day event, and a sender sends only the sessions a swimmer is
+    in, so a day with no part is a day they are not swimming. A sender that
+    learns the schedule a day at a time should wait for the whole of it.
+    """
+    return set(live_parts(items))
