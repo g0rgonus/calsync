@@ -44,9 +44,10 @@ class Client:
         self.app = app
         self.key = key
 
-    def call(self, method, path, body=None, *, key=..., headers=None):
+    def call(self, method, path, body=None, *, key=..., headers=None, raw=None):
         key = self.key if key is ... else key
-        raw = b"" if body is None else json.dumps(body).encode()
+        if raw is None:
+            raw = b"" if body is None else json.dumps(body).encode()
         path, _, query = path.partition("?")
         environ = {
             "REQUEST_METHOD": method,
@@ -619,6 +620,73 @@ def test_the_list_narrows_to_a_window_of_dates(client):
 # --- review fixes ---------------------------------------------------------------------------------
 
 
+def _racing_reads(monkeypatch):
+    """Hold each read of an event until a second one arrives — which only
+    happens if nothing serialises the writers. With serialisation the second
+    never gets in, the barrier times out, and the first carries on alone."""
+    import threading
+
+    gate = threading.Barrier(2, timeout=0.5)
+    real = repo.inbound_item
+
+    def racing_read(conn, source_id, external_id):
+        try:
+            gate.wait()
+        except threading.BrokenBarrierError:
+            pass
+        return real(conn, source_id, external_id)
+
+    monkeypatch.setattr(repo, "inbound_item", racing_read)
+
+
+def _at_once(*calls):
+    import threading
+
+    results = [None] * len(calls)
+
+    def run(i, call):
+        results[i] = call()["status"]
+
+    threads = [threading.Thread(target=run, args=(i, c)) for i, c in enumerate(calls)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    return sorted(results)
+
+
+def test_two_service_instances_on_one_database_cannot_both_win(db_path, out, monkeypatch):
+    """No shared in-process lock here: two apps, as two replicas would be. Only
+    SQLite's write lock, taken before the first read, stands between them."""
+    def instance():
+        return Client(inbound_app.create_app(
+            db_path, clock=lambda: NOW, write_target=build("ics_file", directory=out),
+            log=lambda _m: None))
+
+    one, two = instance(), instance()
+    tag = one.put(BASE + "/events/tue-swim", PRACTICE)["headers"]["etag"]
+    _racing_reads(monkeypatch)
+    statuses = _at_once(
+        lambda: one.put(BASE + "/events/tue-swim", dict(PRACTICE, notes="a"),
+                        headers={"If-Match": tag}),
+        lambda: two.put(BASE + "/events/tue-swim", dict(PRACTICE, notes="b"),
+                        headers={"If-Match": tag}),
+    )
+    assert statuses == [200, 412]
+
+
+def test_two_new_ids_for_one_practice_at_once_make_one_event(client, out, monkeypatch):
+    """The duplicate check reads the other events, then saves; two creates
+    racing between those steps would each see nothing and both be written."""
+    _racing_reads(monkeypatch)
+    statuses = _at_once(
+        lambda: client.put(BASE + "/events/tue-swim", PRACTICE),
+        lambda: client.put(BASE + "/events/tuesday-practice", PRACTICE),
+    )
+    assert statuses == [201, 409]
+    assert len(_files(out)) == 6
+
+
 def test_two_writers_with_the_same_etag_cannot_both_win(client, monkeypatch):
     """Both read the event, both pass If-Match, the second silently replaces
     the first — unless the read-check-save is one step. The barrier holds each
@@ -655,8 +723,9 @@ def test_two_writers_with_the_same_etag_cannot_both_win(client, monkeypatch):
 
 
 def test_the_key_is_checked_before_the_body_is_read(client):
-    r = client.call("PUT", BASE + "/events/x", None, key=None)
-    assert r["status"] == 401                  # not 400 for the empty body
+    # Unparseable, and no key. Parsing first would answer 400 bad_json.
+    r = client.call("PUT", BASE + "/events/x", key=None, raw=b"{")
+    assert r["status"] == 401
 
 
 def test_a_weak_etag_from_a_compressing_proxy_still_matches(client):
@@ -682,3 +751,19 @@ def test_a_read_marks_the_key_used_and_a_new_key_starts_over(client, db_path):
     repo.set_inbound_key_hash(conn, "in-dolphins", inbound.hash_key("csk_new"))
     assert repo.inbound_key_used_at(conn, "in-dolphins") is None
     conn.close()
+
+
+def test_a_busy_database_never_holds_up_a_read_for_the_last_used_stamp(client, db_path):
+    import time as _time
+
+    poller = db.connect(db_path)
+    poller.execute("BEGIN IMMEDIATE")          # the poller, mid-write
+    try:
+        started = _time.monotonic()
+        r = client.get(BASE)
+        elapsed = _time.monotonic() - started
+    finally:
+        poller.rollback()
+        poller.close()
+    assert r["status"] == 200
+    assert elapsed < 1.5, f"a read waited {elapsed:.1f}s on a timestamp"

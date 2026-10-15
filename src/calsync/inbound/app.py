@@ -63,6 +63,9 @@ WRITES_PER_MINUTE = 60
 #: connection, so without this a client that opens sockets and never finishes
 #: a request holds threads forever.
 SOCKET_TIMEOUT_S = 15
+#: How long recording "key last used" may wait for the database before it is
+#: skipped. Best effort, so it must never be what a request waits on.
+TOUCH_TIMEOUT_MS = 250
 #: Compared against when the source does not exist, so an unknown source costs
 #: the same work as a wrong key and timing says nothing about which teams exist.
 _NO_SUCH_KEY = "0" * 64
@@ -218,11 +221,17 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
         last = repo.inbound_key_used_at(conn, source_id)
         if last and now - datetime.fromisoformat(last) < timedelta(minutes=1):
             return
+        # A short wait of its own: with the connection's normal timeout, a
+        # poller holding the database would stall an ordinary GET for seconds
+        # over a timestamp that is allowed to be skipped.
+        conn.execute(f"PRAGMA busy_timeout = {TOUCH_TIMEOUT_MS}")
         try:
             repo.touch_inbound_key(conn, source_id, now.isoformat())
             conn.commit()
         except sqlite3.OperationalError:
             conn.rollback()
+        finally:
+            conn.execute(f"PRAGMA busy_timeout = {db.BUSY_TIMEOUT_MS}")
 
     def throttle(source_id: str) -> None:
         now = monotonic()
