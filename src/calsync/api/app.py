@@ -21,10 +21,22 @@ from . import contract
 #: docs/API.md: "Selectors default to a 14-day window and are always bounded."
 DEFAULT_WINDOW_DAYS = 14
 
-#: Fields an amendment could plausibly carry, and therefore the ones whose
-#: ownership a client has to be able to see. Everything here is currently held
-#: by the same contributor — the feed — which is exactly what the block says.
-RESOLVED_FIELDS = ("starts_at", "ends_at", "venue", "opponent", "kind", "detail")
+#: Fields a person's override could carry, and therefore the ones whose
+#: ownership a client has to be able to see — each beside the override unit
+#: that holds it (`overlay.UNITS`), or None for one nothing overrides yet.
+RESOLVED_FIELDS: dict[str, str | None] = {
+    "starts_at": "time",
+    "ends_at": "time",
+    "venue": "location",
+    "opponent": "opponent",
+    "kind": None,
+    "detail": "detail",
+    "notes": "notes",
+}
+
+#: The tier a person's correction holds at. docs/MATRIX.md §4 puts a human
+#: relaying a coach at tier 1, above every feed.
+OVERRIDE_TIER = 1
 
 
 class ApiError(HTTPResponse):
@@ -509,21 +521,36 @@ def _event_json(conn, item: repo.StoredEvent, settings: Settings) -> dict:
 
 
 def _resolution(conn, item: repo.StoredEvent) -> dict:
-    """Which source owns each field, its tier, and when it said so.
+    """Who owns each field, its tier, and when they said so.
 
-    Uniform today, because a feed is the only contributor to any event. It is
-    per-field rather than per-event anyway, so that a client written against it
-    keeps working when amendments start holding individual fields at tier 1
-    (docs/MATRIX.md §4) — that change should widen what this says, not change
-    its shape.
+    The feed, unless a person's override holds the field — and only an
+    override the calendar actually carries (`StoredEvent.overrides`), so this
+    never credits a person with a value that has not reached anybody's phone.
+    Widened rather than reshaped when overrides arrived: ``owner`` is new, and
+    the three keys a client already read mean what they always did, with
+    ``source_id`` null because no source said it.
     """
     source = repo.get_source(conn, item.source_id)
-    held = {
+    fed = {
+        "owner": "source",
         "source_id": item.source_id,
         "tier": source.tier if source else None,
         "observed_at": item.observed_at,
     }
-    return {field: held for field in RESOLVED_FIELDS}
+    applied = item.overrides or {}
+    out = {}
+    for field, unit in RESOLVED_FIELDS.items():
+        if unit in applied:
+            stamp = repo.parse_db_stamp(applied[unit]["set_at"])
+            out[field] = {
+                "owner": "override",
+                "source_id": None,
+                "tier": OVERRIDE_TIER,
+                "observed_at": stamp.isoformat() if stamp else None,
+            }
+        else:
+            out[field] = fed
+    return out
 
 
 def _sources_json(conn, items, *, now: datetime) -> list[dict]:

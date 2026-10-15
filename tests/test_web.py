@@ -13,9 +13,9 @@ from __future__ import annotations
 
 import json
 import threading
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from urllib.parse import unquote, urlencode
+from urllib.parse import quote, unquote, urlencode
 
 import pytest
 
@@ -1471,12 +1471,13 @@ def test_an_event_that_has_already_started_is_refused(writing, tmp_path):
     client, calendar = writing
     synced(client, tmp_path, calendar)
     uid = _an_upcoming_event(tmp_path)
-    # Moved into the past rather than waited for: the refusal compares
-    # `starts_at` against the clock, and the fixture season is entirely ahead
-    # of the pinned one.
+    # Moved into the past rather than waited for: the refusal compares when
+    # the event is on the calendar against the clock, and the fixture season is
+    # entirely ahead of the pinned one.
     conn = db.open_db(tmp_path / "calsync.db")
-    conn.execute("UPDATE event_state SET starts_at = ? WHERE uid = ?",
-                 ("2026-01-04T15:00:00+00:00", uid))
+    conn.execute("UPDATE event_state SET starts_at = ?, shown_starts_at = ? "
+                 "WHERE uid = ?",
+                 ("2026-01-04T15:00:00+00:00", "2026-01-04T15:00:00+00:00", uid))
     conn.commit()
     conn.close()
 
@@ -2831,3 +2832,470 @@ def test_a_household_read_key_is_shown_once_and_can_be_replaced_or_removed(
     assert repo.read_key_hash(conn) is None
     conn.close()
     assert "Make a read key" in client.get("/settings")["body"]
+
+
+# --- fixing one event -------------------------------------------------------
+#
+# The page a non-technical member of the family uses when the coach got it
+# wrong. What matters is the rule the form keeps: it arrives filled in, and a
+# field left alone stays the team app's.
+
+
+def _a_game_to_fix(tmp_path) -> str:
+    conn = db.connect(tmp_path / "calsync.db")
+    row = conn.execute(
+        "SELECT s.uid FROM event_state s JOIN event_content c ON c.uid = s.uid "
+        "WHERE s.cancelled = 0 AND s.starts_at > ? AND c.is_game = 1 "
+        "AND c.all_day = 0 ORDER BY s.starts_at LIMIT 1",
+        (NOW.isoformat(),),
+    ).fetchone()
+    assert row, "the fixture season should have a timed game still to come"
+    return row["uid"]
+
+
+def _filled_in(tmp_path, uid) -> dict:
+    """The form exactly as the page sends it, untouched."""
+    from calsync.web import fix as fix_mod
+
+    conn = db.open_db(tmp_path / "calsync.db")
+    context = fix_mod.page(conn, fix_mod.subject(conn, uid), now=NOW, back="/calendar")
+    form = {k: v for k, v in context["form"].items() if k != "all_day"}
+    if context["form"]["all_day"]:
+        form["all_day"] = "1"
+    if not context["is_game"]:
+        form.pop("opponent")
+    return {"uid": uid, "back": "/calendar", "version": context["version"], **form}
+
+
+def _fixed(tmp_path, uid):
+    return repo.overrides_of(db.connect(tmp_path / "calsync.db"), uid)
+
+
+def test_the_agenda_offers_to_fix_an_event(writing, tmp_path):
+    client, calendar = writing
+    synced(client, tmp_path, calendar)
+    page = client.get("/calendar?view=agenda&month=2026-03")["body"]
+    assert "Fix details" in page and "/events/fix?uid=" in page
+
+
+def test_the_fix_page_speaks_plainly(writing, tmp_path):
+    client, calendar = writing
+    synced(client, tmp_path, calendar)
+    uid = _a_game_to_fix(tmp_path)
+
+    page = client.get(f"/events/fix?uid={quote(uid, safe='')}&back=/calendar")
+    assert page["status"] == 200
+    body = page["body"]
+    for words in ("What everyone sees", "When is it?", "Where is it?",
+                  "Who are they playing?", "Update the calendar", "TeamReach"):
+        assert words in body
+    for jargon in ("override", "upstream", "overlay"):
+        assert jargon not in body.lower().replace("overrides", "")
+
+
+def test_a_fix_reaches_the_calendar_and_says_who_made_it(writing, tmp_path):
+    client, calendar = writing
+    synced(client, tmp_path, calendar)
+    uid = _a_game_to_fix(tmp_path)
+    form = {**_filled_in(tmp_path, uid), "start": "19:15", "end": "20:15",
+            "reason": "Coach texted: pushed back", "actor": "Sam"}
+
+    reply = client.post("/events/fix", form)
+    assert reply["status"] == 303
+    assert "Calendar%20updated" in reply["headers"]["Location"]
+    # Only the part that changed is a fix; the rest stays the team app's.
+    assert set(_fixed(tmp_path, uid)) == {"time"}
+    stored = repo.stored_event(db.connect(tmp_path / "calsync.db"), uid)
+    assert stored.event.local_start.strftime("%H:%M") == "19:15"
+    # The confirmation survives the round trip through the query string,
+    # apostrophe and all.
+    landed = client.get(reply["headers"]["Location"].replace("http://localhost:8730", ""))
+    assert "Everyone’s phones will show the change" in landed["body"]
+
+    agenda = client.get(f"/calendar?view=agenda&month={stored.event.local_start:%Y-%m}")["body"]
+    assert "Time changed by Sam" in agenda
+    assert "Coach texted: pushed back" in agenda
+
+
+def test_a_form_sent_back_untouched_changes_nothing(writing, tmp_path):
+    client, calendar = writing
+    synced(client, tmp_path, calendar)
+    uid = _a_game_to_fix(tmp_path)
+
+    reply = client.post("/events/fix", {**_filled_in(tmp_path, uid), "reason": "x"})
+    assert "Nothing%20to%20change" in reply["headers"]["Location"]
+    assert _fixed(tmp_path, uid) == {}
+
+
+def test_a_fix_needs_a_reason(writing, tmp_path):
+    client, calendar = writing
+    synced(client, tmp_path, calendar)
+    uid = _a_game_to_fix(tmp_path)
+
+    page = client.post("/events/fix", {**_filled_in(tmp_path, uid), "opponent": "Hawks"})
+    assert "Say why" in page["body"]
+    # And what was typed is still there to finish.
+    assert 'value="Hawks"' in page["body"]
+    assert _fixed(tmp_path, uid) == {}
+
+
+def test_moving_to_another_day_asks_first(writing, tmp_path):
+    client, calendar = writing
+    synced(client, tmp_path, calendar)
+    uid = _a_game_to_fix(tmp_path)
+    form = _filled_in(tmp_path, uid)
+    next_day = (date.fromisoformat(form["date"]) + timedelta(days=1)).isoformat()
+    form = {**form, "date": next_day, "reason": "Rained off, replayed Sunday"}
+
+    check = client.post("/events/fix", form)["body"]
+    assert "Yes, move it to" in check
+    assert _fixed(tmp_path, uid) == {}
+
+    # "Go back and change it" returns the form with everything still typed.
+    back = client.post("/events/fix/edit", {**form, "day_change": "edit"})["body"]
+    assert f'value="{next_day}"' in back and "Rained off" in back
+
+    client.post("/events/fix", {**form, "day_change": "confirmed"})
+    assert set(_fixed(tmp_path, uid)) == {"time"}
+
+
+def test_putting_a_value_back_lifts_the_fix(writing, tmp_path):
+    client, calendar = writing
+    synced(client, tmp_path, calendar)
+    uid = _a_game_to_fix(tmp_path)
+    original = _filled_in(tmp_path, uid)
+    client.post("/events/fix", {**original, "opponent": "Hawks", "reason": "typo"})
+    assert set(_fixed(tmp_path, uid)) == {"opponent"}
+
+    fresh = _filled_in(tmp_path, uid)["version"]
+    client.post("/events/fix", {**original, "version": fresh, "reason": ""})
+    assert _fixed(tmp_path, uid) == {}
+
+
+def test_one_part_of_a_fix_can_be_undone(writing, tmp_path):
+    client, calendar = writing
+    synced(client, tmp_path, calendar)
+    uid = _a_game_to_fix(tmp_path)
+    form = {**_filled_in(tmp_path, uid), "opponent": "Hawks", "detail": "Semifinal",
+            "reason": "two things"}
+    client.post("/events/fix", form)
+    assert set(_fixed(tmp_path, uid)) == {"opponent", "detail"}
+
+    reply = client.post("/events/fix/undo", {"uid": uid, "unit": "opponent", "back": "/calendar",
+                                             "version": _filled_in(tmp_path, uid)["version"]})
+    assert reply["status"] == 303
+    assert set(_fixed(tmp_path, uid)) == {"detail"}
+    stored = repo.stored_event(db.connect(tmp_path / "calsync.db"), uid)
+    assert stored.event.opponent != "Hawks"
+
+
+def test_a_place_with_a_field_in_its_name_is_refused(writing, tmp_path):
+    client, calendar = writing
+    synced(client, tmp_path, calendar)
+    uid = _a_game_to_fix(tmp_path)
+    page = client.post("/events/fix", {**_filled_in(tmp_path, uid),
+                                       "venue_name": "Kingsmere #2", "reason": "moved"})
+    assert "field within the venue" in page["body"]
+    assert _fixed(tmp_path, uid) == {}
+
+
+def test_an_event_that_has_happened_cannot_be_fixed(writing, tmp_path):
+    client, calendar = writing
+    synced(client, tmp_path, calendar)
+    uid = _a_game_to_fix(tmp_path)
+    form = {**_filled_in(tmp_path, uid), "opponent": "Hawks", "reason": "late"}
+    conn = db.open_db(tmp_path / "calsync.db")
+    conn.execute("UPDATE event_state SET starts_at = ?, shown_starts_at = ? WHERE uid = ?",
+                 ("2026-01-04T15:00:00+00:00", "2026-01-04T15:00:00+00:00", uid))
+    conn.commit()
+
+    page = client.get(f"/events/fix?uid={quote(uid, safe='')}")["body"]
+    assert "already happened" in page and "Update the calendar" not in page
+    assert "already happened" in client.post("/events/fix", form)["body"]
+    assert _fixed(tmp_path, uid) == {}
+
+
+def test_a_warm_up_is_fixed_through_its_game(writing, tmp_path):
+    client, calendar = writing
+    synced(client, tmp_path, calendar)
+    uid = _a_game_to_fix(tmp_path)
+    reply = client.get(f"/events/fix?uid={quote('calsync-warmup-' + uid, safe='')}")
+    assert reply["status"] == 303
+    assert quote(uid, safe="") in reply["headers"]["Location"]
+
+
+def test_a_fix_from_another_site_is_refused(writing, tmp_path):
+    client, calendar = writing
+    synced(client, tmp_path, calendar)
+    uid = _a_game_to_fix(tmp_path)
+    reply = client.post(
+        "/events/fix", {**_filled_in(tmp_path, uid), "opponent": "Hawks", "reason": "x"},
+        headers={"Sec-Fetch-Site": "cross-site"},
+    )
+    assert reply["status"] != 303
+    assert _fixed(tmp_path, uid) == {}
+
+
+# --- when the team app moves after a fix -------------------------------------
+#
+# The states are made directly through `repo`, which is what a poll calls; the
+# sync side of them is `test_overlay.py`'s. What is under test here is what a
+# person sees, and that the buttons do what they say.
+
+
+def _fix_opponent(client, tmp_path, uid, opponent="Hawks"):
+    client.post("/events/fix", {**_filled_in(tmp_path, uid), "opponent": opponent,
+                                "reason": "coach texted", "actor": "Sam"})
+    assert set(_fixed(tmp_path, uid)) == {"opponent"}
+
+
+def _team_app_says(tmp_path, uid, opponent):
+    conn = db.open_db(tmp_path / "calsync.db")
+    item = repo.overrides_of(conn, uid)["opponent"]
+    assert repo.mark_changed(conn, item, upstream={"opponent": opponent}, at=NOW.isoformat())
+    conn.commit()
+
+
+def test_a_contradicted_fix_asks_which_is_right_everywhere_it_shows(writing, tmp_path):
+    client, calendar = writing
+    synced(client, tmp_path, calendar)
+    uid = _a_game_to_fix(tmp_path)
+    _fix_opponent(client, tmp_path, uid)
+    _team_app_says(tmp_path, uid, "Falcons")
+
+    page = client.get(f"/events/fix?uid={quote(uid, safe='')}")["body"]
+    assert "TeamReach changed the opponent." in page
+    assert "Keep Hawks" in page and "Use Falcons" in page
+
+    stored = repo.stored_event(db.connect(tmp_path / "calsync.db"), uid)
+    agenda = client.get(f"/calendar?view=agenda&month={stored.event.local_start:%Y-%m}")["body"]
+    assert "Which is right?" in agenda
+
+    review = client.get("/review")["body"]
+    assert "Fixes waiting on you" in review and "TeamReach changed the opponent" in review
+
+
+def test_keeping_a_fix_answers_the_question(writing, tmp_path):
+    client, calendar = writing
+    synced(client, tmp_path, calendar)
+    uid = _a_game_to_fix(tmp_path)
+    _fix_opponent(client, tmp_path, uid)
+    _team_app_says(tmp_path, uid, "Falcons")
+
+    reply = client.post("/events/fix/resolve",
+                        {"uid": uid, "unit": "opponent", "keep": "mine", "back": "/calendar",
+                         "version": _filled_in(tmp_path, uid)["version"]})
+    assert "Kept%20Hawks" in reply["headers"]["Location"]
+    item = _fixed(tmp_path, uid)["opponent"]
+    assert item.status == "active" and item.baseline == {"opponent": "Falcons"}
+    assert "Fixes waiting on you" not in client.get("/review")["body"]
+
+
+def test_taking_the_team_apps_value_lifts_the_fix(writing, tmp_path):
+    client, calendar = writing
+    synced(client, tmp_path, calendar)
+    uid = _a_game_to_fix(tmp_path)
+    _fix_opponent(client, tmp_path, uid)
+    _team_app_says(tmp_path, uid, "Falcons")
+
+    reply = client.post("/events/fix/resolve",
+                        {"uid": uid, "unit": "opponent", "keep": "theirs", "back": "/calendar",
+                         "version": _filled_in(tmp_path, uid)["version"]})
+    assert reply["status"] == 303
+    assert _fixed(tmp_path, uid) == {}
+    assert repo.stored_event(db.connect(tmp_path / "calsync.db"), uid).event.opponent != "Hawks"
+
+
+def test_a_fix_the_team_app_caught_up_with_says_so(writing, tmp_path):
+    client, calendar = writing
+    synced(client, tmp_path, calendar)
+    uid = _a_game_to_fix(tmp_path)
+    _fix_opponent(client, tmp_path, uid)
+    conn = db.open_db(tmp_path / "calsync.db")
+    item = repo.overrides_of(conn, uid)["opponent"]
+    assert repo.clear_converged(conn, item, upstream={"opponent": "Hawks"}, raw=None)
+    conn.commit()
+
+    page = client.get(f"/events/fix?uid={quote(uid, safe='')}")["body"]
+    assert "TeamReach caught up." in page and "Nothing on the calendar changed" in page
+
+
+# --- when the event goes from the team app -------------------------------------
+
+
+def _orphan_version(tmp_path, uid):
+    from calsync.web import fix as fix_mod
+
+    return fix_mod.version(repo.overrides_of(db.connect(tmp_path / "calsync.db"), uid))
+
+
+def _orphan(tmp_path, uid):
+    conn = db.open_db(tmp_path / "calsync.db")
+    repo.mark_event_cancelled(conn, uid)
+    assert repo.mark_orphaned(conn, uid) == 1
+    conn.commit()
+
+
+def test_an_orphaned_fix_asks_where_it_goes(writing, tmp_path):
+    client, calendar = writing
+    synced(client, tmp_path, calendar)
+    uid = _a_game_to_fix(tmp_path)
+    _fix_opponent(client, tmp_path, uid)
+    _orphan(tmp_path, uid)
+
+    # The fix page for a gone event sends you to the question that matters.
+    reply = client.get(f"/events/fix?uid={quote(uid, safe='')}")
+    assert reply["status"] == 303
+    assert "/events/fix/orphan?uid=" in reply["headers"]["Location"]
+
+    page = client.get(f"/events/fix/orphan?uid={quote(uid, safe='')}")["body"]
+    assert "disappeared from TeamReach" in page
+    assert "Is it one of these?" in page and "Move my fix there" in page
+    assert "Forget my fix" in page
+    # Suggested, never chosen: nothing arrives selected.
+    assert "checked" not in page.split("Is it one of these?")[1].split("Your name")[0]
+    assert "Find where your fix goes" in client.get("/review")["body"]
+
+
+def test_an_orphaned_fix_moves_where_a_person_says(writing, tmp_path):
+    client, calendar = writing
+    synced(client, tmp_path, calendar)
+    uid = _a_game_to_fix(tmp_path)
+    _fix_opponent(client, tmp_path, uid)
+    _orphan(tmp_path, uid)
+    conn = db.connect(tmp_path / "calsync.db")
+    other = conn.execute(
+        "SELECT s.uid FROM event_state s JOIN event_content c ON c.uid = s.uid "
+        "WHERE s.cancelled = 0 AND s.starts_at > ? AND c.is_game = 1 AND s.uid != ? "
+        "ORDER BY s.starts_at LIMIT 1", (NOW.isoformat(), uid),
+    ).fetchone()["uid"]
+
+    reply = client.post("/events/fix/reattach",
+                        {"uid": uid, "to": other, "back": "/review", "actor": "Sam",
+                         "version": _orphan_version(tmp_path, uid)})
+    assert reply["status"] == 303
+    assert _fixed(tmp_path, uid) == {}
+    assert _fixed(tmp_path, other)["opponent"].value == {"opponent": "Hawks"}
+    assert repo.stored_event(db.connect(tmp_path / "calsync.db"), other).event.opponent == "Hawks"
+
+
+def test_an_orphaned_fix_can_be_forgotten(writing, tmp_path):
+    client, calendar = writing
+    synced(client, tmp_path, calendar)
+    uid = _a_game_to_fix(tmp_path)
+    _fix_opponent(client, tmp_path, uid)
+    _orphan(tmp_path, uid)
+
+    reply = client.post("/events/fix/forget", {"uid": uid, "back": "/review",
+                                               "version": _orphan_version(tmp_path, uid)})
+    assert "Forgotten" in unquote(reply["headers"]["Location"])
+    assert _fixed(tmp_path, uid) == {}
+    assert "Fixes waiting on you" not in client.get("/review")["body"]
+
+
+# --- review fixes ----------------------------------------------------------------
+
+
+def test_saving_the_notes_keeps_a_fixed_places_address(writing, tmp_path):
+    """The address box is never prefilled, so a later save of something else
+    sends it blank — which must mean "unchanged", not "no address"."""
+    client, calendar = writing
+    synced(client, tmp_path, calendar)
+    uid = _a_game_to_fix(tmp_path)
+    client.post("/events/fix", {**_filled_in(tmp_path, uid), "venue_name": "Riverside Fields",
+                                "venue_address": "12 Elm St", "reason": "moved"})
+    assert _fixed(tmp_path, uid)["location"].value["venue_address"] == "12 Elm St"
+
+    client.post("/events/fix", {**_filled_in(tmp_path, uid), "notes": "Bring water",
+                                "reason": "water"})
+    assert _fixed(tmp_path, uid)["location"].value["venue_address"] == "12 Elm St"
+
+
+def test_a_save_made_over_somebody_elses_is_refused(writing, tmp_path):
+    """Two people with the page open: the second save would silently undo the
+    first. It is refused instead, and the page shows what is there now."""
+    client, calendar = writing
+    synced(client, tmp_path, calendar)
+    uid = _a_game_to_fix(tmp_path)
+    stale = _filled_in(tmp_path, uid)          # both open the page...
+    client.post("/events/fix", {**stale, "opponent": "Hawks", "reason": "first"})
+
+    page = client.post("/events/fix", {**stale, "detail": "Final", "reason": "second"})
+    assert "changed this event while you had it open" in page["body"]
+    assert set(_fixed(tmp_path, uid)) == {"opponent"}
+
+
+def test_answering_a_question_somebody_already_answered_is_refused(writing, tmp_path):
+    client, calendar = writing
+    synced(client, tmp_path, calendar)
+    uid = _a_game_to_fix(tmp_path)
+    _fix_opponent(client, tmp_path, uid)
+    _team_app_says(tmp_path, uid, "Falcons")
+    version = _filled_in(tmp_path, uid)["version"]
+    client.post("/events/fix/resolve", {"uid": uid, "unit": "opponent", "keep": "mine",
+                                        "version": version, "back": "/calendar"})
+
+    page = client.post("/events/fix/resolve", {"uid": uid, "unit": "opponent",
+                                               "keep": "theirs", "version": version,
+                                               "back": "/calendar"})
+    assert "changed this event while you had it open" in page["body"]
+    assert _fixed(tmp_path, uid)["opponent"].value == {"opponent": "Hawks"}
+
+
+def test_a_save_the_sync_did_not_land_does_not_say_it_did(writing, tmp_path, feed):
+    """A poll a guard holds can still finish without an error — and without
+    writing this event. "Everyone's phones will show the change" would then
+    be false, so the message is decided by what reached the calendar."""
+    client, calendar = writing
+    synced(client, tmp_path, calendar)
+    uid = _a_game_to_fix(tmp_path)
+    form = {**_filled_in(tmp_path, uid), "opponent": "Hawks", "reason": "x"}
+
+    # The feed loses most of its season — this game included — before the save.
+    blocks = OTTERS.decode().split("BEGIN:VEVENT")
+    kept = [b for b in blocks[1:] if uid.split("@")[0] not in b][-2:]
+    feed.body = ("BEGIN:VEVENT".join([blocks[0], *kept]).rstrip()
+                 + ("" if kept[-1].rstrip().endswith("END:VCALENDAR") else "\nEND:VCALENDAR\n")).encode()
+
+    location = unquote(client.post("/events/fix", form)["headers"]["Location"])
+    assert "phones will show" not in location
+    assert "next sync" in location
+    assert set(_fixed(tmp_path, uid)) == {"opponent"}
+
+
+def test_the_history_names_whoever_answered(writing, tmp_path):
+    client, calendar = writing
+    synced(client, tmp_path, calendar)
+    uid = _a_game_to_fix(tmp_path)
+    _fix_opponent(client, tmp_path, uid)          # Sam set it
+    _team_app_says(tmp_path, uid, "Falcons")
+
+    client.post("/events/fix/resolve", {"uid": uid, "unit": "opponent", "keep": "mine",
+                                        "actor": "Alex", "back": "/calendar",
+                                        "version": _filled_in(tmp_path, uid)["version"]})
+    last = repo.override_history(db.connect(tmp_path / "calsync.db"), uid)[-1]
+    assert (last["action"], last["actor"]) == ("kept", "Alex")
+    assert 'name="actor"' in client.get(f"/events/fix?uid={quote(uid, safe='')}")["body"]
+
+
+def test_going_back_from_the_day_check_keeps_the_pages_stamp(writing, tmp_path):
+    """The form comes back with what was typed — and with the stamp of the page
+    it was typed on. A fresh one would quietly absorb somebody else's save made
+    while the day check was showing."""
+    client, calendar = writing
+    synced(client, tmp_path, calendar)
+    uid = _a_game_to_fix(tmp_path)
+    form = _filled_in(tmp_path, uid)
+    next_day = (date.fromisoformat(form["date"]) + timedelta(days=1)).isoformat()
+    form = {**form, "date": next_day, "reason": "replayed"}
+    assert "Yes, move it to" in client.post("/events/fix", form)["body"]
+
+    # Meanwhile, somebody else saves a fix to the same event.
+    client.post("/events/fix", {**_filled_in(tmp_path, uid), "opponent": "Hawks",
+                                "reason": "other person"})
+
+    back = client.post("/events/fix/edit", {**form, "day_change": "edit"})["body"]
+    assert f'name="version" value="{form["version"]}"' in back
+    page = client.post("/events/fix", {**form, "day_change": "confirmed"})["body"]
+    assert "changed this event while you had it open" in page
+    assert set(_fixed(tmp_path, uid)) == {"opponent"}

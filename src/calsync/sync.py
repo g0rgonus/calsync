@@ -15,10 +15,10 @@ this module is where the ordering rules live, and the ordering is the safety:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 
-from . import repo, sources, warmup, withheld
+from . import overlay, repo, retire, sources, warmup, withheld
 from .diff import diff_poll, fingerprint
 from .fetch import FetchError, http_fetch, render_url
 from .models import Activity, Event, Venue
@@ -58,6 +58,19 @@ class SyncReport:
     #: `event_content` entirely. Counted apart from `updated` because `updated`
     #: means the feed changed and these are precisely the ones where it did not.
     refreshed: int = 0
+    #: Events re-written because a person's override of them changed — set,
+    #: edited or lifted — while the feed did not (`overlay.py`). Its own count
+    #: for `refreshed`'s reason: neither the feed nor the venue table moved.
+    amended: int = 0
+    #: A person's fixes this poll found the feed has caught up with, and lifted
+    #: — the calendar did not change, because the two layers now agree.
+    fixes_cleared: int = 0
+    #: Fixes the feed now contradicts with a value of its own, waiting for a
+    #: person to say which is right. The fix stays on the calendar meanwhile.
+    fixes_changed: int = 0
+    #: Fixes whose event has gone from the feed, waiting for a person to say
+    #: where they belong.
+    fixes_orphaned: int = 0
     #: Of `cancelled`, how many the feed itself marked ``STATUS:CANCELLED``
     #: rather than dropped. Applied without a guard or a person, however many.
     called_off: int = 0
@@ -122,8 +135,16 @@ class SyncReport:
             parts.append(f"{self.moved} moved")
         if self.refreshed:
             parts.append(f"{self.refreshed} refreshed")
+        if self.amended:
+            parts.append(f"{self.amended} amended")
         if self.withheld:
             parts.append(f"{self.withheld} withheld")
+        if self.fixes_cleared:
+            parts.append(f"{self.fixes_cleared} override(s) cleared, the feed agrees")
+        if self.fixes_changed:
+            parts.append(f"{self.fixes_changed} override(s) the feed now disputes")
+        if self.fixes_orphaned:
+            parts.append(f"{self.fixes_orphaned} override(s) orphaned")
         return ", ".join(parts)
 
     def line(self) -> str:
@@ -303,6 +324,10 @@ def sync_source(
     # place nobody is going.
     states = repo.event_states(conn, source.id)
     off = {uid for uid, state in states.items() if state.withheld}
+    # A person's corrections, laid over the feed below. Loaded here for the same
+    # reason as `off`: a venue somebody has already corrected is not a question
+    # worth asking about the place the feed named.
+    overrides = repo.overrides_for(conn, source.id)
 
     events = []
     called_off: set[str] = set()
@@ -321,7 +346,8 @@ def sync_source(
         # may well supply an address inline, so "has an address" proves nothing —
         # what matters is whether we know the place, which is what carries a
         # confirmed pin and survives the venue being spelled differently later.
-        if not _enrich_venue(conn, event) and not withheld.is_withheld(event.uid, off):
+        if (not _enrich_venue(conn, event) and not withheld.is_withheld(event.uid, off)
+                and "location" not in overrides.get(event.uid, {})):
             unresolved_venues.add(event.venue.name or event.venue.raw)
         report.events_seen += 1
         if event.is_game:
@@ -343,7 +369,25 @@ def sync_source(
     # the tallies in there — `fixtures_seen` is about the feed's fixtures, and
     # `awaiting_review` is a number of *questions* a person has to answer, which
     # a held game and its held warm-up do not double.
+    #
+    # The overlay goes on first, so a warm-up is built from the *corrected*
+    # game: moved with its start, and at its venue. Once, and only over the
+    # corrected events — a second expansion over the feed's would give each
+    # warm-up two versions of its content, and the receipt comparison below
+    # would find them different on every poll for as long as the override
+    # stood. The source events are kept beside them, because `event_content`
+    # records what the source said and nothing else.
+    sourced = {event.uid: event for event in events}
+    events = [overlay.apply(event, overrides.get(event.uid)) for event in events]
     events = warmup.expand(events, minutes=activity.warmup_minutes)
+    for event in events:
+        # The arrival time is derived, like the warm-up it matches, so it is
+        # recorded as derived from the start the calendar shows. The source
+        # event would otherwise state an arrival for a kick-off nobody is
+        # going to.
+        original = sourced.get(event.uid)
+        if original is not None and original is not event:
+            original.arrive_at = event.arrive_at
 
     # --- diff --------------------------------------------------------------
     max_pct, max_count = _guard_thresholds(source, settings)
@@ -434,8 +478,16 @@ def sync_source(
     # phone. Comparing what we stored against what the feed now derives to is
     # what closes that gap, and it is also what backfills rows written before
     # `event_content` existed: no content stored is a difference like any other.
+    #
+    # Overrides are the third member of the family, and checked the same way
+    # for the same reason: a correction changes what an event renders to while
+    # its hash, which is the feed's, stays exactly where it was. What is
+    # compared is the *sum* of the layers (`overlay.project`) — what was last
+    # written against what would be written now — so lifting an override that
+    # says what the feed now says costs no rewrite of anybody's calendar.
     moved_uids: set[str] = set()
     refreshed_uids: set[str] = set()
+    amended_uids: set[str] = set()
     primary_child = min(children, key=lambda c: (c.birth_order, c.name))
     for event in delta.unchanged:
         state = states.get(event.uid)
@@ -445,12 +497,31 @@ def sync_source(
             event, activity, primary_child, settings,
             override=source.staging_collection,
         )
+        original = sourced.get(event.uid, event)
+        current = overrides.get(event.uid)
+        stored = contents.get(event.uid)
+        now_content = repo.content_of(original)
         if belongs != state.collection:
             pending.append(event)
             moved_uids.add(event.uid)
-        elif contents.get(event.uid) != repo.content_of(event):
+        elif stored is None:
             pending.append(event)
             refreshed_uids.add(event.uid)
+        elif (overlay.project(stored, state.starts_at, state.applied_overlay)
+              != overlay.project(now_content, original.starts_at.isoformat(), current)):
+            pending.append(event)
+            if overlay.values(state.applied_overlay) != overlay.values(current):
+                amended_uids.add(event.uid)
+            else:
+                refreshed_uids.add(event.uid)
+        elif (stored != now_content
+              or overlay.values(state.applied_overlay) != overlay.values(current)):
+            # The layers moved and their sum did not. Nothing to send; the
+            # receipts are brought up to date so they say who owns the value.
+            repo.record_receipt_only(
+                conn, uid=event.uid, content=now_content,
+                applied_overlay=current, observed_at=now.isoformat(),
+            )
 
     # Last, after every reason to write an event has been collected and before
     # any of them is acted on. A withheld event is skipped whether it is new,
@@ -482,6 +553,11 @@ def sync_source(
             report.errors.append(f"{event.uid}: {exc}")
             continue
 
+        # The source's start and content, the overrides laid over them, and
+        # the start the calendar now shows — `event` is the corrected copy and
+        # `original` what the feed said. A warm-up has no source of its own:
+        # it is both.
+        original = sourced.get(event.uid, event)
         repo.record_event_state(
             conn,
             uid=event.uid,
@@ -490,7 +566,9 @@ def sync_source(
             remote_id=ref.remote_id,
             content_hash=event.content_hash or "",
             remote_etag=ref.etag,
-            starts_at=event.starts_at.isoformat(),
+            starts_at=original.starts_at.isoformat(),
+            shown_starts_at=event.starts_at.isoformat(),
+            applied_overlay=overrides.get(event.uid),
         )
         # Placement and content are recorded together, behind the same barrier:
         # both describe a write the target has just accepted, and a copy of the
@@ -502,7 +580,7 @@ def sync_source(
         repo.record_event_content(
             conn,
             uid=event.uid,
-            content=repo.content_of(event),
+            content=repo.content_of(original),
             observed_at=now.isoformat(),
         )
         # Counted by how the diff classified it, not by whether a row existed:
@@ -511,6 +589,9 @@ def sync_source(
             report.created += 1
         elif event.uid in refreshed_uids:
             report.refreshed += 1
+            report.unchanged -= 1
+        elif event.uid in amended_uids:
+            report.amended += 1
             report.unchanged -= 1
         else:
             report.updated += 1
@@ -539,6 +620,14 @@ def sync_source(
         report.cancelled += 1
         if uid in feed_said:
             report.called_off += 1
+        else:
+            # Gone, rather than called off: a person's fix to it has nowhere
+            # to go until somebody says where — or the same event comes back.
+            # Only once the target has accepted the delete, and so never for a
+            # held poll, whose missing events are not known to be gone at all.
+            report.fixes_orphaned += repo.mark_orphaned(conn, uid)
+
+    _judge_overrides(conn, source.id, sourced, now=now, report=report)
 
     # Whatever is withheld and still on the calendar comes off now — the same
     # call the console makes the moment somebody presses the button, repeated
@@ -558,10 +647,9 @@ def sync_source(
     # Same bound the diff already compares across, which is what stops a prune
     # from ever looking like a change: an event below it is filtered out of both
     # sides before it reaches this loop.
-    repo.prune_event_content(
-        conn,
-        before=(now - timedelta(days=settings.sync_window_back_days)).isoformat(),
-    )
+    horizon = (now - timedelta(days=settings.sync_window_back_days)).isoformat()
+    repo.prune_event_content(conn, before=horizon)
+    repo.prune_overrides(conn, before=horizon)
 
     # --- record the run ----------------------------------------------------
     if report.status == "error":
@@ -586,6 +674,63 @@ def sync_source(
 
     conn.commit()
     return report
+
+
+def _judge_overrides(conn, source_id: str, sourced: dict[str, Event], *,
+                     now: datetime, report: SyncReport) -> None:
+    """Hold each of a person's fixes up against what the feed says now.
+
+    The only writes a poll makes to the overlay, and none of them changes what
+    a fix says (`overlay.py`):
+
+    - **The feed has caught up** — it now says what the fix says. The fix is
+      lifted. Safe to do without anybody: an exact match changes nothing on
+      the calendar, and one through a venue alias names the same place, which
+      the next poll then writes in the feed's spelling.
+    - **The feed has moved somewhere else** — neither its old value nor the
+      fix. The fix stays on the calendar and is marked for a person to decide;
+      only they can tell which of the two is true.
+    - **The feed has gone back** to what it said when the fix was set. The
+      question answers itself, and the mark comes off quietly.
+
+    Judged after the writes, against events actually in this poll. An event
+    missing from it — out of the window, called off, withheld by a guard —
+    says nothing about whether its fix is still needed, and is left alone.
+    """
+    place = lambda name: repo.resolve_venue_alias(conn, name)  # noqa: E731
+    states = repo.event_states(conn, source_id)
+    for item in repo.override_rows(conn, source_id):
+        event = sourced.get(item.uid)
+        if event is None:
+            continue
+        if item.status == "orphaned":
+            # The same event came back under the same id: exact identity, so
+            # nothing to ask. Judged below like any other from here.
+            repo.mark_settled(conn, item, action="returned")
+            item = replace(item, status="active")
+        upstream = repo.unit_value(event, item.unit)
+        verdict = overlay.judge(item.unit, value=item.value, baseline=item.baseline,
+                                upstream=upstream, place=place)
+        if verdict == overlay.CONVERGED:
+            raw = event.venue.raw if item.unit == "location" and event.venue else None
+            exact = overlay.same(item.unit, upstream, item.value)
+            if repo.clear_converged(conn, item, upstream=upstream, raw=raw, exact=exact):
+                report.fixes_cleared += 1
+        elif verdict == overlay.UNCHANGED:
+            if item.status == "changed":
+                repo.mark_settled(conn, item, action="settled")
+        elif not retire.upcoming(states[item.uid].shown_starts_at, now):
+            # A game already played: nobody can act on the disagreement, and
+            # asking would be a question with no useful answer. By the start
+            # the calendar shows — a game the feed has as yesterday and a
+            # person moved to next week has not been played.
+            continue
+        elif not (item.status == "changed"
+                  and overlay.matches(item.unit, upstream, item.upstream_seen, place=place)):
+            # Once per new value. The same disagreement on every poll is one
+            # question, not one every twenty minutes.
+            if repo.mark_changed(conn, item, upstream=upstream, at=now.isoformat()):
+                report.fixes_changed += 1
 
 
 def sync_all(

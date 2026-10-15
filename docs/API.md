@@ -537,10 +537,21 @@ no `superseded_by`, no expiry. Precedence falls out of which layer each writer
 owns. Store rendered values here instead and every poll fights every amendment,
 which is the silent revert §4 exists to prevent.
 
-The overlay table is deliberately **not built**. Its only writer would be
-`PATCH /v1/events/{uid}`, and an override layer with nothing writing to it is
-unverifiable in the same way a review gate with nothing to review is. What is
-built is the half whose semantics the other half depends on.
+The overlay is `event_overrides` (`overlay.py`), and its first writer is a
+person in the console rather than `PATCH /v1/events/{uid}`, which is still
+unbuilt. An agent's amendment, when it exists, writes the same table behind the
+review gate — not a second one. Two receipts describe a written event:
+`event_content` holds the source layer and `event_state.applied_overlay` the
+overrides that write carried, so a reader composes exactly what the calendar
+has, never a correction saved since. `event_state.starts_at` stays the feed's
+start, which the diff and the window go by; `shown_starts_at` is when the event
+is on the calendar.
+
+The feed's `content_hash` passes through an override untouched, so the diff and
+the disappearance guard weigh only what the feed said. A correction is a change
+that hash cannot see, so the sync loop compares the sum of the layers it last
+wrote against the sum it would write now — and an override lifted when the feed
+already agrees costs no rewrite at all.
 
 ### 3. The title stays a render, and there are no coordinates
 

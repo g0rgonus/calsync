@@ -105,7 +105,9 @@ def retire_source(conn, source: repo.Source, target, *, now: datetime) -> Retire
         if state.cancelled:
             report.already_gone += 1
             continue
-        if not upcoming(state.starts_at, now):
+        # By when it is on the calendar: an override that moved a game into
+        # next week makes it a game still to come, whatever the feed says.
+        if not upcoming(state.shown_starts_at, now):
             # It happened. Removing it now would delete the record of a game
             # that was played, which is not what anybody means by retiring.
             report.kept += 1
@@ -175,7 +177,7 @@ def live_events(conn, source_id: str, *, now: datetime) -> int:
     return sum(
         1
         for state in repo.event_states(conn, source_id).values()
-        if not state.cancelled and upcoming(state.starts_at, now)
+        if not state.cancelled and upcoming(state.shown_starts_at, now)
     )
 
 

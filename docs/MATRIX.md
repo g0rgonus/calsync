@@ -171,56 +171,43 @@ Store the prior VEVENT for every touched event and support
 
 ---
 
-## 4. Amendments are a high-trust source, not an override layer
+## 4. Amendments are an overlay over the source layer
 
-An earlier draft of this doc specced an `overrides` table with expiry, on the
-assumption a poller would keep re-asserting the old value. That's wrong for
-swim: swim is a **PDF ingest** whose changes arrive by email or text. The
-document was read once and nothing re-asserts it, so there's no poll to fight
-and nothing to expire.
+An earlier version of this section rejected an `overrides` table in favour of
+per-field trust tiers (`field_contributions`), on the reasoning that swim is a
+PDF read once and nothing re-asserts it. That reasoning does not survive the
+sources calsync actually polls: a feed re-asserts every value every twenty
+minutes, and a correction has to outlive all of it.
 
-Model an amendment as what it is — **a contribution from the highest-trust
-source** — and the existing trust ranking ([PLAN.md §B3](PLAN.md)) resolves
-everything with no new machinery:
+What replaced both is a layer per writer ([API.md, "What calsync
+remembers"](API.md)):
 
 ```
-field value := highest trust tier wins;
-               within a tier, most recent wins
+calendar content = source layer  ⊕  overlay
 ```
 
-A coach message relayed by a human is tier 1. A poller re-asserting a stale
-venue is tier 3 and loses. A re-extraction of the original PDF carries that
-*document's* timestamp, not today's, so replaying extraction with a better
-prompt can't clobber a newer amendment.
-
-That last point matters more than it looks: re-running extraction over stored
-raw documents is a first-class feature ([PLAN.md §A4](PLAN.md)), and a naive
-implementation would silently wipe every amendment on the next replay.
+A poll writes the source layer (`event_content`) and nothing else; a person —
+and later an approved amendment — writes the overlay (`event_overrides`). A poll
+cannot revert a correction because it never touches the layer the correction
+lives in. Precedence is which layer a writer owns, not a resolver.
 
 ### The one case that still needs a decision
 
-A **revised PDF** arrives in October, lower trust tier than the amendment but
-genuinely newer information. Rule:
+The source moves to a value that is newer than the correction and different
+from it. Rule, unchanged from the earlier draft:
 
-> When a lower-tier source produces a value that is both newer than the current
-> winner and different from it, **do not silently pick either** — flag it to
-> review and post it to the room.
+> **do not silently pick either** — keep the correction, flag it to review.
 
-Same principle as everywhere else: automatic when unambiguous, human when not.
+The other direction is the new one: when the source comes to say what the
+correction says, the correction is redundant and is lifted. That never changes
+anything on a phone, since the two layers sum to the same event before and
+after, and it is the only write a poll ever makes to the overlay.
 
 ### What replaces expiry
 
-Nothing. The date-bounded selector already scoped the amendment to specific
-event UUIDs — "the week of the 14th" touched exactly those events, and once
-that week is past there's nothing left to expire. The bound on the selector is
-the bound on the amendment.
-
-```
-field_contributions(event_uuid, field, value, source_id, trust_tier,
-                    observed_at, contribution_id, superseded_by)
-```
-
----
+Nothing, still. An override is per event, so once the event has aged out of the
+sync window its override goes with it, pruned on the same bound as the content
+it corrects.
 
 ## 5. Ingesting from the room
 

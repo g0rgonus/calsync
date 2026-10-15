@@ -3,10 +3,11 @@
 <p class="eyebrow">Human in the loop</p>
 <h1>Review</h1>
 <p class="lede">
-  Events calsync could not place, and the questions that would place them.
-  Nothing here is on the family's calendars — it is waiting in
+  Questions only a person can answer. Events calsync could not place are off the
+  family's calendars, waiting in
   <span class="raw">{{ enrichment or 'nowhere: the hold is switched off' }}</span>
-  until somebody answers.
+  until somebody answers; fixes the team app has since disagreed with stay on
+  them, showing your value, until you choose.
 </p>
 
 % if held_polls:
@@ -29,6 +30,31 @@
           <a href="/sources/{{ row['source_id'] }}">{{ row['activity_name'] }}</a>
         </p>
         <p class="note">{{ row['detail'] }}</p>
+      </div>
+    </div>
+% end
+  </div>
+</div>
+% end
+
+% if fixes:
+<h2>Fixes waiting on you</h2>
+<div class="card" style="margin-bottom:1.4rem">
+  <div class="stack">
+% for row in fixes:
+    <div class="agenda-row">
+      <span class="agenda-time">{{ row['when'] }}</span>
+      <div class="agenda-body">
+        <p class="agenda-title">{{ row['title'] }}</p>
+%   if row['kind'] == 'orphaned':
+        <p class="note"><span class="tag tag-asking">gone</span>
+          It disappeared from {{ row['app'] }}, with your fix to its {{ row['labels'] }}.
+          <a href="{{ row['url'] }}">Find where your fix goes</a></p>
+%   else:
+        <p class="note"><span class="tag tag-asking">changed</span>
+          {{ row['App'] }} changed the {{ row['labels'] }} after you fixed it.
+          <a href="{{ row['url'] }}">Which is right?</a></p>
+%   end
       </div>
     </div>
 % end
@@ -83,7 +109,7 @@
 % end
 % end
 
-% if not queues and not pending:
+% if not queues and not pending and not fixes:
 <div class="card">
   <p style="margin:0">
     <strong>Nothing waiting.</strong> Every event calsync has seen went to a

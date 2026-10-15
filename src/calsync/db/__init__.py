@@ -12,7 +12,7 @@ import time
 import sys
 from pathlib import Path
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 14
 SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 
 #: Additive column migrations, applied when absent. `schema.sql` uses
@@ -70,6 +70,11 @@ ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # v13: when that key last got past the check, read or write. The console
     # shows it, because a leaked key used only to read leaves no other trace.
     ("sources", "inbound_key_used_at", "TEXT"),
+    # v14: when the event is on the calendar, and the overrides the last write
+    # carried (`overlay.py`). Backfilled below: a row written before this has no
+    # override, so it is on the calendar when the feed says.
+    ("event_state", "shown_starts_at", "TEXT"),
+    ("event_state", "applied_overlay", "TEXT"),
     # v5 adds `event_content`, which is a new table rather than new columns, so
     # `schema.sql`'s CREATE TABLE IF NOT EXISTS covers it and nothing belongs
     # here. Existing rows backfill themselves: the sync loop treats missing
@@ -292,6 +297,10 @@ def _migrate_once(conn: sqlite3.Connection) -> None:
         for table, column, decl in ADDED_COLUMNS:
             if column not in _columns(conn, table):
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+        conn.execute(
+            "UPDATE event_state SET shown_starts_at = starts_at "
+            "WHERE shown_starts_at IS NULL"
+        )
 
         conn.executemany(
             "INSERT OR IGNORE INTO sports (id, name, emoji, builtin) VALUES (?, ?, ?, 1)",

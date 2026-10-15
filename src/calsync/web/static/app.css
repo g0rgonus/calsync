@@ -442,6 +442,8 @@ input[type="number"],
 input[type="password"],
 input[type="email"],
 input[type="search"],
+input[type="date"],
+input[type="time"],
 select,
 textarea {
   width: 100%;
@@ -902,3 +904,154 @@ form.inline { display: inline-block; margin: 0.35rem 0 0; }
   font-size: 0.72rem;
   color: #8fb3a1;
 }
+
+/* --- fixing one event ---------------------------------------------------
+ *
+ * The page somebody uses when the coach got it wrong. Written for a person who
+ * has never seen the rest of this console, so it borrows its tokens and none
+ * of its jargon: plain questions for labels, one form, one button.
+ *
+ * The one idea on the page is the correction mark. What the team app says is
+ * struck through and the right value stands beside it, underlined in chalk —
+ * a corrected scoresheet, which needs no word like "override" to be read.
+ * Green, because a fix is settled; orange stays reserved for the one moment a
+ * person has to choose, when the team app has since said something else.
+ */
+
+.fix { white-space: nowrap; }
+.fix-was {
+  color: var(--ink-2);
+  text-decoration-thickness: 2px;
+  text-decoration-color: var(--ink-2);
+  font-weight: 400;
+}
+.fix-now {
+  color: var(--go);
+  font-weight: 700;
+  text-decoration: underline;
+  text-decoration-thickness: 3px;
+  text-decoration-color: color-mix(in srgb, var(--go) 35%, transparent);
+  text-underline-offset: 4px;
+  margin-left: 0.2em;
+}
+
+.fix-preview {
+  display: grid;
+  grid-template-columns: 9.5rem 1fr;
+  gap: 0 1.5rem;
+  border-left: 4px solid var(--go);
+}
+.fix-when { display: flex; flex-direction: column; gap: 0.15rem; }
+.fix-clock {
+  font-family: var(--display);
+  font-stretch: condensed;
+  font-weight: 700;
+  font-size: 2rem;
+  line-height: 1.1;
+  color: var(--turf);
+  font-variant-numeric: tabular-nums;
+}
+.fix-clock .fix { white-space: normal; display: flex; flex-direction: column; }
+.fix-clock .fix-was { font-size: 1.15rem; }
+.fix-clock .fix-now { margin-left: 0; }
+.fix-day { color: var(--ink-2); font-size: 0.92rem; }
+.fix-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.45rem 1rem;
+  margin: 0.3rem 0 0;
+}
+.fix-facts dt { color: var(--ink-2); font-size: 0.88rem; padding-top: 0.08rem; }
+.fix-facts dd { margin: 0; overflow-wrap: anywhere; }
+.fix-facts .fix { white-space: normal; }
+.fix-notes { white-space: pre-line; font-size: 0.95rem; }
+.fix-who { grid-column: 1 / -1; margin: 1.1rem 0 0; }
+@media (prefers-color-scheme: dark) { .fix-clock { color: var(--ink); } }
+
+.fix-form { padding-top: 0.4rem; }
+.fix-row {
+  border: 0;
+  border-bottom: 1px solid var(--line-soft);
+  margin: 0;
+  padding: 1.15rem 0 1.25rem;
+  min-width: 0;
+}
+.fix-row legend {
+  font-size: 1.08rem;
+  font-weight: 640;
+  padding: 0;
+  float: left;            /* so the status line can sit under it, in flow */
+  width: 100%;
+}
+.fix-status {
+  clear: both;
+  margin: 0.15rem 0 0.75rem;
+  font-size: 0.88rem;
+  color: var(--ink-2);
+}
+.fix-hint { margin: -0.4rem 0 0.6rem; }
+.fix-inputs { display: flex; gap: 0.75rem; flex-wrap: wrap; }
+.fix-in { display: block; flex: 1 1 7rem; font-size: 0.88rem; color: var(--ink-2); margin-bottom: 0.6rem; }
+.fix-in input { margin-top: 0.25rem; color: var(--ink); }
+.fix-in-date { flex: 1.6 1 10rem; }
+.fix-in-wide { flex: 3 1 14rem; }
+.fix-in-short { flex: 0 1 6rem; }
+.fix-in-name { flex: 1 1 9rem; }
+.fix-opt { font-size: 0.8rem; opacity: 0.85; }
+.fix-check { display: flex; gap: 0.5rem; align-items: center; font-size: 0.92rem; }
+.fix-check input { width: 1.1rem; height: 1.1rem; accent-color: var(--go); }
+.fix-sign { display: flex; gap: 0.75rem; flex-wrap: wrap; padding-top: 1.3rem; }
+.fix-go { margin: 0.6rem 0 0.9rem; }
+
+/* Undo for one part of a fix, inside the main form so it needs no form of its
+ * own — `formaction` sends it elsewhere, `formnovalidate` lets it go without
+ * a reason being typed. Looks like a link because it is the small, safe way
+ * out; the button that writes is the big one at the bottom. */
+.linkish {
+  font: inherit;
+  color: var(--go);
+  background: none;
+  border: 0;
+  padding: 0;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+  margin-left: 0.3rem;
+}
+.linkish:hover { color: var(--cone); }
+
+.fix-alert { margin-bottom: 1.2rem; }
+.fix-alert .btn-row { margin-top: 0; }
+.fix-alert-name { flex: 1 1 100%; margin-bottom: 0.2rem; }
+
+/* The day-change check. The same mark, large, because the whole question is
+ * "is this the day you meant", and it should be answerable from across a room. */
+.fix-move { font-family: var(--display); font-stretch: condensed; font-size: 1.7rem; line-height: 1.25; }
+.fix-move .fix { white-space: normal; display: flex; flex-direction: column; gap: 0.2rem; }
+.fix-move .fix-now { margin-left: 0; }
+
+/* A fixed event in the agenda: the tag says so, the line under it says who. */
+.tag-fixed { color: var(--go); }
+
+@media (max-width: 40rem) {
+  .fix-preview { grid-template-columns: 1fr; gap: 0.9rem; }
+  .fix-when { flex-direction: row; align-items: baseline; gap: 0.7rem; flex-wrap: wrap; }
+  .fix-clock .fix { flex-direction: row; gap: 0.4rem; align-items: baseline; }
+  /* A thumb, not a pointer: the button that writes spans the screen. */
+  .fix-go .btn { flex: 1 1 100%; text-align: center; padding: 0.85rem 1rem; }
+  .fix-alert .btn { flex: 1 1 100%; text-align: center; }
+  .fix-in input, .fix-row > input, .fix-row textarea { font-size: 16px; } /* no iOS zoom */
+  /* The day on a line of its own, then start and end as a pair: an end time
+   * stranded on a row by itself reads as a separate question. */
+  .fix-in { flex: 1 1 8rem; }
+  .fix-inputs .fix-in-date { flex-basis: 100%; }
+  .fix-inputs .fix-in-wide { flex: 1 1 0; min-width: 0; }
+  .fix-inputs .fix-in-short { flex: 0 0 5rem; }
+  /* The reason is a sentence; it gets the full width, and the name below it. */
+  .fix-sign .fix-in-wide { flex-basis: 100%; }
+}
+
+/* The orphan page's list of what the fix was, without a clock column. */
+.fix-preview-flat { display: block; }
+.fix-agrees { color: var(--go); margin-top: 0.2rem; }
+.fix-orphan-name { margin-top: 1.2rem; max-width: 20rem; }

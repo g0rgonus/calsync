@@ -237,6 +237,16 @@ with one exception — `CALSYNC_RADICALE_ANONYMOUS_READ` is read by that command
 so on a 0.5.x compose file setting it does nothing at all and says nothing about
 it. To use it, re-issue the compose file with the block above.
 
+### Going back to an older version
+
+Each upgrade's database changes only add columns and tables, so an older image
+starts on a newer database. One thing does not survive it: **fixes made on the
+console's *Fix details* page** are invisible to a version from before them. The
+calendar keeps the fixed values until the team app changes that event, but the
+read API goes back to the team app's values, and the older version has no way to
+show or remove a fix. Before going back past the version that added them, take
+each fix off with *Use the team app's instead* on its page, then let a sync run.
+
 To run a build that has no version yet, pin the immutable `sha-` tag —
 `CALSYNC_TAG=sha-1a2b3c4`. Not `dev`, which repoints to whichever branch was
 pushed last.

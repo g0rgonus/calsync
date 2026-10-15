@@ -16,7 +16,8 @@ feed URL, confirm three things, and the source is staged; the gate in
 table, pins and merges; `/household` edits kids and the sport catalog;
 `/settings` covers the `settings` table, and a team's own fields are on its
 source page. `/calendar` shows what has actually been written, month grid or
-agenda. Nothing in the day-to-day path needs sqlite3 any more.
+agenda, and *Fix details* on an agenda row corrects one event when the coach
+has not. Nothing in the day-to-day path needs sqlite3 any more.
 
 **The HTTP API** (`calsync api`, `src/calsync/api/`) serves `GET /v1` (the
 machine-readable contract), `GET /v1/events`, `GET /v1/events/{uid}`,
@@ -30,8 +31,10 @@ minutes cannot justify polling every team's feed; the counts come from
 nothing** — approving happens in the console, by a person. It rests on `event_content`, which records what each event was
 alongside `event_state`'s record of where it went (`docs/API.md`, "What calsync
 remembers"). The write half — documents, proposals, approvals, task tokens,
-`PATCH` and its amendment overlay — is deliberately unbuilt, because none of its
-consumers exist and a review gate with nothing to review cannot be shown to work.
+`PATCH` — is deliberately unbuilt, because none of its consumers exist and a
+review gate with nothing to review cannot be shown to work. The overlay `PATCH`
+would write is built (`overlay.py`, `event_overrides`), and its writer is a
+person: *Fix details* on the agenda opens `/events/fix` (`web/fix.py`).
 
 **Inbound sources** (`calsync inbound`, `src/calsync/inbound/`,
 `docs/deployment/inbound.md`) are a source kind that is pushed to rather than
@@ -199,7 +202,7 @@ so a fresh clone needs:
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/pytest                                    # 752 tests, ~7s
+.venv/bin/pytest                                    # 825 tests, ~9s
 .venv/bin/pytest tests/test_player360.py -k content_hash    # single test
 ```
 
@@ -511,11 +514,60 @@ Decisions that span several files and are easy to undo by accident:
 - **`event_content` is a receipt, not a cache, and it holds what the *source*
   said.** Written in the same call as the placement record, after the target
   accepted the write, so it cannot disagree with the calendar. Its columns are
-  the feed's view — never the rendered one — because the calendar will later be
-  that layer plus a higher-trust amendment overlay, and a poll must be able to
-  rewrite its own layer without reverting one it does not own (`docs/MATRIX.md`
-  §4). No `summary` column, no coordinates, and rows age out with
-  `sync_window_back_days`.
+  the feed's view — never the rendered one — because the calendar is that layer
+  plus a person's overrides, and a poll must be able to rewrite its own layer
+  without reverting one it does not own (`docs/MATRIX.md` §4). No `summary`
+  column, no coordinates, and rows age out with `sync_window_back_days`.
+- **An override is a layer, not an edit** (`overlay.py`). A poll writes
+  `event_content` and `event_state.starts_at`; a person writes
+  `event_overrides`; neither touches the other's, which is the whole reason a
+  correction survives the next poll. Four things are easy to undo by accident.
+  The feed's `content_hash` passes through untouched, so the diff and the guard
+  weigh only the feed. The overlay goes on **before** `warmup.expand`, and
+  expansion runs **once**, over the corrected events — a second pass over the
+  feed's would give a warm-up two versions of its content and rewrite it every
+  poll. The sync loop compares the **sum** of the layers last written
+  (`event_content` ⊕ `event_state.applied_overlay`) against the sum it would
+  write now, so lifting an override the feed already agrees with costs no
+  rewrite. And `starts_at` stays the feed's start, for the diff and the window,
+  while `shown_starts_at` is when the event is on the calendar — what retiring,
+  withholding, `/v1/placements` and every receipt reader go by.
+- **The fix page is for somebody who has never seen the rest of the console**
+  (`web/fix.py`, `event_fix.tpl`). It says "TeamReach says…", never
+  "override" or "upstream", and it has no per-field switches: the form arrives
+  filled in, and `fix.plan` compares each part with the *feed's* value, so a
+  field left alone can never freeze into a fix and a field put back lifts one.
+  Only a change of **day** asks for confirmation — a new time on the same day is
+  the ordinary correction, and a confirm on every save would be clicked through.
+  Saving runs the real sync, as *Put it back* does, and a calendar that cannot
+  be reached is "saved, lands on the next sync", never a second writer. Whether
+  it landed is **read back from the receipt** (`_land`), never inferred from
+  the sync's status — a poll a guard holds finishes cleanly and may not have
+  written the event. Every form carries `fix.version`, a stamp of the event's
+  fixes as the page showed them; a save over anything that changed since —
+  another person's save, or a poll raising a question — is refused and the page
+  reloads, rather than the last save silently winning. A blank address box
+  means "as it is" (it is never prefilled), so `_location_from` keeps the shown
+  place's address. A fix moves only within its team (`reattach_overrides`).
+- **A poll may tidy the overlay; it may never decide for it**
+  (`sync._judge_overrides`, `overlay.judge`). After the writes, each fix is
+  judged per unit against what the feed says now and the `baseline` it was set
+  against. Caught up → the fix is lifted, which changes nothing on any phone
+  (the layers already summed to that event), and is the only reason a poll may
+  delete a row. Moved somewhere else → `changed`, once per new value, the fix
+  still showing, until a person keeps it (the new value becomes the baseline)
+  or takes the team app's. Back to the baseline → settled quietly. A venue
+  catches up **through the alias table**, so teaching an alias can lift a fix.
+  Every poll write is conditional on the row's `revision`, which only a
+  person's edit bumps — a poll never clears a value somebody changed after it
+  looked — and no poll write touches `value`.
+- **A fix whose event vanished is orphaned, never moved by calsync.** Only once
+  the deletion has landed (a held poll orphans nothing; `STATUS:CANCELLED` is
+  not an orphan). The same uid returning restores it. A different uid is a
+  person's call on `/events/fix/orphan`: candidates are suggested, same kind of
+  event, same name first, and **nothing is pre-selected**, because a wrong
+  match is a wrong time on a calendar the family reads with no sign anything
+  happened. `/review` lists both kinds of waiting fix.
 - **Stored content is checked independently of the feed's hash**, the same way
   placement is. `content_hash` covers the raw feed component, before venue
   enrichment — so teaching an alias or confirming an address changes what an

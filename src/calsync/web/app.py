@@ -24,7 +24,8 @@ from bottle import Bottle, redirect, request, response, static_file, template
 from .. import __version__
 from .. import config as config_mod
 from .. import (
-    db, dormancy, enrichment, matrix, notify, repo, retire, sources, targeting,
+    db, dormancy, enrichment, matrix, notify, overlay as overlay_mod, repo, retire,
+    sources, targeting,
     warmup, withheld as withheld_mod, zones,
 )
 from ..fetch import FetchError, http_fetch, render_url
@@ -45,6 +46,7 @@ from ..secrets import SecretError, SecretStore
 from ..settings import Settings, set_setting
 from ..targets import TargetError
 from ..sync import sync_source
+from . import fix as fix_mod
 from . import gate
 
 HERE = Path(__file__).parent
@@ -897,6 +899,20 @@ def create_app(
             month = _month_of(request.query.get("month"), zone=zone, clock=clock)
             start, end = _month_bounds(month, zone)
 
+            def link(mode=mode, month=month, child=child_id):
+                """One place that spells a link to this page, defaults included.
+
+                Built here rather than in the template because every control on the
+                page is the current view with one thing changed, and a template that
+                reassembles three parameters by hand loses one of them the first
+                time a fourth is added.
+                """
+                parts = [f"view={mode}", f"month={month.year:04d}-{month.month:02d}"]
+                if child:
+                    parts.append(f"child={quote(child, safe='')}")
+                return "/calendar?" + "&".join(parts)
+            here = link()
+
             # Padded on both sides, then filtered exactly below. `stored_events`
             # compares ISO strings, and a feed may write an offset rather than
             # UTC — so a string bound can miss an event by its own offset. A day
@@ -958,20 +974,15 @@ def create_app(
                             and item.collection == settings.enrichment_collection,
                     "collection": item.collection,
                     "is_game": item.event.is_game,
+                    # A warm-up is fixed through its game.
+                    "fix_url": (
+                        f"/events/fix?uid={quote(item.event.warmup_for or item.event.uid, safe='')}"
+                        f"&back={quote(here, safe='')}"
+                    ),
+                    **dict(zip(("fixed", "disputed"), fix_mod.calendar_status(
+                        item, repo.overrides_of(conn, item.event.uid)
+                    ))),
                 })
-
-        def link(mode=mode, month=month, child=child_id):
-            """One place that spells a link to this page, defaults included.
-
-            Built here rather than in the template because every control on the
-            page is the current view with one thing changed, and a template that
-            reassembles three parameters by hand loses one of them the first
-            time a fourth is added.
-            """
-            parts = [f"view={mode}", f"month={month.year:04d}-{month.month:02d}"]
-            if child:
-                parts.append(f"child={quote(child, safe='')}")
-            return "/calendar?" + "&".join(parts)
 
         entries.sort(key=lambda e: (e["local"], e["title"]))
         by_day: dict[date, list] = {}
@@ -997,7 +1008,7 @@ def create_app(
             today=clock().astimezone(zone).date(),
             # So a decision made from this page comes back to this page, with
             # the month and the child filter still on it.
-            back=link(),
+            back=here,
             reasons=withheld_mod.REASONS,
             previous=_shift_month(month, -1),
             following=_shift_month(month, +1),
@@ -1050,7 +1061,7 @@ def create_app(
             state = repo.event_state(conn, uid)
             if state is None:
                 raise Refused("calsync has no record of writing that event")
-            if not retire.upcoming(state.starts_at, clock()):
+            if not retire.upcoming(state.shown_starts_at, clock()):
                 # The same refusal `retire.py` makes, for the same reason: it
                 # already happened, and taking it off now deletes the record of
                 # a game that was played rather than one nobody is going to.
@@ -1117,6 +1128,295 @@ def create_app(
         key = "err" if problems else "ok"
         redirect(_back_to("/calendar") + key + "=" + _q(message))
 
+    # --- fixing one event --------------------------------------------------
+    #
+    # A person's correction to one event, kept however long the team app goes on
+    # saying otherwise (`overlay.py`, `web/fix.py`). Saving stores the decision
+    # and then runs the real sync, as "Put it back" does: the sync loop is the
+    # one thing that writes events, and a fix that waited twenty minutes for
+    # the poller would read as a button that did nothing.
+
+    def _fix_back(default: str = "/calendar") -> str:
+        """Where the page returns to: a calendar or review page, never elsewhere."""
+        back = _field("back") or request.query.getunicode("back") or default
+        return back if back.startswith(("/calendar", "/review")) else default
+
+    def _fix_url(uid: str, back: str, **flash) -> str:
+        url = f"/events/fix?uid={quote(uid, safe='')}&back={quote(back, safe='')}"
+        for key, text in flash.items():
+            url += f"&{key}={_q(text)}"
+        return url
+
+    def _fix_subject(conn, uid: str) -> fix_mod.Subject:
+        found = fix_mod.subject(conn, uid)
+        if found is None:
+            raise Refused("calsync has no record of writing that event")
+        if found.item.cancelled and any(
+            o.status == "orphaned" for o in found.overrides.values()
+        ):
+            # Gone from the team app with a fix still waiting: the question is
+            # where the fix goes, which is its own page.
+            redirect(f"/events/fix/orphan?uid={quote(uid, safe='')}"
+                     f"&back={quote(_fix_back(), safe='')}")
+        if found.item.cancelled or found.state.withheld:
+            raise Refused(
+                "that event is off the calendar, so there is nothing to fix. Put "
+                "it back first if it is on after all."
+            )
+        return found
+
+    #: Everything the fix form posts, read only when present: a field the form
+    #: did not send (an opponent, for a practice) is not a request to clear it.
+    _FIX_FIELDS = ("date", "start", "end", "venue_name", "venue_field",
+                   "venue_address", "opponent", "detail", "notes", "reason", "actor",
+                   "version")
+
+    #: Said when a save would land on top of a change the person never saw.
+    _MOVED_ON = ("Somebody else changed this event while you had it open, so "
+                 "nothing was saved. This is what it says now — make your change "
+                 "again if it is still needed.")
+
+    def _current(found: fix_mod.Subject) -> bool:
+        """Is the page this form came from still what is saved?"""
+        return _field("version") == fix_mod.version(found.overrides)
+
+    def _fix_form() -> dict:
+        form = {name: _field(name) for name in _FIX_FIELDS if name in request.forms}
+        if "date" in form:
+            form["all_day"] = bool(_field("all_day"))
+        return form
+
+    def _fix_page(uid: str, back: str, *, form: dict | None = None, flash=None):
+        with connect() as conn:
+            found = fix_mod.subject(conn, uid)
+            if found is None:
+                raise Refused("calsync has no record of writing that event")
+            context = fix_mod.page(conn, found, now=clock(), back=back, form=form)
+        if form and form.get("version"):
+            # Shown again from a posted form — back from the day check, or with
+            # an error to correct — so it is still the page that form was typed
+            # on. A fresh stamp would let the next save absorb whatever
+            # somebody else changed in between.
+            context["version"] = form["version"]
+        if flash is None and context["pending"]:
+            flash = {"kind": "info", "text": (
+                "Your last change is saved but not on the calendar yet — the "
+                "calendar could not be reached. It goes on at the next sync."
+            )}
+        return render("event_fix.tpl", flash=flash or _flash(), **context)
+
+    def _land(source_id: str, uid: str) -> tuple[str, str]:
+        """Sync the source a fix belongs to, and say how it went in plain words.
+
+        Whether the fix *landed* is read back from the receipt, not inferred
+        from the sync's status: a poll a guard holds finishes without an error
+        and may still not have written this event, and telling somebody their
+        change is on everyone's phones when it is not is the one message this
+        page must never get wrong.
+        """
+        with connect() as conn:
+            enabled = _require_source(conn, source_id).enabled
+        if not enabled:
+            return "ok", ("Saved. Updates for that team are paused, so the "
+                          "calendar catches up when they resume.")
+        try:
+            _, problems = _sync_now([source_id])
+        except Refused as exc:
+            return "err", (f"Saved, but the calendar couldn’t be updated just now "
+                           f"({exc}) — it will catch up on the next sync.")
+        with connect() as conn:
+            found = fix_mod.subject(conn, uid)
+            landed = found is not None and not found.item.cancelled and (
+                overlay_mod.values(found.item.overrides)
+                == {u: o.value for u, o in found.overrides.items()}
+            )
+        if problems or not landed:
+            return "err", ("Saved, but the calendar couldn’t be updated just now — "
+                           "it will catch up on the next sync.")
+        return "ok", "Calendar updated. Everyone’s phones will show the change."
+
+    @app.get("/events/fix")
+    def fix_event_page():
+        uid = request.query.getunicode("uid") or ""
+        back = _fix_back()
+        with connect() as conn:
+            parent = warmup.parent_of(uid)
+            if parent is not None:
+                # A warm-up is its game's shadow, so it is fixed through the game.
+                redirect(_fix_url(parent, back))
+            _fix_subject(conn, uid)
+        return _fix_page(uid, back)
+
+    @app.post("/events/fix")
+    def fix_event():
+        uid, back = _field("uid"), _fix_back()
+        form = _fix_form()
+        with connect() as conn:
+            found = _fix_subject(conn, uid)
+            if not found.upcoming(clock()):
+                raise Refused(
+                    "that has already happened, so it can't be changed now — "
+                    "changing it would rewrite the record of something that was "
+                    "played."
+                )
+            if not _current(found):
+                return _fix_page(uid, back, flash={"kind": "bad", "text": _MOVED_ON})
+            plan = fix_mod.plan(found, form)
+            if plan.errors:
+                return _fix_page(uid, back, form=form,
+                                 flash={"kind": "bad", "text": " ".join(plan.errors)})
+            if plan.empty:
+                redirect(_fix_url(uid, back, ok=(
+                    "Nothing to change — that is what the calendar already shows.")))
+            reason = (form.get("reason") or "").strip()
+            if plan.sets and not reason:
+                return _fix_page(uid, back, form=form, flash={"kind": "bad", "text": (
+                    "Say why you’re changing it — it’s what everyone else sees "
+                    "next to the change.")})
+            if plan.moved_day and _field("day_change") != "confirmed":
+                # The one change worth a second look: a date picker one row off
+                # is a family at the wrong field on the wrong Saturday.
+                zone = found.zone
+                was, becomes = found.current, plan.sets["time"]
+                new_start = datetime.fromisoformat(becomes["starts_at"]).astimezone(zone)
+                return render(
+                    "fix_move.tpl",
+                    title=fix_mod.page(conn, found, now=clock(), back=back)["title"],
+                    app=fix_mod.app_name(found.source_kind),
+                    App=fix_mod.app_name(found.source_kind).capitalize(),
+                    old_day=was.starts_at.astimezone(zone).strftime("%A %-d %B"),
+                    old_clock=("all day" if was.all_day
+                               else was.starts_at.astimezone(zone).strftime("%-H:%M")),
+                    new_day=new_start.strftime("%A %-d %B"),
+                    new_clock=("all day" if becomes["all_day"]
+                               else new_start.strftime("%-H:%M")),
+                    new_day_short=new_start.strftime("%A"),
+                    fields={"uid": uid, "back": back, **{
+                        k: ("1" if v is True else v) for k, v in form.items() if v is not False
+                    }},
+                )
+            actor = (form.get("actor") or "").strip() or None
+            for unit, value in plan.sets.items():
+                repo.set_override(conn, uid, unit, value, reason=reason, actor=actor)
+            for unit in plan.removes:
+                repo.remove_override(conn, uid, unit, actor=actor,
+                                     reason=reason or "put back to the team app’s")
+            conn.commit()
+            source_id = found.state.source_id
+        key, message = _land(source_id, uid)
+        redirect(_fix_url(uid, back, **{key: message}))
+
+    @app.post("/events/fix/undo")
+    def unfix_event():
+        """Lift one part of a fix — the "use the team app's instead" link."""
+        uid, back, unit = _field("uid"), _fix_back(), _field("unit")
+        with connect() as conn:
+            found = _fix_subject(conn, uid)
+            if not found.upcoming(clock()):
+                raise Refused("that has already happened, so it can't be changed now.")
+            if not _current(found):
+                return _fix_page(uid, back, flash={"kind": "bad", "text": _MOVED_ON})
+            actor = (_field("actor") or "").strip() or None
+            if not repo.remove_override(conn, uid, unit, actor=actor,
+                                        reason="put back to the team app’s"):
+                redirect(_fix_url(uid, back, ok="That was already the team app’s."))
+            conn.commit()
+            source_id = found.state.source_id
+        key, message = _land(source_id, uid)
+        redirect(_fix_url(uid, back, **{key: message}))
+
+    @app.post("/events/fix/resolve")
+    def resolve_fix():
+        """Answer "which is right?" for a fix the team app has since contradicted."""
+        uid, back, unit = _field("uid"), _fix_back(), _field("unit")
+        keep = _field("keep")
+        with connect() as conn:
+            found = _fix_subject(conn, uid)
+            if not found.upcoming(clock()):
+                raise Refused("that has already happened, so it can't be changed now.")
+            if not _current(found):
+                return _fix_page(uid, back, flash={"kind": "bad", "text": _MOVED_ON})
+            item = found.overrides.get(unit)
+            if item is None or item.status != "changed":
+                redirect(_fix_url(uid, back, ok="That was already settled."))
+            zone, app_ = found.zone, fix_mod.app_name(found.source_kind)
+            mine = fix_mod.describe(unit, item.value, zone)
+            theirs = fix_mod.describe(unit, item.upstream_seen, zone)
+            actor = (_field("actor") or "").strip() or None
+            if keep == "mine":
+                # Nothing on the calendar changes — it already shows the fix —
+                # so there is nothing to sync.
+                repo.keep_override(conn, uid, unit, actor=actor)
+                conn.commit()
+                redirect(_fix_url(uid, back, ok=(
+                    f"Kept {mine}. If {app_} changes it again, you’ll be asked again.")))
+            if keep != "theirs":
+                raise Refused("choose which one is right")
+            repo.remove_override(conn, uid, unit, actor=actor,
+                                 reason=f"took {app_}’s {theirs}")
+            conn.commit()
+            source_id = found.state.source_id
+        key, message = _land(source_id, uid)
+        if key == "ok":
+            message = f"Calendar updated to {app_}’s {theirs}."
+        redirect(_fix_url(uid, back, **{key: message}))
+
+    @app.get("/events/fix/orphan")
+    def orphaned_fix_page():
+        uid = request.query.getunicode("uid") or ""
+        with connect() as conn:
+            context = fix_mod.orphan_page(conn, uid, now=clock(), back=_fix_back("/review"))
+        if context is None:
+            raise Refused("there is no fix waiting on that event")
+        return render("fix_orphan.tpl", flash=_flash(), **context)
+
+    @app.post("/events/fix/reattach")
+    def reattach_fix():
+        """Move an orphaned fix onto the event a person says it became."""
+        uid, to, back = _field("uid"), _field("to"), _fix_back("/review")
+        actor = (_field("actor") or "").strip() or None
+        if not to:
+            raise Refused("pick the event your fix belongs on")
+        with connect() as conn:
+            if _field("version") != fix_mod.version(repo.overrides_of(conn, uid)):
+                redirect(f"/events/fix/orphan?uid={quote(uid, safe='')}&back="
+                         f"{quote(back, safe='')}&err={_q(_MOVED_ON)}")
+            target = fix_mod.subject(conn, to)
+            if target is None or not target.upcoming(clock()):
+                raise Refused("pick an event that is still to come")
+            try:
+                moved = repo.reattach_overrides(conn, uid, to, actor=actor)
+            except overlay_mod.OverrideError as exc:
+                raise Refused(str(exc)) from exc
+            conn.commit()
+            source_id = target.state.source_id
+        key, message = _land(source_id, to)
+        if key == "ok":
+            message = ("Moved your fix here and updated the calendar: "
+                       + fix_mod.joined([fix_mod.LABELS[u] for u in moved]) + ".")
+        redirect(_fix_url(to, back, **{key: message}))
+
+    @app.post("/events/fix/forget")
+    def forget_fix():
+        uid, back = _field("uid"), _fix_back("/review")
+        with connect() as conn:
+            if _field("version") != fix_mod.version(repo.overrides_of(conn, uid)):
+                redirect(f"/events/fix/orphan?uid={quote(uid, safe='')}&back="
+                         f"{quote(back, safe='')}&err={_q(_MOVED_ON)}")
+            removed = repo.forget_overrides(
+                conn, uid, actor=(_field("actor") or "").strip() or None
+            )
+            conn.commit()
+        if not removed:
+            raise Refused("there is no fix waiting on that event")
+        redirect(back + ("&" if "?" in back else "?") + "ok=" + _q(
+            "Forgotten. Nothing on the calendar changed."))
+
+    @app.post("/events/fix/edit")
+    def refix_event():
+        """Back from the day-change check, with everything typed still there."""
+        return _fix_page(_field("uid"), _fix_back(), form=_fix_form())
+
     @app.get("/review")
     def review():
         """Everything waiting on a human, across every source.
@@ -1174,6 +1474,7 @@ def create_app(
                 # The decision is on the source page, beside the list it is
                 # about; this is the signpost the Mac's menu bar sends you to.
                 held_polls=repo.held_polls(conn),
+                fixes=fix_mod.attention(conn, now=clock()),
                 venues=repo.list_venues(conn),
                 flash=_flash(),
             )
@@ -1858,7 +2159,9 @@ def _shift_month(month: date, by: int) -> date:
 
 
 def _flash():
-    ok, err = request.query.get("ok"), request.query.get("err")
+    # `getunicode`, for `_field`'s reason: a message with a curly apostrophe
+    # in it came back as mojibake through plain `.get`.
+    ok, err = request.query.getunicode("ok"), request.query.getunicode("err")
     if ok:
         return {"kind": "good", "text": ok}
     if err:
