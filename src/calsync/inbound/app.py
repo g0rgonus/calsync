@@ -319,9 +319,20 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
             out["errors"] = report.errors
         return out
 
+    def parts_index(conn, source: repo.Source) -> dict[str, list[str]]:
+        return inbound.live_parts(
+            (i.external_id, i.state, i.cancelled)
+            for i in repo.inbound_items(conn, source.id))
+
     def render_item(conn, source: repo.Source, item: repo.InboundItem,
-                    window=None) -> dict:
+                    window=None, parts=None) -> dict:
         tz = activity_tz(conn, source)
+        if parts is None:
+            parts = parts_index(conn, source)
+        # A meet its sessions have replaced is not cancelled — nobody asked for
+        # that — but it is not on any calendar either. Both are said, so a
+        # client listing before it writes is not told a hidden meet is live.
+        superseded_by = parts.get(item.external_id, [])
         occurrences = []
         for i in inbound.instances(source.id, item.external_id, item.state,
                                    default_tz=tz):
@@ -336,6 +347,8 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
             "external_id": item.external_id,
             "etag": item.etag,
             "cancelled": item.cancelled,
+            "superseded_by": superseded_by,
+            "on_calendar": not item.cancelled and not superseded_by,
             "created_at": item.created_at,
             "updated_at": item.updated_at,
             "event": item.state["event"],
@@ -429,7 +442,8 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
         with connect() as conn:
             source = authorise(conn, source_id)
             window = date_window()
-            rendered = [render_item(conn, source, i, window)
+            parts = parts_index(conn, source)
+            rendered = [render_item(conn, source, i, window, parts)
                         for i in repo.inbound_items(conn, source.id)]
             if window:
                 # Only events with a date in the window, carrying only those
@@ -498,12 +512,25 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
                 if problems:
                     audit(source.id, "PUT", external_id, "422 part_of")
                     raise invalid(inbound.Invalid(problems))
+                # Allowed, because it can be right — a meet deleted under the
+                # old delete-then-send workaround is exactly this — but worth
+                # saying, since it can also mean the sender missed a cancellation.
+                warnings = []
+                parent = event.get("part_of")
+                if parent and any(i.external_id == parent and i.cancelled for i in items):
+                    warnings.append(f"part_of names {parent!r}, which is cancelled; "
+                                    "this event is written regardless")
                 state, orphaned = inbound.put_event(
                     source.id, external_id, old.state if old else None, event,
                     default_tz=tz)
                 if old is None and request.query.get("allow_overlap") not in ("1", "true"):
+                    # A meet its sessions replaced is on no calendar, so it
+                    # cannot be what a new event duplicates. Its sessions are
+                    # on the calendar, and they still count.
+                    hidden = inbound.superseded(
+                        (i.external_id, i.state, i.cancelled) for i in items)
                     others = [(i.external_id, i.state) for i in items
-                              if not i.cancelled]
+                              if not i.cancelled and i.external_id not in hidden]
                     clash = inbound.overlaps(source.id, external_id, state, others,
                                              default_tz=tz)
                     if clash:
@@ -521,13 +548,14 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
                         and inbound.etag(state, False) == old.etag:
                     audit(source.id, "PUT", external_id, "200 unchanged")
                     out = render_item(conn, source, old)
-                    out.update(changed=False, orphaned_overrides=[])
+                    out.update(changed=False, orphaned_overrides=[], warnings=warnings)
                     return _dump(out, headers={"ETag": f'"{old.etag}"'})
                 item = store(conn, source, external_id, state, cancelled=False)
             result = sync(source)
         with connect() as conn:
             out = render_item(conn, source, item)
-        out.update(changed=True, orphaned_overrides=orphaned, sync=result)
+        out.update(changed=True, orphaned_overrides=orphaned, sync=result,
+                   warnings=warnings)
         status = 200 if old is not None else 201
         audit(source.id, "PUT", external_id, f"{status} sync {result['status']}")
         return _dump(out, status=status, headers={"ETag": f'"{item.etag}"'})

@@ -142,6 +142,11 @@ A meet arrives in two stages, and `part_of` joins them:
 
 While any live part points at the meet, calsync takes the all-day event off the calendar. It comes back if every part is cancelled, because the meet is still on even when the session list is withdrawn. The sender never deletes it. Parts never count as duplicates of their own meet; two parts at the same time still do.
 
+- **The whole meet goes, not just the days that have parts.** The placeholder is one multi-day event. A three-day meet with sessions only on Saturday shows Saturday's sessions and nothing on Friday or Sunday. That's right when the sender sends only the sessions the swimmer is in, so **send a swimmer's parts once their whole schedule for the meet is known**, not day by day as it trickles out. A lone warm-up hides the meet the same way.
+- **Responses say what is on the calendar.** A replaced meet reports `"cancelled": false`, because nobody cancelled it, along with `"superseded_by": [its live parts]` and `"on_calendar": false`. Read `on_calendar` to know whether an event is showing.
+- **A replaced meet is not a duplicate candidate.** It is on no calendar; its parts are, and they still count.
+- **Naming a cancelled meet** in `part_of` is accepted, with a `warnings` entry in the response, since it can also mean a cancellation was missed.
+
 One level only:
 - the meet must already have been sent;
 - a part cannot have parts of its own;

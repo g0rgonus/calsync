@@ -100,9 +100,10 @@ FIELDS: tuple[Field, ...] = (
           example=["2026-11-24"]),
     Field("part_of", "string", "The external_id of the event this is part of — a "
           "meet's session or warm-up names the meet. While any live part points at "
-          "it, the meet itself comes off the calendar, and it comes back if every "
-          "part is cancelled. Parts never count as duplicates of their meet. One "
-          "level only.", example="harbor-invitational"),
+          "it, the whole meet comes off the calendar (every day of it, not only the "
+          "days with parts), and it comes back if every part is cancelled. Send a "
+          "swimmer's parts once their full schedule is known. Parts never count as "
+          "duplicates of their meet. One level only.", example="harbor-invitational"),
 )
 assert {f.name for f in FIELDS} == inbound.FIELDS, "contract and validator disagree"
 
@@ -276,7 +277,14 @@ def openapi(server: str) -> dict:
         "source_id": {"type": "string"},
         "external_id": {"type": "string"},
         "etag": {"type": "string"},
-        "cancelled": {"type": "boolean"},
+        "cancelled": {"type": "boolean", "description": "The sender cancelled it."},
+        "superseded_by": {"type": "array", "items": {"type": "string"},
+                          "description": "Live parts that have replaced this event "
+                                         "on the calendar (part_of)."},
+        "on_calendar": {"type": "boolean", "description": "Whether calsync keeps this "
+                        "event on a calendar: not cancelled and not superseded."},
+        "warnings": {"type": "array", "items": {"type": "string"},
+                     "description": "On writes: accepted, but worth a look."},
         "created_at": {"type": "string", "format": "date-time"},
         "updated_at": {"type": "string", "format": "date-time"},
         "event": {"$ref": "#/components/schemas/Event"},

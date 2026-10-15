@@ -888,3 +888,56 @@ def test_many_meets_replaced_in_one_poll_never_trip_the_guard(client, db_path, o
     assert report.called_off == 5 and report.created == 5
     assert not any(uid.startswith("in-herons.meet-") and "-s1" not in uid
                    for uid in _files(out))
+
+
+def test_the_api_says_a_replaced_meet_is_not_on_the_calendar(client):
+    """It was never cancelled, so `cancelled` stays false — but a client that
+    lists before it writes has to be able to tell it is not showing."""
+    client.put(BASE + "/events/harbor-inv", MEET)
+    client.put(BASE + "/events/harbor-inv-s3", _session(3, "13:00", "16:30"))
+    meet = client.get(BASE + "/events/harbor-inv")["json"]
+    assert meet["cancelled"] is False
+    assert meet["superseded_by"] == ["harbor-inv-s3"]
+    assert meet["on_calendar"] is False
+    listed = {e["external_id"]: e for e in client.get(BASE + "/events")["json"]["events"]}
+    assert listed["harbor-inv"]["on_calendar"] is False
+    assert listed["harbor-inv-s3"]["on_calendar"] is True
+    client.delete(BASE + "/events/harbor-inv-s3")
+    back = client.get(BASE + "/events/harbor-inv")["json"]
+    assert back["superseded_by"] == [] and back["on_calendar"] is True
+
+
+def test_one_session_replaces_every_day_of_the_meet(client, out):
+    """Documented behaviour: the placeholder is one multi-day event, so a
+    Saturday-only swimmer has nothing on Friday or Sunday."""
+    three_days = dict(MEET, start="2026-11-13", end="2026-11-15")
+    client.put(BASE + "/events/harbor-inv", three_days)
+    client.put(BASE + "/events/harbor-inv-s3", _session(3, "13:00", "16:30"))
+    assert set(_files(out)) == {"in-herons.harbor-inv-s3@inbound.calsync"}
+
+
+def test_a_replaced_meet_is_not_what_a_new_event_duplicates(client):
+    client.put(BASE + "/events/harbor-inv", MEET)                      # Sat–Sun
+    client.put(BASE + "/events/harbor-inv-s3", _session(3, "13:00", "16:30"))
+    # A game on Sunday, not part of the meet. It overlaps only the hidden
+    # placeholder, which is on no calendar.
+    sunday = {"type": "game", "start": "2026-11-15T10:00:00",
+              "end": "2026-11-15T11:00:00", "opponent": "Ridgeway Sharks"}
+    assert client.put(BASE + "/events/scrimmage", sunday)["status"] == 201
+    # Overlapping a session that *is* on the calendar still counts.
+    clash = dict(sunday, start="2026-11-14T14:00:00", end="2026-11-14T15:00:00")
+    r = client.put(BASE + "/events/scrimmage-2", clash)
+    assert r["status"] == 409
+    assert r["json"]["error"]["duplicates"][0]["external_id"] == "harbor-inv-s3"
+
+
+def test_a_part_of_a_cancelled_meet_is_written_with_a_warning(client, out):
+    client.put(BASE + "/events/harbor-inv", MEET)
+    client.delete(BASE + "/events/harbor-inv")
+    r = client.put(BASE + "/events/harbor-inv-s3", _session(3, "13:00", "16:30"))
+    assert r["status"] == 201
+    assert len(r["json"]["warnings"]) == 1 and "cancelled" in r["json"]["warnings"][0]
+    assert set(_files(out)) == {"in-herons.harbor-inv-s3@inbound.calsync"}
+    clean = client.put(BASE + "/events/harbor-inv-s3",
+                       _session(3, "13:00", "16:45"))["json"]
+    assert len(clean["warnings"]) == 1            # still true on every write

@@ -557,16 +557,29 @@ def parent_problems(external_id: str, event: dict, items: dict) -> list[dict]:
     return []
 
 
+def live_parts(items) -> dict[str, list[str]]:
+    """``{meet: [its live parts]}``, for every event that has any.
+
+    ``items`` is ``(external_id, state, cancelled)``.
+    """
+    parts: dict[str, list[str]] = {}
+    for external_id, state, cancelled in items:
+        parent = state["event"].get("part_of")
+        if parent and not cancelled:
+            parts.setdefault(parent, []).append(external_id)
+    return {parent: sorted(ids) for parent, ids in parts.items()}
+
+
 def superseded(items) -> set[str]:
     """Events taken off the calendar because their parts have arrived.
 
-    ``items`` is ``(external_id, state, cancelled)``. A meet announced as an
-    all-day placeholder is replaced by its sessions while at least one *live*
-    session points at it, and comes back if every session is withdrawn — the
-    meet is still on even when the session list is pulled.
+    A meet announced as an all-day placeholder is replaced by its sessions
+    while at least one *live* part points at it, and comes back if every part
+    is withdrawn — the meet is still on even when the session list is pulled.
+
+    **The whole meet, not the days that have sessions.** The placeholder is
+    one multi-day event, and a sender sends only the sessions a swimmer is
+    in, so a day with no part is a day they are not swimming. A sender that
+    learns the schedule a day at a time should wait for the whole of it.
     """
-    return {
-        state["event"].get("part_of")
-        for _id, state, cancelled in items
-        if not cancelled and state["event"].get("part_of")
-    }
+    return set(live_parts(items))
