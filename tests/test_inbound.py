@@ -26,14 +26,14 @@ from calsync.targets import build
 NOW = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc)
 KEY = "csk_test-key-for-the-otters-swim-team-000000"
 OTHER_KEY = "csk_test-key-for-somebody-elses-team-11111"
-BASE = "/inbound/v1/sources/in-dolphins"
+BASE = "/inbound/v1/sources/in-herons"
 
 PRACTICE = {
     "type": "practice",
-    "label": "AG Yellow swim",
+    "label": "Gold group swim",
     "start": "2026-10-20T17:45:00",
     "end": "2026-10-20T19:30:00",
-    "location": "Fort Eustis Aquatic Center",
+    "location": "Wrenfield Aquatic Center",
     "rrule": "FREQ=WEEKLY;BYDAY=TU;COUNT=6",
     "notes": "Arrive 10–15 min early",
 }
@@ -95,19 +95,19 @@ def db_path(tmp_path):
     conn.executescript(
         """
         INSERT INTO children (id, name, initial, birth_order)
-             VALUES ('patrick', 'Patrick', 'P', 1), ('nadia', 'Nadia', 'N', 2);
+             VALUES ('jesse', 'Jesse', 'J', 1), ('nadia', 'Nadia', 'N', 2);
         INSERT INTO activities (id, child_id, name, sport_id, tz,
                                 alarm_game_min, alarm_practice_min)
-             VALUES ('patrick-swim-dolphins', 'patrick', 'Dolphins', 'swimming',
+             VALUES ('jesse-swim-herons', 'jesse', 'Herons', 'swimming',
                      'America/New_York', 90, 30),
                     ('nadia-soccer-wrens', 'nadia', 'Wrens', 'soccer',
                      'America/New_York', 90, 30);
         INSERT INTO sources (id, activity_id, kind, shape)
-             VALUES ('in-dolphins', 'patrick-swim-dolphins', 'inbound', 'push'),
+             VALUES ('in-herons', 'jesse-swim-herons', 'inbound', 'push'),
                     ('in-wrens', 'nadia-soccer-wrens', 'inbound', 'push');
         """
     )
-    repo.set_inbound_key_hash(conn, "in-dolphins", inbound.hash_key(KEY))
+    repo.set_inbound_key_hash(conn, "in-herons", inbound.hash_key(KEY))
     repo.set_inbound_key_hash(conn, "in-wrens", inbound.hash_key(OTHER_KEY))
     conn.close()
     return path
@@ -224,10 +224,10 @@ def test_a_series_is_written_as_one_event_per_occurrence(client, out):
     assert r["json"]["sync"]["status"] == "ok"
     files = _files(out)
     assert len(files) == 6
-    first = _vevent(files["in-dolphins.tue-swim.20261020@inbound.calsync"])
+    first = _vevent(files["in-herons.tue-swim.20261020@inbound.calsync"])
     # The title is the household's template, not anything the sender wrote.
-    assert "Patrick" in str(first["SUMMARY"]) and "AG Yellow swim" in str(first["SUMMARY"])
-    assert "Fort Eustis Aquatic Center" in str(first["LOCATION"])
+    assert "Jesse" in str(first["SUMMARY"]) and "Gold group swim" in str(first["SUMMARY"])
+    assert "Wrenfield Aquatic Center" in str(first["LOCATION"])
 
 
 def test_a_repeated_put_is_a_no_op_all_the_way_down(client, out, db_path):
@@ -256,7 +256,7 @@ def test_a_changed_field_updates_the_same_events(client, out):
     assert r["status"] == 200 and r["json"]["changed"] is True
     files = _files(out)
     assert len(files) == 6                   # same uids: a new time is not a new event
-    start = _vevent(files["in-dolphins.tue-swim.20261103@inbound.calsync"])["DTSTART"].dt
+    start = _vevent(files["in-herons.tue-swim.20261103@inbound.calsync"])["DTSTART"].dt
     assert start.astimezone(recurrence.ZoneInfo("America/New_York")).hour == 18
 
 
@@ -272,7 +272,7 @@ def test_if_match_refuses_a_stale_write(client):
     ({"end": "2026-10-20T17:00:00"}, "end"),
     ({"rrule": "FREQ=WEEKLY;BYDAY=TU"}, "rrule"),
     ({"type": "meet"}, "type"),
-    ({"title": "Patrick – AG Yellow swim"}, "title"),
+    ({"title": "Jesse – Gold group swim"}, "title"),
     ({"calendar": "patrick"}, "calendar"),
 ])
 def test_validation_names_the_field(client, out, change, field):
@@ -284,7 +284,7 @@ def test_validation_names_the_field(client, out, change, field):
 
 def test_a_staged_source_writes_to_the_staging_calendar(client, out, db_path):
     conn = db.connect(db_path)
-    repo.set_staging(conn, "in-dolphins", "onboarding")
+    repo.set_staging(conn, "in-herons", "onboarding")
     conn.close()
     r = client.put(BASE + "/events/tue-swim", PRACTICE)
     assert r["json"]["sync"]["staged_to"] == "onboarding"
@@ -293,23 +293,23 @@ def test_a_staged_source_writes_to_the_staging_calendar(client, out, db_path):
 
 def test_a_paused_source_refuses_writes(client, db_path):
     conn = db.connect(db_path)
-    repo.set_enabled(conn, "in-dolphins", False)
+    repo.set_enabled(conn, "in-herons", False)
     conn.close()
     assert client.put(BASE + "/events/tue-swim", PRACTICE)["status"] == 409
 
 
 def test_a_game_carries_its_opponent_into_the_title(client, out):
     game = {"type": "game", "start": "2026-10-24T09:00:00", "end": "2026-10-24T12:00:00",
-            "opponent": "Hampton Sharks", "home": False, "location": "Hampton Aquaplex"}
+            "opponent": "Ridgeway Sharks", "home": False, "location": "Ridgeway Natatorium"}
     assert client.put(BASE + "/events/meet-1", game)["status"] == 201
-    summary = str(_vevent(_files(out)["in-dolphins.meet-1@inbound.calsync"])["SUMMARY"])
-    assert "Hampton Sharks" in summary
+    summary = str(_vevent(_files(out)["in-herons.meet-1@inbound.calsync"])["SUMMARY"])
+    assert "Ridgeway Sharks" in summary
 
 
 def test_an_all_day_event_ends_on_its_last_day(client, out):
     day = {"type": "game", "start": "2026-11-14", "end": "2026-11-15", "label": "Invitational"}
     assert client.put(BASE + "/events/invitational", day)["status"] == 201
-    ev = _vevent(_files(out)["in-dolphins.invitational@inbound.calsync"])
+    ev = _vevent(_files(out)["in-herons.invitational@inbound.calsync"])
     assert ev["DTSTART"].dt.isoformat() == "2026-11-14"
     assert ev["DTEND"].dt.isoformat() == "2026-11-16"   # exclusive, per RFC 5545
 
@@ -319,7 +319,7 @@ def test_what_was_sent_comes_back(client):
     r = client.get(BASE + "/events/tue-swim")
     assert r["status"] == 200
     event = r["json"]["event"]
-    assert event["label"] == "AG Yellow swim"
+    assert event["label"] == "Gold group swim"
     assert event["notes"] == "Arrive 10–15 min early"
     assert len(r["json"]["occurrences"]) == 6
     listed = client.get(BASE + "/events")["json"]
@@ -332,16 +332,16 @@ def test_what_was_sent_comes_back(client):
 def test_an_override_moves_one_occurrence_and_no_other(client, out):
     client.put(BASE + "/events/tue-swim", PRACTICE)
     r = client.put(BASE + "/events/tue-swim/occurrences/2026-10-27",
-                   {"start": "2026-10-27T18:30:00", "location": "Gosnold Pool"})
+                   {"start": "2026-10-27T18:30:00", "location": "Larkmoor Pool"})
     assert r["status"] == 200, r["json"]
     files = _files(out)
-    moved = _vevent(files["in-dolphins.tue-swim.20261027@inbound.calsync"])
-    other = _vevent(files["in-dolphins.tue-swim.20261103@inbound.calsync"])
-    assert "Gosnold Pool" in str(moved["LOCATION"])
+    moved = _vevent(files["in-herons.tue-swim.20261027@inbound.calsync"])
+    other = _vevent(files["in-herons.tue-swim.20261103@inbound.calsync"])
+    assert "Larkmoor Pool" in str(moved["LOCATION"])
     zone = recurrence.ZoneInfo("America/New_York")
     assert moved["DTSTART"].dt.astimezone(zone).strftime("%H:%M") == "18:30"
     assert moved["DTEND"].dt.astimezone(zone).strftime("%H:%M") == "20:15"  # duration kept
-    assert "Fort Eustis" in str(other["LOCATION"])
+    assert "Wrenfield" in str(other["LOCATION"])
 
 
 def test_an_occurrence_the_series_does_not_have_is_422(client):
@@ -353,7 +353,7 @@ def test_an_occurrence_the_series_does_not_have_is_422(client):
 
 def test_cancelling_one_occurrence_is_idempotent_and_reversible(client, out):
     client.put(BASE + "/events/tue-swim", PRACTICE)
-    uid = "in-dolphins.tue-swim.20261103@inbound.calsync"
+    uid = "in-herons.tue-swim.20261103@inbound.calsync"
     path = BASE + "/events/tue-swim/occurrences/2026-11-03"
     assert client.delete(path)["status"] == 204
     assert uid not in _files(out) and len(_files(out)) == 5
@@ -380,7 +380,7 @@ def test_moving_a_series_to_another_day_moves_every_event(client, out):
         PRACTICE, start="2026-10-21T17:45:00", end="2026-10-21T19:30:00",
         rrule="FREQ=WEEKLY;BYDAY=WE;COUNT=6"))
     assert sorted(_files(out)) == sorted(
-        f"in-dolphins.tue-swim.{d}@inbound.calsync"
+        f"in-herons.tue-swim.{d}@inbound.calsync"
         for d in ("20261021", "20261028", "20261104", "20261111", "20261118", "20261125"))
 
 
@@ -416,7 +416,7 @@ def test_the_log_never_carries_the_key_or_the_body(client, log):
     client.put(BASE + "/events/tue-swim", PRACTICE, key="csk_wrong")
     joined = "\n".join(log)
     assert "tue-swim" in joined
-    assert KEY not in joined and "Fort Eustis" not in joined
+    assert KEY not in joined and "Wrenfield" not in joined
 
 
 # --- the poller -------------------------------------------------------------------------------
@@ -425,7 +425,7 @@ def test_the_log_never_carries_the_key_or_the_body(client, log):
 def test_the_poller_reads_the_store_where_a_feed_would_be_fetched(client, db_path, out):
     client.put(BASE + "/events/tue-swim", PRACTICE)
     conn = db.connect(db_path)
-    source = repo.get_source(conn, "in-dolphins")
+    source = repo.get_source(conn, "in-herons")
 
     def no_network(_url):
         raise AssertionError("an inbound source must never fetch")
@@ -443,7 +443,7 @@ def test_an_empty_store_beside_written_events_is_an_error_not_a_cancellation(
     conn = db.connect(db_path)
     conn.execute("DELETE FROM inbound_events")
     conn.commit()
-    report = sync_source(conn, repo.get_source(conn, "in-dolphins"),
+    report = sync_source(conn, repo.get_source(conn, "in-herons"),
                          build("ics_file", directory=out), now=NOW)
     assert report.status == "error"
     assert len(_files(out)) == 6
@@ -452,7 +452,7 @@ def test_an_empty_store_beside_written_events_is_an_error_not_a_cancellation(
 
 def test_the_gate_waits_for_a_push_not_for_a_game(client, db_path):
     conn = db.connect(db_path)
-    source = repo.get_source(conn, "in-dolphins")
+    source = repo.get_source(conn, "in-herons")
     before = sync_source(conn, source, None, now=NOW, dry_run=True)
     assert before.status == "ok" and not before.promotable
     conn.close()
@@ -493,7 +493,7 @@ def test_the_spec_describes_every_route_and_accepts_its_own_examples(client):
     ops = {(m.upper(), p) for p, item in doc["paths"].items() for m in item}
     assert ops == {(r.method, r.path) for r in contract.ROUTES}
     assert set(doc["components"]["schemas"]["Event"]["properties"]) == inbound.FIELDS
-    for example in (contract.PRACTICE, contract.GAME):
+    for example in (contract.PRACTICE, contract.MEET, contract.WARMUP, contract.SESSION):
         inbound.validate_event(example, default_tz="America/New_York")
 
 
@@ -502,7 +502,11 @@ def test_the_examples_work_against_the_api_they_document(client, out):
     assert client.put(BASE + "/events/tue-swim", contract.PRACTICE)["status"] == 201
     assert client.put(BASE + "/events/tue-swim/occurrences/2026-10-27",
                       contract.OVERRIDE)["status"] == 200
-    assert client.put(BASE + "/events/meet", contract.GAME)["status"] == 201
+    assert client.put(BASE + "/events/harbor-invitational", contract.MEET)["status"] == 201
+    assert client.put(BASE + "/events/harbor-invitational-s3-warmup",
+                      contract.WARMUP)["status"] == 201
+    assert client.put(BASE + "/events/harbor-invitational-s3",
+                      contract.SESSION)["status"] == 201
 
 
 def test_the_page_is_html_with_no_key_and_no_script(client):
@@ -744,12 +748,12 @@ def test_the_log_names_the_real_peer_beside_a_claimed_address(client, log):
 
 def test_a_read_marks_the_key_used_and_a_new_key_starts_over(client, db_path):
     conn = db.connect(db_path)
-    assert repo.inbound_key_used_at(conn, "in-dolphins") is None
+    assert repo.inbound_key_used_at(conn, "in-herons") is None
     client.get(BASE + "/events")
-    used = repo.inbound_key_used_at(conn, "in-dolphins")
+    used = repo.inbound_key_used_at(conn, "in-herons")
     assert used == NOW.isoformat()
-    repo.set_inbound_key_hash(conn, "in-dolphins", inbound.hash_key("csk_new"))
-    assert repo.inbound_key_used_at(conn, "in-dolphins") is None
+    repo.set_inbound_key_hash(conn, "in-herons", inbound.hash_key("csk_new"))
+    assert repo.inbound_key_used_at(conn, "in-herons") is None
     conn.close()
 
 
@@ -767,3 +771,120 @@ def test_a_busy_database_never_holds_up_a_read_for_the_last_used_stamp(client, d
         poller.close()
     assert r["status"] == 200
     assert elapsed < 1.5, f"a read waited {elapsed:.1f}s on a timestamp"
+
+
+# --- part_of: a meet replaced by its sessions (#51) ------------------------------------------
+
+MEET = {"type": "game", "label": "Harbor Invitational", "start": "2026-11-14",
+        "end": "2026-11-15", "location": "Ridgeway Natatorium"}
+MEET_UID = "in-herons.harbor-inv@inbound.calsync"
+
+
+def _session(n, start, end, **extra):
+    return {"type": "game", "label": f"Harbor Inv · Session {n}",
+            "start": f"2026-11-14T{start}:00", "end": f"2026-11-14T{end}:00",
+            "part_of": "harbor-inv", **extra}
+
+
+def test_a_session_replaces_its_meet_on_the_calendar(client, out):
+    assert client.put(BASE + "/events/harbor-inv", MEET)["status"] == 201
+    assert MEET_UID in _files(out)
+    # Overlaps the all-day meet and is the same type: not a duplicate, a part.
+    r = client.put(BASE + "/events/harbor-inv-s3", _session(3, "13:00", "16:30"))
+    assert r["status"] == 201, r["json"]
+    assert r["json"]["sync"]["status"] == "ok"
+    files = _files(out)
+    assert MEET_UID not in files
+    assert "in-herons.harbor-inv-s3@inbound.calsync" in files
+
+
+def test_the_meet_comes_back_when_every_session_is_withdrawn(client, out):
+    client.put(BASE + "/events/harbor-inv", MEET)
+    client.put(BASE + "/events/harbor-inv-s1", _session(1, "08:00", "11:30"))
+    client.put(BASE + "/events/harbor-inv-s3", _session(3, "13:00", "16:30"))
+    client.delete(BASE + "/events/harbor-inv-s1")
+    assert MEET_UID not in _files(out)            # one session is still live
+    client.delete(BASE + "/events/harbor-inv-s3")
+    assert set(_files(out)) == {MEET_UID}          # the meet is still on
+    # Still in the store and never marked cancelled: it was replaced, not deleted.
+    assert client.get(BASE + "/events/harbor-inv")["json"]["cancelled"] is False
+
+
+def test_a_warm_up_and_a_session_land_on_two_calendars_and_the_meet_goes(client, out):
+    client.put(BASE + "/events/harbor-inv", MEET)
+    warmup = {"type": "practice", "label": "Harbor Inv · S3 warm-up",
+              "start": "2026-11-14T12:00:00", "end": "2026-11-14T12:50:00",
+              "part_of": "harbor-inv"}
+    assert client.put(BASE + "/events/harbor-inv-s3-warmup", warmup)["status"] == 201
+    assert client.put(BASE + "/events/harbor-inv-s3",
+                      _session(3, "13:00", "16:30"))["status"] == 201
+    files = _files(out)
+    assert MEET_UID not in files
+    assert {files[u].parent.name for u in files} == {"games", "practices"}
+    assert len(files) == 2
+
+
+def test_two_sessions_of_one_meet_at_the_same_time_are_still_a_duplicate(client):
+    client.put(BASE + "/events/harbor-inv", MEET)
+    client.put(BASE + "/events/harbor-inv-s3", _session(3, "13:00", "16:30"))
+    r = client.put(BASE + "/events/harbor-inv-session-3", _session(3, "13:00", "16:30"))
+    assert r["status"] == 409
+    assert r["json"]["error"]["duplicates"][0]["external_id"] == "harbor-inv-s3"
+
+
+_S3 = _session(3, "13:00", "16:30")
+
+
+@pytest.mark.parametrize("already_sent, external_id, body, code", [
+    # The meet has not been sent.
+    ({}, "harbor-inv-s3", _S3, "no_such_event"),
+    # An event naming itself.
+    ({"harbor-inv": MEET}, "harbor-inv", dict(MEET, part_of="harbor-inv"), "self"),
+    # A part of a part: one level only.
+    ({"harbor-inv": MEET, "harbor-inv-s3": _S3}, "harbor-inv-s3-heat",
+     dict(_session(9, "17:00", "18:00"), part_of="harbor-inv-s3"), "too_deep"),
+    # A meet that has parts becoming a part of something else.
+    ({"other-meet": dict(MEET, start="2026-12-05", end="2026-12-05"),
+      "harbor-inv": MEET, "harbor-inv-s3": _S3},
+     "harbor-inv", dict(MEET, part_of="other-meet"), "has_parts"),
+])
+def test_part_of_is_refused_where_it_would_not_mean_anything(client, already_sent,
+                                                              external_id, body, code):
+    for eid, sent in already_sent.items():
+        assert client.put(BASE + f"/events/{eid}", sent)["status"] == 201
+    r = client.put(BASE + f"/events/{external_id}", body)
+    assert r["status"] == 422, r["json"]
+    assert [e["code"] for e in r["json"]["error"]["errors"]] == [code]
+
+
+def test_part_of_must_look_like_an_id(client):
+    r = client.put(BASE + "/events/harbor-inv-s3", dict(_session(3, "13:00", "16:30"),
+                                                         part_of="../meet"))
+    assert r["status"] == 422
+    assert r["json"]["error"]["errors"][0]["field"] == "part_of"
+
+
+def test_many_meets_replaced_in_one_poll_never_trip_the_guard(client, db_path, out):
+    """Five placeholders leave the calendar at once — more than the guard's
+    count. They are removals the sender asked for, not absences."""
+    for n in range(5):
+        day = f"2026-11-{14 + n:02d}"
+        client.put(BASE + f"/events/meet-{n}", dict(MEET, start=day, end=day))
+    assert len(_files(out)) == 5
+    conn = db.connect(db_path)
+    for n in range(5):
+        day = f"2026-11-{14 + n:02d}"
+        state = {"event": inbound.validate_event(
+            dict(_session(1, "08:00", "11:00"), start=f"{day}T08:00:00",
+                 end=f"{day}T11:00:00", part_of=f"meet-{n}"),
+            default_tz="America/New_York"), "overrides": {}, "retired": []}
+        repo.save_inbound_item(conn, "in-herons", f"meet-{n}-s1", state=state,
+                               cancelled=False, etag="x", now=NOW.isoformat())
+    conn.commit()
+    report = sync_source(conn, repo.get_source(conn, "in-herons"),
+                         build("ics_file", directory=out), now=NOW)
+    conn.close()
+    assert report.status == "ok", report.line()
+    assert report.called_off == 5 and report.created == 5
+    assert not any(uid.startswith("in-herons.meet-") and "-s1" not in uid
+                   for uid in _files(out))

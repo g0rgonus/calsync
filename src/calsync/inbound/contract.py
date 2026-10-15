@@ -29,21 +29,37 @@ PRACTICE = {
     "label": "Swim",
     "start": "2026-10-20T17:45:00",
     "end": "2026-10-20T19:30:00",
-    "location": "Fort Eustis Aquatic Center",
+    "location": "Wrenfield Aquatic Center",
     "rrule": "FREQ=WEEKLY;BYDAY=TU;UNTIL=20270531T235959Z",
     "exdates": ["2026-11-24"],
     "notes": "Arrive 10–15 min early",
 }
-GAME = {
+#: A meet: announced all-day, then replaced by the sessions that point at it.
+MEET = {
     "type": "game",
-    "label": "Meet",
+    "label": "Harbor Invitational",
     "start": "2026-11-14",
     "end": "2026-11-15",
-    "opponent": "Hampton Sharks",
-    "home": False,
-    "location": "Hampton Aquaplex",
+    "location": "Ridgeway Natatorium",
 }
-OVERRIDE = {"start": "2026-10-27T18:30:00", "location": "Gosnold Pool"}
+WARMUP = {
+    "type": "practice",
+    "label": "Harbor Inv · S3 warm-up",
+    "start": "2026-11-14T12:00:00",
+    "end": "2026-11-14T12:50:00",
+    "location": "Ridgeway Natatorium",
+    "part_of": "harbor-invitational",
+}
+SESSION = {
+    "type": "game",
+    "label": "Harbor Inv · Session 3",
+    "start": "2026-11-14T13:00:00",
+    "end": "2026-11-14T16:30:00",
+    "location": "Ridgeway Natatorium",
+    "notes": "Events:\n- #14 50 Free · heat 3 lane 5 · est. 1:40 pm\n- #22 100 Back · est. 2:30 pm",
+    "part_of": "harbor-invitational",
+}
+OVERRIDE = {"start": "2026-10-27T18:30:00", "location": "Larkmoor Pool"}
 
 
 @dataclass(frozen=True)
@@ -70,8 +86,8 @@ FIELDS: tuple[Field, ...] = (
     Field("label", "string", "The short word in the title — Swim, Dryland, Meet.",
           example="Swim"),
     Field("location", "string", "Free text. Resolved through calsync's venue table "
-          "like any feed's.", example="Fort Eustis Aquatic Center"),
-    Field("opponent", "string", "Games only.", example="Hampton Sharks"),
+          "like any feed's.", example="Wrenfield Aquatic Center"),
+    Field("opponent", "string", "Games only.", example="Ridgeway Sharks"),
     Field("home", "boolean", "Games only. Leave it out when unknown — calsync never "
           "guesses home or away.", example=False),
     Field("notes", "string", "Into the event body.", example="Arrive 10–15 min early"),
@@ -82,6 +98,11 @@ FIELDS: tuple[Field, ...] = (
           example="FREQ=WEEKLY;BYDAY=TU;UNTIL=20270531T235959Z"),
     Field("exdates", "array", "Dates the series skips, YYYY-MM-DD.",
           example=["2026-11-24"]),
+    Field("part_of", "string", "The external_id of the event this is part of — a "
+          "meet's session or warm-up names the meet. While any live part points at "
+          "it, the meet itself comes off the calendar, and it comes back if every "
+          "part is cancelled. Parts never count as duplicates of their meet. One "
+          "level only.", example="harbor-invitational"),
 )
 assert {f.name for f in FIELDS} == inbound.FIELDS, "contract and validator disagree"
 
@@ -89,7 +110,7 @@ OVERRIDE_FIELDS: tuple[Field, ...] = (
     Field("start", "string", "New local start for this date. End keeps the series "
           "duration unless given.", example="2026-10-27T18:30:00"),
     Field("end", "string", "New local end for this date."),
-    Field("location", "string", "Where this date is instead.", example="Gosnold Pool"),
+    Field("location", "string", "Where this date is instead.", example="Larkmoor Pool"),
     Field("notes", "string", "Notes for this date only."),
     Field("label", "string", "Label for this date only."),
 )
@@ -107,7 +128,7 @@ class Param:
 
 P = {
     "source_id": Param("source_id", "path", "The team, from the console's key page.",
-                       True, "in-dolphins"),
+                       True, "in-herons"),
     "external_id": Param("external_id", "path", "Your id for the event: 1–128 of "
                          "A-Z a-z 0-9 . _ -. Chosen by you, so a retried create cannot "
                          "make a second event.", True, "tue-swim"),
@@ -171,7 +192,8 @@ ROUTES: tuple[Route, ...] = (
           "Create or replace an event.",
           "Sending the same body again changes nothing. A new id that overlaps a live "
           "event of the same type on the same day is refused as a possible duplicate "
-          "— update that event instead, or resend with allow_overlap=true.",
+          "— update that event instead, or resend with allow_overlap=true. A part "
+          "never counts as a duplicate of the event it names in part_of.",
           params=("source_id", "external_id", "allow_overlap", "If-Match", "If-None-Match"),
           body="Event", example=PRACTICE,
           responses={201: ("Created", "StoredEvent"), 200: ("Replaced or unchanged", "StoredEvent"),
@@ -485,7 +507,7 @@ promotes it.</td></tr>
 
 <h2>Calls</h2>
 <p class=lede>Set <code>CALSYNC_KEY</code>, <code>PROXY_USER</code> and
-<code>PROXY_PASS</code>, and replace <code>in-dolphins</code> with your source id.</p>
+<code>PROXY_PASS</code>, and replace <code>in-herons</code> with your source id.</p>
 {''.join(routes)}
 
 <h2>Event fields</h2>
@@ -509,8 +531,14 @@ child; cancelling is a <code>DELETE</code>.</p></div>
 <pre><code>{e(json.dumps(PRACTICE, indent=2, ensure_ascii=False))}</code></pre>
 <p>One week moves pools — <code>PUT …/events/tue-swim/occurrences/2026-10-27</code>:</p>
 <pre><code>{e(json.dumps(OVERRIDE, indent=2, ensure_ascii=False))}</code></pre>
-<p>A meet, all day, away — <code>PUT …/events/hampton-invitational</code>:</p>
-<pre><code>{e(json.dumps(GAME, indent=2, ensure_ascii=False))}</code></pre>
+<p>A meet is announced, all day — <code>PUT …/events/harbor-invitational</code>:</p>
+<pre><code>{e(json.dumps(MEET, indent=2, ensure_ascii=False))}</code></pre>
+<p>The session schedule comes out. Each session the swimmer is in, and its warm-up,
+names the meet in <code>part_of</code>; the all-day meet comes off the calendar on its own
+— <code>PUT …/events/harbor-invitational-s3-warmup</code>:</p>
+<pre><code>{e(json.dumps(WARMUP, indent=2, ensure_ascii=False))}</code></pre>
+<p>— and <code>PUT …/events/harbor-invitational-s3</code>:</p>
+<pre><code>{e(json.dumps(SESSION, indent=2, ensure_ascii=False))}</code></pre>
 <p>Practice cancelled for snow — <code>DELETE …/events/tue-swim/occurrences/2027-01-19</code>.</p>
 </div>
 

@@ -32,9 +32,15 @@ def parse(data, activity: Activity, *, source_id: str, config: dict | None = Non
         raise SourceError(f"inbound store for {source_id} is unreadable: {exc}") from exc
 
     result = PollResult(source_id=source_id, raw_sha256=hashlib.sha256(raw).hexdigest())
+    # Replaced by their parts, so emitted as cancelled: an explicit removal the
+    # diff applies without the disappearance guard, never an absence. Stays in
+    # the store untouched, which is what lets it come back.
+    replaced = inbound.superseded(
+        (i["external_id"], i["state"], bool(i.get("cancelled"))) for i in items
+    )
     for item in items:
         state = item["state"]
-        cancelled = bool(item.get("cancelled"))
+        cancelled = bool(item.get("cancelled")) or item["external_id"] in replaced
         live = inbound.instances(source_id, item["external_id"], state,
                                  default_tz=activity.tz)
         for instance in live:

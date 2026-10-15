@@ -66,7 +66,7 @@ The tool then sends both credentials, each in its own header:
 ```bash
 curl -u 'calsync-bot:PANGOLIN_PASSWORD' \
      -H 'X-Calsync-Key: csk_…' \
-     https://inbound.example.org/inbound/v1/sources/in-dolphins
+     https://inbound.example.org/inbound/v1/sources/in-herons
 ```
 
 A JSON body naming the team is success. HTML (a login page) means the Pangolin
@@ -125,6 +125,7 @@ Three safeguards for a tool that skips step 1:
 | `notes`, `url` | Into the event body. |
 | `rrule` | `FREQ=DAILY\|WEEKLY`, `INTERVAL`, `BYDAY`, `WKST=MO`, and exactly one of `UNTIL` or `COUNT`. calsync expands it into one event per date; there is no default season end. |
 | `exdates` | Dates the series skips. |
+| `part_of` | The `external_id` of the event this belongs to — see [Meets](#meets). |
 
 Refused, by name, with the reason: `title`, `calendar`, `child`, `team`,
 `status`, `uid`. calsync composes the title and picks the calendar; one source
@@ -132,23 +133,41 @@ is one team for one child; cancelling is a `DELETE`.
 
 Errors are JSON: `{"error": {"code", "detail", "errors": [{"field", "code", "detail"}]}}`.
 
+### Meets
+
+A meet arrives in two stages, and `part_of` joins them:
+
+1. **Announced:** one all-day event across the meet's days, `type: "game"`, the meet's name as `label`, no opponent.
+2. **Session schedule out:** each session the swimmer is in is a `game` starting at the official session time, with events and estimated times in `notes`. Its warm-up is a `practice`. Both name the meet in `part_of`.
+
+While any live part points at the meet, calsync takes the all-day event off the calendar. It comes back if every part is cancelled, because the meet is still on even when the session list is withdrawn. The sender never deletes it. Parts never count as duplicates of their own meet; two parts at the same time still do.
+
+One level only:
+- the meet must already have been sent;
+- a part cannot have parts of its own;
+- an event with parts cannot become a part.
+
+Each of these is a 422 naming the problem.
+
+A team that receives warm-ups this way should keep its own warm-up setting at 0. Otherwise calsync also generates one in front of every session.
+
 ### Examples
 
 ```bash
 H=(-u 'calsync-bot:PANGOLIN_PASSWORD' -H 'X-Calsync-Key: csk_…' -H 'Content-Type: application/json')
-U=https://inbound.example.org/inbound/v1/sources/in-dolphins
+U=https://inbound.example.org/inbound/v1/sources/in-herons
 
 # A weekly practice for the season
 curl "${H[@]}" -X PUT "$U/events/tue-swim" -d '{
-  "type": "practice", "label": "AG Yellow swim",
+  "type": "practice", "label": "Gold group swim",
   "start": "2026-10-20T17:45:00", "end": "2026-10-20T19:30:00",
-  "location": "Fort Eustis Aquatic Center",
+  "location": "Wrenfield Aquatic Center",
   "rrule": "FREQ=WEEKLY;BYDAY=TU;UNTIL=20270531T235959Z",
   "notes": "Arrive 10–15 min early"}'
 
 # One week moves to 18:30 at a different pool
 curl "${H[@]}" -X PUT "$U/events/tue-swim/occurrences/2026-10-27" \
-  -d '{"start": "2026-10-27T18:30:00", "location": "Gosnold Pool"}'
+  -d '{"start": "2026-10-27T18:30:00", "location": "Larkmoor Pool"}'
 
 # Thanksgiving week is off
 curl "${H[@]}" -X DELETE "$U/events/tue-swim/occurrences/2026-11-24"

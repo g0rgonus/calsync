@@ -492,12 +492,17 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
                 except inbound.Invalid as exc:
                     audit(source.id, "PUT", external_id, "422")
                     raise invalid(exc) from None
+                items = repo.inbound_items(conn, source.id)
+                problems = inbound.parent_problems(
+                    external_id, event, {i.external_id: i.state for i in items})
+                if problems:
+                    audit(source.id, "PUT", external_id, "422 part_of")
+                    raise invalid(inbound.Invalid(problems))
                 state, orphaned = inbound.put_event(
                     source.id, external_id, old.state if old else None, event,
                     default_tz=tz)
                 if old is None and request.query.get("allow_overlap") not in ("1", "true"):
-                    others = [(i.external_id, i.state)
-                              for i in repo.inbound_items(conn, source.id)
+                    others = [(i.external_id, i.state) for i in items
                               if not i.cancelled]
                     clash = inbound.overlaps(source.id, external_id, state, others,
                                              default_tz=tz)

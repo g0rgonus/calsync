@@ -2766,7 +2766,7 @@ def test_an_inbound_team_gets_a_key_shown_once_and_stored_only_as_a_hash(
     from calsync.inbound import events as inbound_events
 
     page = client.post("/onboard/inbound", {
-        "team_name": "Dolphins", "child": "parker", "sport": "swimming",
+        "team_name": "Herons", "child": "parker", "sport": "swimming",
     })
     assert page["status"] == 200
     assert page["headers"].get("Cache-Control") == "no-store"
