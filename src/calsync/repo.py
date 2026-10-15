@@ -12,6 +12,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
+from . import overlay as overlay_mod
 from .models import Activity, Child, Event, Venue
 
 
@@ -183,6 +184,12 @@ class EventState:
     #: Why a person took this event off the calendar, or None. One of
     #: `withheld.REASONS`; it outlives every later poll, which is the point.
     withheld: str | None = None
+    #: When the event is on the calendar. `starts_at` is the feed's start, which
+    #: the diff and the sync window go by; this is the one to ask "has it
+    #: happened yet" — they differ only while an override moves the event.
+    shown_starts_at: str = ""
+    #: The overrides the last accepted write carried (`overlay.Overlay`).
+    applied_overlay: dict | None = None
 
 
 def event_states(conn: sqlite3.Connection, source_id: str) -> dict[str, EventState]:
@@ -208,7 +215,17 @@ def _event_state(row: sqlite3.Row) -> EventState:
         starts_at=row["starts_at"],
         cancelled=bool(row["cancelled"]),
         withheld=row["withheld"],
+        shown_starts_at=row["shown_starts_at"] or row["starts_at"],
+        applied_overlay=_overlay(row["applied_overlay"]),
     )
+
+
+def _overlay(text: str | None) -> dict | None:
+    return json.loads(text) if text else None
+
+
+def _dumps(value) -> str | None:
+    return None if value is None else json.dumps(value, sort_keys=True)
 
 
 def event_state(conn: sqlite3.Connection, uid: str) -> EventState | None:
@@ -231,6 +248,8 @@ def record_event_state(
     content_hash: str,
     remote_etag: str | None,
     starts_at: str,
+    shown_starts_at: str | None = None,
+    applied_overlay: dict | None = None,
 ) -> None:
     """Record a successful write. Call this only *after* the target accepted it.
 
@@ -245,13 +264,18 @@ def record_event_state(
     same reason ``cancelled`` is: an event written again is live again, and a
     stale record would let a later bad read of it pass as deliberate. That is
     also how a game the feed un-cancels comes back.
+
+    ``starts_at`` is the source's start and ``shown_starts_at`` the one that was
+    written, which an override can move; ``applied_overlay`` is the overrides
+    that write carried. All three describe the write just accepted, so they are
+    recorded together or not at all.
     """
     conn.execute(
         """
         INSERT INTO event_state
             (uid, source_id, collection, remote_id, content_hash, remote_etag,
-             starts_at, cancelled, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 0, datetime('now'))
+             starts_at, shown_starts_at, applied_overlay, cancelled, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'))
         ON CONFLICT(uid) DO UPDATE SET
             source_id    = excluded.source_id,
             collection   = excluded.collection,
@@ -259,13 +283,38 @@ def record_event_state(
             content_hash = excluded.content_hash,
             remote_etag  = excluded.remote_etag,
             starts_at    = excluded.starts_at,
+            shown_starts_at = excluded.shown_starts_at,
+            applied_overlay = excluded.applied_overlay,
             cancelled    = 0,
             updated_at   = excluded.updated_at,
             removal_approved_at  = NULL,
             cancelled_upstream_at = NULL
         """,
         (uid, source_id, collection, remote_id, content_hash, remote_etag,
-         starts_at),
+         starts_at, shown_starts_at or starts_at, _dumps(applied_overlay)),
+    )
+
+
+def record_receipt_only(
+    conn: sqlite3.Connection, *, uid: str, content: dict, applied_overlay: dict | None,
+    observed_at: str,
+) -> None:
+    """Re-describe an event whose calendar copy is already right.
+
+    For the one case where the two layers move and their sum does not: an
+    override removed while the feed says the same thing, or a feed catching up
+    with a correction. The calendar holds exactly what it would be sent, so
+    there is nothing to write there, and sending it anyway is a rewrite of a
+    shared calendar for nothing. The receipts still have to say which layer
+    owns the value now, or the API would go on attributing it to a person.
+
+    No target write precedes this, and none is needed: what the target holds
+    is what these rows, summed, describe — before and after.
+    """
+    record_event_content(conn, uid=uid, content=content, observed_at=observed_at)
+    conn.execute(
+        "UPDATE event_state SET applied_overlay = ? WHERE uid = ?",
+        (_dumps(applied_overlay), uid),
     )
 
 
@@ -313,10 +362,10 @@ def placements(conn: sqlite3.Connection, *, since: str) -> list[dict]:
     outranks cancelled because it is the reason, not the result.
     """
     rows = conn.execute(
-        "SELECT uid, source_id, collection, starts_at, cancelled, withheld, "
-        "removal_approved_at, cancelled_upstream_at FROM event_state "
-        "WHERE starts_at >= ? "
-        "ORDER BY starts_at, uid",
+        "SELECT uid, source_id, collection, shown_starts_at, cancelled, "
+        "withheld, removal_approved_at, cancelled_upstream_at FROM event_state "
+        "WHERE shown_starts_at >= ? "
+        "ORDER BY shown_starts_at, uid",
         (since,),
     )
     out = []
@@ -331,7 +380,9 @@ def placements(conn: sqlite3.Connection, *, since: str) -> list[dict]:
             state = "live"
         out.append({
             "uid": r["uid"], "source_id": r["source_id"],
-            "collection": r["collection"], "starts_at": r["starts_at"],
+            # When it is on the calendar, which is what a reader of the
+            # calendar server sees — not the feed's start, if a person moved it.
+            "collection": r["collection"], "starts_at": r["shown_starts_at"],
             "state": state,
         })
     return out
@@ -517,6 +568,182 @@ def prune_event_content(conn: sqlite3.Connection, *, before: str) -> int:
     return cursor.rowcount
 
 
+
+# --- a person's corrections, laid over what the source said -----------------
+#
+# The overlay half of an event (`overlay.py`). Nothing in the poll path writes
+# these: a poll owns `event_content` and a person owns this, which is what
+# makes a correction survive the next poll of a feed still publishing the old
+# value.
+
+
+@dataclass(frozen=True)
+class Override:
+    uid: str
+    unit: str
+    value: dict
+    #: What the source said when this was set, in the same representation.
+    baseline: dict
+    reason: str
+    actor: str | None
+    revision: int
+    set_at: str
+
+
+def _override(row: sqlite3.Row) -> Override:
+    return Override(
+        uid=row["uid"], unit=row["unit"],
+        value=json.loads(row["value"]), baseline=json.loads(row["baseline"]),
+        reason=row["reason"], actor=row["actor"],
+        revision=row["revision"], set_at=row["set_at"],
+    )
+
+
+def overrides_for(conn: sqlite3.Connection, source_id: str) -> dict[str, dict]:
+    """``{uid: overlay}`` for a source, in `overlay.Overlay`'s shape."""
+    rows = conn.execute(
+        "SELECT o.* FROM event_overrides o JOIN event_state s ON s.uid = o.uid "
+        "WHERE s.source_id = ?",
+        (source_id,),
+    )
+    out: dict[str, dict] = {}
+    for row in rows:
+        item = _override(row)
+        out.setdefault(item.uid, {})[item.unit] = {
+            "value": item.value, "set_at": item.set_at,
+        }
+    return out
+
+
+def overrides_of(conn: sqlite3.Connection, uid: str) -> dict[str, Override]:
+    """Every override on one event, by unit."""
+    return {
+        row["unit"]: _override(row)
+        for row in conn.execute("SELECT * FROM event_overrides WHERE uid = ?", (uid,))
+    }
+
+
+def _source_value(conn: sqlite3.Connection, uid: str, unit: str) -> dict:
+    """What the source layer currently says for one unit of one event."""
+    row = conn.execute(
+        "SELECT s.starts_at, c.* FROM event_state s "
+        "JOIN event_content c ON c.uid = s.uid WHERE s.uid = ?",
+        (uid,),
+    ).fetchone()
+    if row is None:
+        # A row written before `event_content` existed backfills on its next
+        # poll. Until then there is no record of what the feed said, and an
+        # override set now would have no baseline to be compared against.
+        raise overlay_mod.OverrideError(
+            "calsync has not recorded what the feed says about that event yet; "
+            "it will have after the next sync"
+        )
+    return {column: row[column] for column in overlay_mod.UNITS[unit]}
+
+
+def set_override(
+    conn: sqlite3.Connection, uid: str, unit: str, value: dict, *,
+    reason: str, actor: str | None = None,
+) -> Override:
+    """Record a person's correction to one unit of one event.
+
+    Stores the decision only; the calendar changes on the next sync, which is
+    the one thing that writes events (`withheld.py` draws the same line). The
+    baseline is taken from the source layer now, so that a later poll can tell
+    "the feed has not moved" from "the feed has moved to something else".
+    """
+    from . import warmup
+
+    value = overlay_mod.normalize(unit, value)
+    reason = (reason or "").strip()
+    if not reason:
+        raise overlay_mod.OverrideError("say why — it is what the history shows")
+    state = event_state(conn, uid)
+    if state is None:
+        raise overlay_mod.OverrideError("calsync has no record of writing that event")
+    if warmup.is_synthetic(uid):
+        # Derived from its game, so it follows the game's correction. A second
+        # row for the warm-up is a second answer to one question.
+        raise overlay_mod.OverrideError(
+            "a warm-up follows its game; correct the game instead"
+        )
+    baseline = _source_value(conn, uid, unit)
+    previous = overrides_of(conn, uid).get(unit)
+    conn.execute(
+        """
+        INSERT INTO event_overrides (uid, unit, value, baseline, reason, actor)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(uid, unit) DO UPDATE SET
+            value    = excluded.value,
+            baseline = excluded.baseline,
+            reason   = excluded.reason,
+            actor    = excluded.actor,
+            revision = event_overrides.revision + 1,
+            set_at   = datetime('now')
+        """,
+        (uid, unit, _dumps(value), _dumps(baseline), reason, actor),
+    )
+    _log_override(
+        conn, uid, unit, "edit" if previous else "set",
+        old=previous.value if previous else None, new=value,
+        upstream=baseline, actor=actor, reason=reason,
+    )
+    return overrides_of(conn, uid)[unit]
+
+
+def remove_override(
+    conn: sqlite3.Connection, uid: str, unit: str, *,
+    actor: str | None = None, reason: str | None = None,
+) -> bool:
+    """Lift a correction. True if there was one.
+
+    The feed's value comes back on the next sync, through the ordinary write.
+    """
+    previous = overrides_of(conn, uid).get(unit)
+    if previous is None:
+        return False
+    conn.execute("DELETE FROM event_overrides WHERE uid = ? AND unit = ?", (uid, unit))
+    _log_override(
+        conn, uid, unit, "remove", old=previous.value, new=None,
+        upstream=None, actor=actor, reason=reason,
+    )
+    return True
+
+
+def _log_override(
+    conn: sqlite3.Connection, uid: str, unit: str, action: str, *,
+    old, new, upstream, actor, reason,
+) -> None:
+    conn.execute(
+        "INSERT INTO override_log "
+        "(uid, unit, action, old_value, new_value, upstream, actor, reason) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (uid, unit, action, _dumps(old), _dumps(new), _dumps(upstream), actor, reason),
+    )
+
+
+def override_history(conn: sqlite3.Connection, uid: str) -> list[sqlite3.Row]:
+    """Every change to one event's overrides, oldest first."""
+    return list(conn.execute(
+        "SELECT * FROM override_log WHERE uid = ? ORDER BY id", (uid,)
+    ))
+
+
+def prune_overrides(conn: sqlite3.Connection, *, before: str) -> int:
+    """Drop overrides, and their history, for events aged out of the window.
+
+    Same bound and same reason as :func:`prune_event_content`: these are times
+    and places at rest, and once the event has aged out there is nothing left
+    for a correction to correct. Measured on the source start, as that prune
+    is, so the two layers of one event leave together.
+    """
+    stale = "SELECT uid FROM event_state WHERE starts_at < ?"
+    removed = conn.execute(
+        f"DELETE FROM event_overrides WHERE uid IN ({stale})", (before,)
+    ).rowcount
+    conn.execute(f"DELETE FROM override_log WHERE uid IN ({stale})", (before,))
+    return removed
+
 @dataclass(frozen=True)
 class StoredEvent:
     """An event reassembled from its receipt, plus where it went.
@@ -539,11 +766,15 @@ class StoredEvent:
     #: going" are not the same row to read.
     withheld: str | None
     observed_at: str
+    #: The overrides ``event`` carries — those the last write applied, not
+    #: whatever has been saved since, so this cannot describe a correction the
+    #: calendar does not have yet.
+    overrides: dict | None = None
 
 
 _STORED_SQL = f"""
     SELECT s.uid, s.source_id, s.collection, s.cancelled, s.withheld, s.starts_at,
-           s.content_hash, c.observed_at,
+           s.shown_starts_at, s.applied_overlay, s.content_hash, c.observed_at,
            {', '.join('c.' + col for col in CONTENT_COLUMNS)},
            src.activity_id, a.child_id
       FROM event_state s
@@ -564,8 +795,12 @@ def _stored_event(row: sqlite3.Row) -> StoredEvent:
             address=row["venue_address"],
             field=row["venue_field"],
         )
+    applied = _overlay(row["applied_overlay"])
     return StoredEvent(
-        event=Event(
+        # The source layer with the applied overlay on top, which is what the
+        # last accepted write put on the calendar. Composed here, once, so
+        # `/calendar`, the digest and the API cannot each sum it differently.
+        event=overlay_mod.apply(Event(
             uid=row["uid"],
             activity_id=row["activity_id"],
             starts_at=datetime.fromisoformat(row["starts_at"]),
@@ -587,7 +822,7 @@ def _stored_event(row: sqlite3.Row) -> StoredEvent:
                 datetime.fromisoformat(row["arrive_at"]) if row["arrive_at"] else None
             ),
             warmup_for=row["warmup_for"],
-        ),
+        ), applied),
 
         source_id=row["source_id"],
         activity_id=row["activity_id"],
@@ -596,6 +831,7 @@ def _stored_event(row: sqlite3.Row) -> StoredEvent:
         cancelled=bool(row["cancelled"]),
         withheld=row["withheld"],
         observed_at=row["observed_at"],
+        overrides=applied,
     )
 
 
@@ -617,7 +853,10 @@ def stored_events(
     (docs/API.md), and a caller that cannot see the cancellation is a caller
     still holding the old time.
     """
-    sql = _STORED_SQL + " WHERE s.starts_at >= ? AND s.starts_at <= ?"
+    # By when it is on the calendar. An event an override moved by a week is
+    # on the day it was moved to, and a read by the feed's day would leave it
+    # out of the one view somebody checks before driving there.
+    sql = _STORED_SQL + " WHERE s.shown_starts_at >= ? AND s.shown_starts_at <= ?"
     params: list = [start, end]
     if child_id:
         sql += " AND a.child_id = ?"
@@ -625,7 +864,7 @@ def stored_events(
     if activity_id:
         sql += " AND src.activity_id = ?"
         params.append(activity_id)
-    sql += " ORDER BY s.starts_at, s.uid"
+    sql += " ORDER BY s.shown_starts_at, s.uid"
     return [_stored_event(row) for row in conn.execute(sql, params)]
 
 

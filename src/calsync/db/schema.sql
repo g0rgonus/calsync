@@ -145,6 +145,16 @@ CREATE TABLE IF NOT EXISTS event_state (
     -- When the feed marked this event cancelled. Recorded before the delete,
     -- like removal_approved_at, and for the same reader; cleared the same way.
     cancelled_upstream_at TEXT,
+    -- When the event is on the calendar, which differs from `starts_at` only
+    -- while a person's override moves it. `starts_at` stays the feed's start,
+    -- because the diff and the sync window compare like with like; this is the
+    -- one everything asking "has it happened yet" or "which day is it on" reads.
+    shown_starts_at TEXT,
+    -- The overrides the last accepted write carried, as JSON, or NULL. The
+    -- receipt for the overlay half of an event: `event_content` holds what the
+    -- source said, this holds what a person laid on top, and together they are
+    -- what is on the calendar (`overlay.py`).
+    applied_overlay TEXT,
     updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS event_state_source ON event_state(source_id);
@@ -156,10 +166,8 @@ CREATE INDEX IF NOT EXISTS event_state_starts ON event_state(starts_at);
 -- reintroduces a failure the design exists to avoid:
 --
 -- 1. **These columns are what the SOURCE said, not what is on the calendar.**
---    The distinction is invisible today, because the feed is the only thing
---    that contributes to an event. It stops being invisible the moment
---    amendments land (docs/MATRIX.md §4): the calendar will then be this layer
---    plus a higher-trust overlay, and a poll must be able to rewrite this layer
+--    The calendar is this layer plus `event_overrides`, a person's corrections
+--    (docs/MATRIX.md §4), and a poll must be able to rewrite this layer
 --    freely *without* reverting the overlay. That only works because a poll
 --    never writes anything but this. Storing rendered values here instead would
 --    make every poll fight every amendment, which is the exact silent revert
@@ -211,6 +219,53 @@ CREATE TABLE IF NOT EXISTS event_content (
     -- The poll this came from. What tells a reader how stale the answer is.
     observed_at     TEXT NOT NULL
 );
+
+-- A person's correction to one event, one row per unit of it (`overlay.py`).
+--
+-- The overlay half of "calendar content = source layer + overlay"
+-- (docs/API.md, "What calsync remembers"). A poll writes `event_content` and
+-- never writes here, which is what stops a poll reverting a correction: the
+-- two layers have different owners.
+--
+-- A unit is what a coach changes together — `time` is start, end and all-day
+-- as one, `location` is venue and field as one — so a fix to half of a unit
+-- can never be mistaken for a fix to the whole. `value` and `baseline` are
+-- JSON in `event_content`'s own column representation. `baseline` is what the
+-- source said when the override was set: it is what tells "the feed has not
+-- moved" from "the feed has moved to something else".
+--
+-- Against `event_state`, which is tombstoned rather than deleted, so an
+-- override outlives its event's cancellation and is still there if the event
+-- comes back.
+CREATE TABLE IF NOT EXISTS event_overrides (
+    uid         TEXT NOT NULL REFERENCES event_state(uid) ON DELETE CASCADE,
+    unit        TEXT NOT NULL,
+    value       TEXT NOT NULL,
+    baseline    TEXT NOT NULL,
+    reason      TEXT NOT NULL,
+    actor       TEXT,
+    -- Incremented on every edit, so a writer that read an older row can tell.
+    revision    INTEGER NOT NULL DEFAULT 1,
+    set_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (uid, unit)
+);
+
+-- Every change to an override, by whoever made it. Append-only; pruned with
+-- the sync window like the content it describes, because old and new values
+-- are times and places as much as `event_content` is.
+CREATE TABLE IF NOT EXISTS override_log (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    uid         TEXT NOT NULL,
+    unit        TEXT NOT NULL,
+    action      TEXT NOT NULL,            -- set | edit | remove
+    old_value   TEXT,
+    new_value   TEXT,
+    upstream    TEXT,
+    actor       TEXT,
+    reason      TEXT,
+    at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS override_log_uid ON override_log(uid);
 
 CREATE TABLE IF NOT EXISTS poll_runs (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,

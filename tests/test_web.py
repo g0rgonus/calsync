@@ -1471,12 +1471,13 @@ def test_an_event_that_has_already_started_is_refused(writing, tmp_path):
     client, calendar = writing
     synced(client, tmp_path, calendar)
     uid = _an_upcoming_event(tmp_path)
-    # Moved into the past rather than waited for: the refusal compares
-    # `starts_at` against the clock, and the fixture season is entirely ahead
-    # of the pinned one.
+    # Moved into the past rather than waited for: the refusal compares when
+    # the event is on the calendar against the clock, and the fixture season is
+    # entirely ahead of the pinned one.
     conn = db.open_db(tmp_path / "calsync.db")
-    conn.execute("UPDATE event_state SET starts_at = ? WHERE uid = ?",
-                 ("2026-01-04T15:00:00+00:00", uid))
+    conn.execute("UPDATE event_state SET starts_at = ?, shown_starts_at = ? "
+                 "WHERE uid = ?",
+                 ("2026-01-04T15:00:00+00:00", "2026-01-04T15:00:00+00:00", uid))
     conn.commit()
     conn.close()
 

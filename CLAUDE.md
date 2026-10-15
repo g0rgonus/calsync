@@ -30,8 +30,10 @@ minutes cannot justify polling every team's feed; the counts come from
 nothing** — approving happens in the console, by a person. It rests on `event_content`, which records what each event was
 alongside `event_state`'s record of where it went (`docs/API.md`, "What calsync
 remembers"). The write half — documents, proposals, approvals, task tokens,
-`PATCH` and its amendment overlay — is deliberately unbuilt, because none of its
-consumers exist and a review gate with nothing to review cannot be shown to work.
+`PATCH` — is deliberately unbuilt, because none of its consumers exist and a
+review gate with nothing to review cannot be shown to work. The overlay `PATCH`
+would write is built (`overlay.py`, `event_overrides`); its writer for now is
+`repo.set_override`, with a console page to follow.
 
 **Inbound sources** (`calsync inbound`, `src/calsync/inbound/`,
 `docs/deployment/inbound.md`) are a source kind that is pushed to rather than
@@ -199,7 +201,7 @@ so a fresh clone needs:
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/pytest                                    # 752 tests, ~7s
+.venv/bin/pytest                                    # 781 tests, ~7s
 .venv/bin/pytest tests/test_player360.py -k content_hash    # single test
 ```
 
@@ -511,11 +513,24 @@ Decisions that span several files and are easy to undo by accident:
 - **`event_content` is a receipt, not a cache, and it holds what the *source*
   said.** Written in the same call as the placement record, after the target
   accepted the write, so it cannot disagree with the calendar. Its columns are
-  the feed's view — never the rendered one — because the calendar will later be
-  that layer plus a higher-trust amendment overlay, and a poll must be able to
-  rewrite its own layer without reverting one it does not own (`docs/MATRIX.md`
-  §4). No `summary` column, no coordinates, and rows age out with
-  `sync_window_back_days`.
+  the feed's view — never the rendered one — because the calendar is that layer
+  plus a person's overrides, and a poll must be able to rewrite its own layer
+  without reverting one it does not own (`docs/MATRIX.md` §4). No `summary`
+  column, no coordinates, and rows age out with `sync_window_back_days`.
+- **An override is a layer, not an edit** (`overlay.py`). A poll writes
+  `event_content` and `event_state.starts_at`; a person writes
+  `event_overrides`; neither touches the other's, which is the whole reason a
+  correction survives the next poll. Four things are easy to undo by accident.
+  The feed's `content_hash` passes through untouched, so the diff and the guard
+  weigh only the feed. The overlay goes on **before** `warmup.expand`, and
+  expansion runs **once**, over the corrected events — a second pass over the
+  feed's would give a warm-up two versions of its content and rewrite it every
+  poll. The sync loop compares the **sum** of the layers last written
+  (`event_content` ⊕ `event_state.applied_overlay`) against the sum it would
+  write now, so lifting an override the feed already agrees with costs no
+  rewrite. And `starts_at` stays the feed's start, for the diff and the window,
+  while `shown_starts_at` is when the event is on the calendar — what retiring,
+  withholding, `/v1/placements` and every receipt reader go by.
 - **Stored content is checked independently of the feed's hash**, the same way
   placement is. `content_hash` covers the raw feed component, before venue
   enrichment — so teaching an alias or confirming an address changes what an

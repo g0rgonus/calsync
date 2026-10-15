@@ -26,7 +26,7 @@ from .. import __version__
 #: Bumped when a shape changes in a way a client could notice. Not the package
 #: version: an agent cares whether the contract moved, not whether a venue
 #: parser was tidied.
-CONTRACT_VERSION = "1.4"
+CONTRACT_VERSION = "1.5"
 
 
 #: One entry per route the app actually serves, keyed by (method, rule) exactly
@@ -50,6 +50,9 @@ ENDPOINTS: dict[tuple[str, str], dict] = {
         },
         "returns": {
             "events": "array; `summary_rendered` is a render — never parse it",
+            "resolution": "per event, per field: who owns its value — the feed "
+                          "(`owner: source`) or a person's override "
+                          "(`owner: override`, tier 1, `source_id` null)",
             "sources": "freshness per source; `stale` means the data may lag",
             "retained_from": "present when the window was clamped to retention",
         },

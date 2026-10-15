@@ -1050,7 +1050,7 @@ def create_app(
             state = repo.event_state(conn, uid)
             if state is None:
                 raise Refused("calsync has no record of writing that event")
-            if not retire.upcoming(state.starts_at, clock()):
+            if not retire.upcoming(state.shown_starts_at, clock()):
                 # The same refusal `retire.py` makes, for the same reason: it
                 # already happened, and taking it off now deletes the record of
                 # a game that was played rather than one nobody is going to.
