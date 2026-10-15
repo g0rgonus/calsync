@@ -390,6 +390,32 @@
   </form>
 </div>
 
+<h2 id="read-key">Household read key</h2>
+% include('_saved.tpl', flash=flash, at=at, section='read-key')
+<div class="card">
+  <p class="note" style="margin-top:0">
+    Lets a tool read <strong>every team's calendar, for every kid</strong>, through
+    the inbound service's <span class="raw">GET /inbound/v1/calendar</span>. It
+    writes nothing, and a team's own key cannot do this. Only calsync's events are
+    in it — appointments added by hand are not.
+  </p>
+% if read_key_set:
+  <p class="note">A read key is set · last used {{ read_key_used or 'never' }}.</p>
+  <div class="btn-row">
+    <form method="post" action="/settings/read-key">
+      <button class="btn btn-quiet" type="submit">Replace the read key</button>
+    </form>
+    <form method="post" action="/settings/read-key/remove">
+      <button class="btn btn-quiet" type="submit">Remove it</button>
+    </form>
+  </div>
+% else:
+  <form method="post" action="/settings/read-key">
+    <button class="btn" type="submit">Make a read key</button>
+  </form>
+% end
+</div>
+
 <h2 id="matrix">Matrix</h2>
 % include('_saved.tpl', flash=flash, at=at, section='matrix')
 <div class="card">

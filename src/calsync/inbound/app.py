@@ -42,7 +42,7 @@ from zoneinfo import ZoneInfo
 from bottle import Bottle, HTTPResponse, request, response
 
 from .. import db, repo, sources, targeting
-from ..api.app import _QuietHandler, _Threaded
+from ..api.app import _QuietHandler, _Threaded, events_body
 from ..secrets import SecretError, SecretStore
 from ..settings import Settings
 from ..sync import sync_source
@@ -206,10 +206,29 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
             log(f"inbound {source_id} refused: "
                 f"{'no key' if not presented else 'wrong key'} from {client()}")
             raise _unauthorised()
-        touch(conn, source_id)
+        touch(conn, lambda: repo.inbound_key_used_at(conn, source_id),
+              lambda at: repo.touch_inbound_key(conn, source_id, at))
         return source
 
-    def touch(conn, source_id: str) -> None:
+    def authorise_reader(conn) -> None:
+        """The household read key: every team's calendar, and nothing else.
+
+        Checked the same way as a team key — one comparison, against a dummy
+        when no key is set — and refused the same way, so the response says
+        nothing about whether a read key exists. A team key is not one: each
+        opens a single team, and the whole family's schedule is a wider grant.
+        """
+        presented = (request.get_header(KEY_HEADER) or "").strip()
+        stored = repo.read_key_hash(conn)
+        matched = inbound.key_matches(presented, stored or _NO_SUCH_KEY)
+        if not (stored and matched):
+            log(f"inbound calendar refused: "
+                f"{'no key' if not presented else 'wrong key'} from {client()}")
+            raise _unauthorised()
+        touch(conn, lambda: repo.read_key_used_at(conn),
+              lambda at: repo.touch_read_key(conn, at))
+
+    def touch(conn, last_used, record) -> None:
         """Record that the key was used, at most once a minute.
 
         The console shows the last *write*; a key used only to read the
@@ -218,7 +237,7 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
         the request.
         """
         now = clock()
-        last = repo.inbound_key_used_at(conn, source_id)
+        last = last_used()
         if last and now - datetime.fromisoformat(last) < timedelta(minutes=1):
             return
         # A short wait of its own: with the connection's normal timeout, a
@@ -226,7 +245,7 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
         # over a timestamp that is allowed to be skipped.
         conn.execute(f"PRAGMA busy_timeout = {TOUCH_TIMEOUT_MS}")
         try:
-            repo.touch_inbound_key(conn, source_id, now.isoformat())
+            record(now.isoformat())
             conn.commit()
         except sqlite3.OperationalError:
             conn.rollback()
@@ -417,6 +436,23 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
     @app.get(PREFIX + "/openapi.json")
     def openapi():
         return _dump(contract.openapi(server()))
+
+    # --- the household calendar --------------------------------------------------
+
+    @app.get(PREFIX + "/calendar")
+    def calendar():
+        """Every team's events, read-only, exactly as `GET /v1/events` serves them.
+
+        The same function builds both, so a tool reading here and the Mac
+        mirror reading the read API cannot be told two different things. Its
+        limits come with it: a bounded window, and only what calsync wrote — a
+        hand-made appointment is not in calsync and so is not here either.
+        """
+        with connect() as conn:
+            authorise_reader(conn)
+            body = events_body(conn, request.query, now=clock())
+        audit("household", "GET calendar", f"{body['count']} events", "200")
+        return _dump(body)
 
     # --- the source --------------------------------------------------------------
 

@@ -1547,3 +1547,47 @@ def touch_inbound_key(conn: sqlite3.Connection, source_id: str, at: str) -> None
     conn.execute(
         "UPDATE sources SET inbound_key_used_at = ? WHERE id = ?", (at, source_id)
     )
+
+
+# --- the household read key -----------------------------------------------------
+#
+# One key that reads every team's calendar through the inbound service and
+# writes nothing. Its hash is a settings row written only by the console — not
+# in DEFAULT_SETTINGS, so no environment variable can seed one — and, like a
+# team key, the key itself is shown once and never stored.
+
+READ_KEY_HASH = "inbound_read_key_sha256"
+READ_KEY_USED = "inbound_read_key_used_at"
+
+
+def _setting(conn: sqlite3.Connection, key: str) -> str | None:
+    row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+    return (row["value"] or None) if row else None
+
+
+def read_key_hash(conn: sqlite3.Connection) -> str | None:
+    return _setting(conn, READ_KEY_HASH)
+
+
+def read_key_used_at(conn: sqlite3.Connection) -> str | None:
+    return _setting(conn, READ_KEY_USED)
+
+
+def set_read_key_hash(conn: sqlite3.Connection, digest: str | None) -> None:
+    """Replace or remove the key. The old one stops working at once, and
+    "last used" starts again — it describes this key, not the household."""
+    conn.execute("DELETE FROM settings WHERE key IN (?, ?)", (READ_KEY_HASH, READ_KEY_USED))
+    if digest:
+        conn.execute(
+            "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now'))",
+            (READ_KEY_HASH, digest),
+        )
+    conn.commit()
+
+
+def touch_read_key(conn: sqlite3.Connection, at: str) -> None:
+    conn.execute(
+        "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now')) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+        (READ_KEY_USED, at),
+    )

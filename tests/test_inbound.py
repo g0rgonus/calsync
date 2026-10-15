@@ -941,3 +941,96 @@ def test_a_part_of_a_cancelled_meet_is_written_with_a_warning(client, out):
     clean = client.put(BASE + "/events/harbor-inv-s3",
                        _session(3, "13:00", "16:45"))["json"]
     assert len(clean["warnings"]) == 1            # still true on every write
+
+
+# --- the household read key ------------------------------------------------------------------
+
+READ_KEY = "csk_test-household-read-key-0000000000000"
+CALENDAR = "/inbound/v1/calendar?from=2026-10-19&to=2026-10-26"
+
+
+@pytest.fixture
+def with_read_key(db_path):
+    conn = db.connect(db_path)
+    repo.set_read_key_hash(conn, inbound.hash_key(READ_KEY))
+    conn.close()
+
+
+def _two_teams(client):
+    """A practice for each kid, on two sources with two keys."""
+    single = {"type": "practice", "label": "Swim",
+              "start": "2026-10-20T17:45:00", "end": "2026-10-20T19:30:00"}
+    assert client.put(BASE + "/events/tue-swim", single)["status"] == 201
+    wrens = Client(client.app, key=OTHER_KEY)
+    assert wrens.put("/inbound/v1/sources/in-wrens/events/wed-practice",
+                     dict(single, start="2026-10-21T18:00:00",
+                          end="2026-10-21T19:00:00", label="Practice"))["status"] == 201
+
+
+def test_the_read_key_sees_every_team(client, with_read_key):
+    _two_teams(client)
+    r = client.get(CALENDAR, key=READ_KEY)
+    assert r["status"] == 200, r["json"]
+    by_child = {e["child"]["id"] for e in r["json"]["events"]}
+    assert by_child == {"jesse", "nadia"}
+    assert r["json"]["count"] == 2
+
+
+def test_it_answers_exactly_what_the_read_api_answers(client, with_read_key, db_path,
+                                                      tmp_path):
+    from calsync.api import app as api_app
+    from calsync.secrets import SecretStore
+    _two_teams(client)
+    secrets_file = tmp_path / "secrets.json"
+    secrets_file.write_text(json.dumps({"api_token": "t0ken"}))
+    secrets_file.chmod(0o600)
+    api = api_app.create_app(db_path, secrets=SecretStore(path=secrets_file, environ={}),
+                             clock=lambda: NOW)
+    environ = {"REQUEST_METHOD": "GET", "PATH_INFO": "/v1/events",
+               "QUERY_STRING": "from=2026-10-19&to=2026-10-26", "SERVER_NAME": "x",
+               "SERVER_PORT": "1", "SERVER_PROTOCOL": "HTTP/1.1",
+               "wsgi.input": BytesIO(b""), "wsgi.errors": StringIO(),
+               "wsgi.url_scheme": "http", "HTTP_AUTHORIZATION": "Bearer t0ken"}
+    read_api = json.loads(b"".join(api(environ, lambda *_a: None)))
+    assert read_api["count"] == 2                  # not two empty answers agreeing
+    assert client.get(CALENDAR, key=READ_KEY)["json"] == read_api
+
+
+def test_a_team_key_cannot_read_the_household(client, with_read_key):
+    r = client.get(CALENDAR)                      # the team key
+    assert r["status"] == 401
+
+
+def test_the_read_key_writes_nothing_and_opens_no_team(client, with_read_key):
+    assert client.put(BASE + "/events/x", PRACTICE, key=READ_KEY)["status"] == 401
+    assert client.get(BASE, key=READ_KEY)["status"] == 401
+
+
+def test_with_no_read_key_set_nothing_reads_the_calendar(client):
+    none_set = client.get(CALENDAR, key=READ_KEY)
+    wrong = client.get(CALENDAR, key="csk_guess")
+    assert none_set["status"] == wrong["status"] == 401
+    assert none_set["json"] == wrong["json"]       # says nothing about whether one exists
+
+
+def test_the_household_read_narrows_by_child(client, with_read_key):
+    _two_teams(client)
+    r = client.get(CALENDAR + "&child=nadia", key=READ_KEY)
+    assert [e["child"]["id"] for e in r["json"]["events"]] == ["nadia"]
+
+
+def test_the_household_window_is_bounded(client, with_read_key):
+    r = client.get("/inbound/v1/calendar?from=2026-01-01&to=2028-01-01", key=READ_KEY)
+    assert r["status"] == 400
+    assert r["json"]["error"]["code"] == "window_too_wide"
+
+
+def test_a_read_marks_the_read_key_used_and_a_new_one_starts_over(client, with_read_key,
+                                                                  db_path):
+    client.get(CALENDAR, key=READ_KEY)
+    conn = db.connect(db_path)
+    assert repo.read_key_used_at(conn) == NOW.isoformat()
+    repo.set_read_key_hash(conn, inbound.hash_key("csk_another"))
+    assert repo.read_key_used_at(conn) is None
+    conn.close()
+    assert client.get(CALENDAR, key=READ_KEY)["status"] == 401   # the old key is dead
