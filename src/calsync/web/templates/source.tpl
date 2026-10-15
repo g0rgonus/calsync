@@ -303,7 +303,8 @@
     <tr>
       <th>Inbound API</th>
       <td colspan="2">{{ pushed_items }} {{ 'event' if pushed_items == 1 else 'events' }} sent ·
-        last push {{ last_push or 'never' }}</td>
+        last push {{ last_push or 'never' }} ·
+        key last used {{ key_used or 'never' }}</td>
     </tr>
 % else:
     <tr>

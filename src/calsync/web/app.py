@@ -444,6 +444,7 @@ def create_app(
                 polls=repo.recent_polls(conn, source_id),
                 pushed=source.kind in sources.PUSHED,
                 last_push=repo.last_push(conn, source_id),
+                key_used=repo.inbound_key_used_at(conn, source_id),
                 pushed_items=len(repo.inbound_items(conn, source_id)),
                 held=_held_rows(
                     conn, source_id, report, zone=_zone(activity.tz), now=clock(),

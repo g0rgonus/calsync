@@ -61,6 +61,7 @@ class Client:
             "wsgi.errors": StringIO(),
             "wsgi.url_scheme": "http",
             "HTTP_HOST": "localhost:8732",
+            "REMOTE_ADDR": "10.0.0.5",
         }
         if key is not None:
             environ["HTTP_X_CALSYNC_KEY"] = key
@@ -612,3 +613,72 @@ def test_the_list_narrows_to_a_window_of_dates(client):
     assert [e["external_id"] for e in r["json"]["events"]] == ["tue-swim"]
     assert [o["date"] for o in r["json"]["events"][0]["occurrences"]] == ["2026-10-27"]
     assert client.get(BASE + "/events?from=soon")["status"] == 422
+
+
+
+# --- review fixes ---------------------------------------------------------------------------------
+
+
+def test_two_writers_with_the_same_etag_cannot_both_win(client, monkeypatch):
+    """Both read the event, both pass If-Match, the second silently replaces
+    the first — unless the read-check-save is one step. The barrier holds each
+    reader until the other arrives, which only happens if nothing serialises
+    them; with the lock, the second never gets in and the barrier times out."""
+    import threading
+
+    first = client.put(BASE + "/events/tue-swim", PRACTICE)
+    tag = first["headers"]["etag"]
+    gate = threading.Barrier(2, timeout=0.5)
+    real = repo.inbound_item
+
+    def racing_read(conn, source_id, external_id):
+        try:
+            gate.wait()
+        except threading.BrokenBarrierError:
+            pass
+        return real(conn, source_id, external_id)
+
+    monkeypatch.setattr(repo, "inbound_item", racing_read)
+    results = []
+
+    def write(label):
+        body = dict(PRACTICE, notes=label)
+        results.append(client.put(BASE + "/events/tue-swim", body,
+                                  headers={"If-Match": tag})["status"])
+
+    threads = [threading.Thread(target=write, args=(n,)) for n in ("a", "b")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert sorted(results) == [200, 412]
+
+
+def test_the_key_is_checked_before_the_body_is_read(client):
+    r = client.call("PUT", BASE + "/events/x", None, key=None)
+    assert r["status"] == 401                  # not 400 for the empty body
+
+
+def test_a_weak_etag_from_a_compressing_proxy_still_matches(client):
+    tag = client.put(BASE + "/events/tue-swim", PRACTICE)["headers"]["etag"]
+    r = client.put(BASE + "/events/tue-swim", dict(PRACTICE, notes="changed"),
+                   headers={"If-Match": "W/" + tag})
+    assert r["status"] == 200
+
+
+def test_the_log_names_the_real_peer_beside_a_claimed_address(client, log):
+    client.get(BASE, key="csk_wrong", headers={"X-Forwarded-For": "203.0.113.9"})
+    assert any("from 203.0.113.9 via 10.0.0.5" in line for line in log)
+    client.get(BASE, key="csk_wrong")
+    assert any(line.endswith("from 10.0.0.5") for line in log)
+
+
+def test_a_read_marks_the_key_used_and_a_new_key_starts_over(client, db_path):
+    conn = db.connect(db_path)
+    assert repo.inbound_key_used_at(conn, "in-dolphins") is None
+    client.get(BASE + "/events")
+    used = repo.inbound_key_used_at(conn, "in-dolphins")
+    assert used == NOW.isoformat()
+    repo.set_inbound_key_hash(conn, "in-dolphins", inbound.hash_key("csk_new"))
+    assert repo.inbound_key_used_at(conn, "in-dolphins") is None
+    conn.close()

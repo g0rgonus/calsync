@@ -167,9 +167,19 @@ curl "${H[@]}" "$U/events/tue-swim"
   feed's `STATUS:CANCELLED`: applied without the disappearance guard, because
   it is not an absence. A series shortened or moved by a PUT cancels the dates
   it no longer produces the same way.
+- **One writer per team at a time.** A write holds the team's lock and SQLite's
+  write lock from its first read to its save, so two tools sending the same
+  ETag cannot both succeed: one gets 412. 503 with `Retry-After` means the
+  poller had the database; nothing was read or written.
+- **Weak ETags match.** `If-Match: W/"…"` is compared as if strong, because a
+  compressing proxy rewrites tags that way on the way out.
 - **Throttled**: 60 writes a minute per team (429 with `Retry-After`).
+- **The key is checked before the body is read**, and the console shows when
+  each key was last used — reads included, since a leaked key used only to
+  read the schedule leaves no other trace.
 - **Logged**: source, event id, action and outcome, plus refused keys with the
-  caller's address. Never the key, never a body.
+  connecting address — and any `X-Forwarded-For`, shown as `claimed via peer`
+  rather than trusted. Never the key, never a body.
 - **Not TLS.** The service speaks plain HTTP; Pangolin terminates TLS. Keep the
   hop from Pangolin's connector to 8732 on a network you trust, and use
   `CALSYNC_INBOUND_BIND` and the firewall to admit only that connector.

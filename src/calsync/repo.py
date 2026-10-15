@@ -1527,8 +1527,23 @@ def inbound_key_hash(conn: sqlite3.Connection, source_id: str) -> str | None:
 
 
 def set_inbound_key_hash(conn: sqlite3.Connection, source_id: str, digest: str) -> None:
-    """Replace the key. The old one stops working the moment this commits."""
+    """Replace the key. The old one stops working the moment this commits, and
+    "last used" starts again — it describes this key, not the team."""
     conn.execute(
-        "UPDATE sources SET inbound_key_sha256 = ? WHERE id = ?", (digest, source_id)
+        "UPDATE sources SET inbound_key_sha256 = ?, inbound_key_used_at = NULL "
+        "WHERE id = ?", (digest, source_id)
     )
     conn.commit()
+
+
+def inbound_key_used_at(conn: sqlite3.Connection, source_id: str) -> str | None:
+    row = conn.execute(
+        "SELECT inbound_key_used_at FROM sources WHERE id = ?", (source_id,)
+    ).fetchone()
+    return row["inbound_key_used_at"] if row else None
+
+
+def touch_inbound_key(conn: sqlite3.Connection, source_id: str, at: str) -> None:
+    conn.execute(
+        "UPDATE sources SET inbound_key_used_at = ? WHERE id = ?", (at, source_id)
+    )

@@ -33,7 +33,7 @@ import sqlite3
 import threading
 import time
 from collections import deque
-from contextlib import closing
+from contextlib import closing, contextmanager
 from datetime import date, datetime, timedelta, timezone
 from wsgiref.simple_server import make_server
 
@@ -118,7 +118,7 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
     # reaches the log late or, if the process dies, never.
     log = log or (lambda line: print(line, flush=True))
     db_path = str(db_path)
-    locks: dict[str, threading.Lock] = {}
+    locks: dict[str, threading.RLock] = {}
     locks_guard = threading.Lock()
     recent_writes: dict[str, deque] = {}
 
@@ -128,9 +128,34 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
     def connect():
         return closing(db.connect(db_path))
 
-    def lock_for(source_id: str) -> threading.Lock:
+    def lock_for(source_id: str) -> threading.RLock:
+        """One writer per team at a time, from the first read to the end of the
+        sync. Re-entrant, because the sync a write ends with takes it too."""
         with locks_guard:
-            return locks.setdefault(source_id, threading.Lock())
+            return locks.setdefault(source_id, threading.RLock())
+
+    @contextmanager
+    def transaction():
+        """Read, check and save under SQLite's write lock.
+
+        The team lock above serialises this process. This covers anything else
+        that could write the same rows — a second replica of this service —
+        and it is taken before the first read, so two writers cannot both read
+        the same event, both pass `If-Match`, and have the second silently
+        replace the first. Closing without a commit rolls back, so a refusal
+        raised part-way leaves nothing behind.
+        """
+        with connect() as conn:
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+            except sqlite3.OperationalError as exc:
+                if "locked" not in str(exc):
+                    raise
+                # The poller held the database past the busy timeout. Nothing
+                # was read or written; the same request will work in a moment.
+                raise Problem(503, "busy", "calsync is writing; retry shortly",
+                              headers={"Retry-After": "5"}) from None
+            yield conn
 
     # --- errors as JSON, always ---------------------------------------------
 
@@ -154,10 +179,16 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
     # --- auth ----------------------------------------------------------------
 
     def client() -> str:
-        """Who is calling, for the log. Behind a proxy that is the proxy, so its
-        forwarded-for is preferred; it is a label here, never a control."""
-        forwarded = request.get_header("X-Forwarded-For") or ""
-        return forwarded.split(",")[0].strip() or request.remote_addr or "?"
+        """Who is calling, for the log — never a control.
+
+        The connecting address is always given, because it is the only part
+        nobody can make up. A forwarded-for is shown beside it as what the
+        caller *claims*: behind Pangolin that is the real client, and on the
+        LAN anything could have written it.
+        """
+        peer = request.environ.get("REMOTE_ADDR") or "?"
+        forwarded = (request.get_header("X-Forwarded-For") or "").split(",")[0].strip()
+        return f"{forwarded} via {peer}" if forwarded else peer
 
     def authorise(conn, source_id: str) -> repo.Source:
         presented = (request.get_header(KEY_HEADER) or "").strip()
@@ -172,7 +203,26 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
             log(f"inbound {source_id} refused: "
                 f"{'no key' if not presented else 'wrong key'} from {client()}")
             raise _unauthorised()
+        touch(conn, source_id)
         return source
+
+    def touch(conn, source_id: str) -> None:
+        """Record that the key was used, at most once a minute.
+
+        The console shows the last *write*; a key used only to read the
+        schedule would otherwise leave no trace, and reading is what a leaked
+        key is for. Best effort: a busy database costs the timestamp, never
+        the request.
+        """
+        now = clock()
+        last = repo.inbound_key_used_at(conn, source_id)
+        if last and now - datetime.fromisoformat(last) < timedelta(minutes=1):
+            return
+        try:
+            repo.touch_inbound_key(conn, source_id, now.isoformat())
+            conn.commit()
+        except sqlite3.OperationalError:
+            conn.rollback()
 
     def throttle(source_id: str) -> None:
         now = monotonic()
@@ -203,7 +253,11 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
         wanted = request.get_header("If-Match")
         if wanted is None:
             return
-        tags = {t.strip().strip('"') for t in wanted.split(",")}
+        # A weak tag is compared as if strong. Ours are hashes of content, and
+        # a compressing proxy — Traefik, under Pangolin — rewrites them to W/
+        # on the way out; refusing the echo would make every conditional
+        # write through it a 412.
+        tags = {t.strip().removeprefix("W/").strip('"') for t in wanted.split(",")}
         if "*" in tags and item is not None:
             return
         if item is None or item.etag not in tags:
@@ -394,55 +448,69 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
         conn.commit()
         return repo.inbound_item(conn, source.id, external_id)
 
-    @app.put(PREFIX + "/sources/<source_id>/events/<external_id>")
-    def put_item(source_id, external_id):
-        payload = body()
+    def admit(source_id: str, external_id: str) -> repo.Source:
+        """Everything that needs no body and no lock, in that order.
+
+        The key is checked before a byte of the body is read, so an
+        unauthenticated caller costs a header lookup and a hash, not a JSON
+        parse of up to `MAX_BODY`.
+        """
         with connect() as conn:
             source = authorise(conn, source_id)
-            external(external_id)
-            writable(source)
-            throttle(source.id)
-            old = repo.inbound_item(conn, source.id, external_id)
-            check_match(old)
-            if old is not None and request.get_header("If-None-Match", "").strip() == "*":
-                # The sender said "this is new". Replacing an existing event
-                # instead is exactly the mistake it was guarding against.
-                raise Problem(412, "already_exists",
-                              "an event with this id was already sent; GET it, then "
-                              "PUT without If-None-Match to change it",
-                              current=old.etag)
-            tz = activity_tz(conn, source)
-            try:
-                event = inbound.validate_event(payload, default_tz=tz)
-            except inbound.Invalid as exc:
-                audit(source.id, "PUT", external_id, "422")
-                raise invalid(exc) from None
-            state, orphaned = inbound.put_event(
-                source.id, external_id, old.state if old else None, event, default_tz=tz)
-            if old is None and request.query.get("allow_overlap") not in ("1", "true"):
-                others = [(i.external_id, i.state)
-                          for i in repo.inbound_items(conn, source.id) if not i.cancelled]
-                clash = inbound.overlaps(source.id, external_id, state, others,
-                                         default_tz=tz)
-                if clash:
-                    audit(source.id, "PUT", external_id, "409 possible duplicate")
-                    raise Problem(
-                        409, "possible_duplicate",
-                        "a live event of the same type overlaps this one; list the "
-                        "events and update that one by its id, or resend with "
-                        "?allow_overlap=true if both are real",
-                        duplicates=clash[:20],
-                    )
-            # An identical PUT is a no-op all the way down: same ETag, no write,
-            # no sync. Re-sending a season baseline must cost nothing.
-            if old is not None and not old.cancelled \
-                    and inbound.etag(state, False) == old.etag:
-                audit(source.id, "PUT", external_id, "200 unchanged")
-                out = render_item(conn, source, old)
-                out.update(changed=False, orphaned_overrides=[])
-                return _dump(out, headers={"ETag": f'"{old.etag}"'})
-            item = store(conn, source, external_id, state, cancelled=False)
-        result = sync(source)
+        external(external_id)
+        writable(source)
+        throttle(source.id)
+        return source
+
+    @app.put(PREFIX + "/sources/<source_id>/events/<external_id>")
+    def put_item(source_id, external_id):
+        source = admit(source_id, external_id)
+        payload = body()
+        with lock_for(source.id):
+            with transaction() as conn:
+                old = repo.inbound_item(conn, source.id, external_id)
+                check_match(old)
+                if old is not None and request.get_header("If-None-Match", "").strip() == "*":
+                    # The sender said "this is new". Replacing an existing event
+                    # instead is exactly the mistake it was guarding against.
+                    raise Problem(412, "already_exists",
+                                  "an event with this id was already sent; GET it, then "
+                                  "PUT without If-None-Match to change it",
+                                  current=old.etag)
+                tz = activity_tz(conn, source)
+                try:
+                    event = inbound.validate_event(payload, default_tz=tz)
+                except inbound.Invalid as exc:
+                    audit(source.id, "PUT", external_id, "422")
+                    raise invalid(exc) from None
+                state, orphaned = inbound.put_event(
+                    source.id, external_id, old.state if old else None, event,
+                    default_tz=tz)
+                if old is None and request.query.get("allow_overlap") not in ("1", "true"):
+                    others = [(i.external_id, i.state)
+                              for i in repo.inbound_items(conn, source.id)
+                              if not i.cancelled]
+                    clash = inbound.overlaps(source.id, external_id, state, others,
+                                             default_tz=tz)
+                    if clash:
+                        audit(source.id, "PUT", external_id, "409 possible duplicate")
+                        raise Problem(
+                            409, "possible_duplicate",
+                            "a live event of the same type overlaps this one; list the "
+                            "events and update that one by its id, or resend with "
+                            "?allow_overlap=true if both are real",
+                            duplicates=clash[:20],
+                        )
+                # An identical PUT is a no-op all the way down: same ETag, no
+                # write, no sync. Re-sending a season baseline must cost nothing.
+                if old is not None and not old.cancelled \
+                        and inbound.etag(state, False) == old.etag:
+                    audit(source.id, "PUT", external_id, "200 unchanged")
+                    out = render_item(conn, source, old)
+                    out.update(changed=False, orphaned_overrides=[])
+                    return _dump(out, headers={"ETag": f'"{old.etag}"'})
+                item = store(conn, source, external_id, state, cancelled=False)
+            result = sync(source)
         with connect() as conn:
             out = render_item(conn, source, item)
         out.update(changed=True, orphaned_overrides=orphaned, sync=result)
@@ -452,63 +520,59 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
 
     @app.delete(PREFIX + "/sources/<source_id>/events/<external_id>")
     def delete_item(source_id, external_id):
-        with connect() as conn:
-            source = authorise(conn, source_id)
-            external(external_id)
-            writable(source)
-            throttle(source.id)
-            old = repo.inbound_item(conn, source.id, external_id)
-            if old is None:
-                raise Problem(404, "no_such_event", "nothing has been sent with that id")
-            check_match(old)
-            if old.cancelled:
-                audit(source.id, "DELETE", external_id, "204 already cancelled")
-                return HTTPResponse(status=204)
-            store(conn, source, external_id, dict(old.state), cancelled=True)
-        result = sync(source)
+        source = admit(source_id, external_id)
+        with lock_for(source.id):
+            with transaction() as conn:
+                old = repo.inbound_item(conn, source.id, external_id)
+                if old is None:
+                    raise Problem(404, "no_such_event", "nothing has been sent with that id")
+                check_match(old)
+                if old.cancelled:
+                    audit(source.id, "DELETE", external_id, "204 already cancelled")
+                    return HTTPResponse(status=204)
+                store(conn, source, external_id, dict(old.state), cancelled=True)
+            result = sync(source)
         audit(source.id, "DELETE", external_id, f"204 sync {result['status']}")
         return HTTPResponse(status=204, headers={"X-Calsync-Sync": result["status"]})
 
     def occurrence(source_id, external_id, date, *, cancel: bool):
+        source = admit(source_id, external_id)
         payload = None if cancel else body()
-        with connect() as conn:
-            source = authorise(conn, source_id)
-            external(external_id)
-            writable(source)
-            throttle(source.id)
-            old = repo.inbound_item(conn, source.id, external_id)
-            if old is None:
-                raise Problem(404, "no_such_event", "nothing has been sent with that id")
-            check_match(old)
-            if old.cancelled:
-                raise Problem(409, "event_cancelled",
-                              "the whole event is cancelled; PUT it again first")
-            tz = activity_tz(conn, source)
-            try:
-                if cancel:
-                    state = inbound.cancel_occurrence(source.id, external_id, old.state,
-                                                      date, default_tz=tz)
-                else:
-                    if not old.state["event"].get("rrule"):
-                        raise inbound.NotAnOccurrence(
-                            "this event does not repeat; PUT the event itself instead")
-                    change = inbound.validate_override(
-                        payload, event=old.state["event"], key=date, default_tz=tz)
-                    state = inbound.put_override(source.id, external_id, old.state,
-                                                 date, change, default_tz=tz)
-            except inbound.NotAnOccurrence as exc:
-                raise Problem(422, "not_an_occurrence", str(exc)) from None
-            except inbound.Invalid as exc:
-                raise invalid(exc) from None
-            if inbound.etag(state, False) == old.etag:
-                audit(source.id, "occurrence", f"{external_id}/{date}", "unchanged")
-                if cancel:
-                    return HTTPResponse(status=204)
-                out = render_item(conn, source, old)
-                out.update(changed=False)
-                return _dump(out, headers={"ETag": f'"{old.etag}"'})
-            item = store(conn, source, external_id, state, cancelled=False)
-        result = sync(source)
+        with lock_for(source.id):
+            with transaction() as conn:
+                old = repo.inbound_item(conn, source.id, external_id)
+                if old is None:
+                    raise Problem(404, "no_such_event", "nothing has been sent with that id")
+                check_match(old)
+                if old.cancelled:
+                    raise Problem(409, "event_cancelled",
+                                  "the whole event is cancelled; PUT it again first")
+                tz = activity_tz(conn, source)
+                try:
+                    if cancel:
+                        state = inbound.cancel_occurrence(
+                            source.id, external_id, old.state, date, default_tz=tz)
+                    else:
+                        if not old.state["event"].get("rrule"):
+                            raise inbound.NotAnOccurrence(
+                                "this event does not repeat; PUT the event itself instead")
+                        change = inbound.validate_override(
+                            payload, event=old.state["event"], key=date, default_tz=tz)
+                        state = inbound.put_override(source.id, external_id, old.state,
+                                                     date, change, default_tz=tz)
+                except inbound.NotAnOccurrence as exc:
+                    raise Problem(422, "not_an_occurrence", str(exc)) from None
+                except inbound.Invalid as exc:
+                    raise invalid(exc) from None
+                if inbound.etag(state, False) == old.etag:
+                    audit(source.id, "occurrence", f"{external_id}/{date}", "unchanged")
+                    if cancel:
+                        return HTTPResponse(status=204)
+                    out = render_item(conn, source, old)
+                    out.update(changed=False)
+                    return _dump(out, headers={"ETag": f'"{old.etag}"'})
+                item = store(conn, source, external_id, state, cancelled=False)
+            result = sync(source)
         audit(source.id, "DELETE occurrence" if cancel else "PUT occurrence",
               f"{external_id}/{date}", f"sync {result['status']}")
         if cancel:
