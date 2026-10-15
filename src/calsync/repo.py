@@ -561,11 +561,17 @@ def prune_event_content(conn: sqlite3.Connection, *, before: str) -> int:
     would let the event be adopted from scratch if it ever reappeared.
     """
     cursor = conn.execute(
-        "DELETE FROM event_content WHERE uid IN ("
-        "  SELECT uid FROM event_state WHERE starts_at < ?)",
-        (before,),
+        f"DELETE FROM event_content WHERE uid IN ({_AGED_OUT})", (before, before),
     )
     return cursor.rowcount
+
+
+#: Events below the window by *both* starts. The feed's alone would prune a
+#: game a person moved past it while that day is still to come — taking its
+#: fix, and every reader's view of it, with it. Keeping a row longer than the
+#: diff looks is harmless: the diff bounds its own side by the feed's start.
+_AGED_OUT = ("SELECT uid FROM event_state WHERE starts_at < ? "
+             "AND COALESCE(shown_starts_at, starts_at) < ?")
 
 
 
@@ -785,6 +791,14 @@ def clear_converged(conn: sqlite3.Connection, item: Override, *, upstream: dict,
     """
     if not _poll_update(conn, item, "DELETE FROM event_overrides", ()):
         return False
+    # Off the receipt too, now rather than at the next write: what the
+    # calendar holds is unchanged, but it is the source's value from here on,
+    # and the API should stop crediting a person with it this poll, not next.
+    state = event_state(conn, item.uid)
+    if state is not None and state.applied_overlay and item.unit in state.applied_overlay:
+        remaining = {u: v for u, v in state.applied_overlay.items() if u != item.unit}
+        conn.execute("UPDATE event_state SET applied_overlay = ? WHERE uid = ?",
+                     (_dumps(remaining or None), item.uid))
     _log_override(conn, item.uid, item.unit, "auto_clear", old=item.value, new=None,
                   upstream={**upstream, **({"raw": raw} if raw else {})},
                   actor=None, reason="the team app now says the same")
@@ -886,6 +900,18 @@ def reattach_overrides(conn: sqlite3.Connection, from_uid: str, to_uid: str, *,
         raise overlay_mod.OverrideError(
             "that event already has its own fix; change it there instead"
         )
+    # The same team, by activity rather than by source: a season re-onboarded
+    # under a new source is still the same team, and the coach's re-added game
+    # can be in it. Anything else is another child's schedule.
+    teams = {
+        row["uid"]: row["activity_id"] for row in conn.execute(
+            "SELECT s.uid, src.activity_id FROM event_state s "
+            "JOIN sources src ON src.id = s.source_id WHERE s.uid IN (?, ?)",
+            (from_uid, to_uid),
+        )
+    }
+    if teams.get(from_uid) != teams.get(to_uid):
+        raise overlay_mod.OverrideError("that event belongs to another team")
     for item in moving:
         conn.execute(
             "UPDATE event_overrides SET uid = ?, baseline = ?, status = 'active', "
@@ -947,13 +973,13 @@ def prune_overrides(conn: sqlite3.Connection, *, before: str) -> int:
     Same bound and same reason as :func:`prune_event_content`: these are times
     and places at rest, and once the event has aged out there is nothing left
     for a correction to correct. Measured on the source start, as that prune
-    is, so the two layers of one event leave together.
+    is, so the two layers of one event leave together — by both starts, for
+    the reason `_AGED_OUT` gives.
     """
-    stale = "SELECT uid FROM event_state WHERE starts_at < ?"
     removed = conn.execute(
-        f"DELETE FROM event_overrides WHERE uid IN ({stale})", (before,)
+        f"DELETE FROM event_overrides WHERE uid IN ({_AGED_OUT})", (before, before)
     ).rowcount
-    conn.execute(f"DELETE FROM override_log WHERE uid IN ({stale})", (before,))
+    conn.execute(f"DELETE FROM override_log WHERE uid IN ({_AGED_OUT})", (before, before))
     return removed
 
 @dataclass(frozen=True)

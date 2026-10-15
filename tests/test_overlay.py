@@ -165,20 +165,17 @@ def test_setting_editing_and_lifting_each_rewrite_once(conn, synced):
     assert synced.calendar[PRACTICE].body == feed_notes
 
 
-def test_lifting_an_override_the_feed_agrees_with_writes_nothing(conn, synced):
-    """The sum of the layers did not move, so neither does the calendar — but
-    the receipts change hands, or the API would go on crediting a person."""
+def test_a_fix_that_says_what_the_feed_says_is_lifted_without_a_write(conn, synced):
+    """The sum of the layers never moves, so neither does the calendar — and
+    the fix is redundant from the first poll, so it goes, and the receipts
+    stop crediting a person with the feed's own value."""
     feed_detail = repo.event_contents(conn, SOURCE)[PRACTICE]["detail"]
     _override(conn, PRACTICE, "detail", {"detail": feed_detail})
-    _sync(conn, synced)
-    synced.take()
-    assert repo.event_state(conn, PRACTICE).applied_overlay
 
-    repo.remove_override(conn, PRACTICE, "detail")
-    conn.commit()
-    _sync(conn, synced)
-
+    report = _sync(conn, synced)
     assert synced.take() == []
+    assert report.fixes_cleared == 1
+    assert repo.overrides_of(conn, PRACTICE) == {}
     assert repo.event_state(conn, PRACTICE).applied_overlay is None
     assert repo.stored_event(conn, PRACTICE).overrides is None
 
@@ -718,3 +715,90 @@ def test_an_orphaned_fix_can_be_forgotten(conn, synced):
     assert repo.forget_overrides(conn, GAME, actor="dan") == 1
     assert repo.overrides_of(conn, GAME) == {}
     assert _actions(conn)[-1] == "forgot"
+
+
+def test_a_fix_cannot_move_to_another_teams_event(conn, synced):
+    """The candidates are one team's, but the form posts an id — and a fix
+    for Jesse's game must never land on somebody else's."""
+    conn.executescript(
+        """
+        INSERT INTO children (id, name, initial, birth_order) VALUES ('robin', 'Robin', 'R', 2);
+        INSERT INTO activities (id, child_id, name, sport_id, tz)
+             VALUES ('robin-swim', 'robin', 'Swim', 'soccer', 'America/New_York');
+        INSERT INTO sources (id, activity_id, kind, shape)
+             VALUES ('robin-feed', 'robin-swim', 'player360', 'feed');
+        INSERT INTO event_state (uid, source_id, collection, content_hash, starts_at,
+                                 shown_starts_at)
+             VALUES ('robin-event', 'robin-feed', 'practices', 'h',
+                     '2026-08-30T14:00:00+00:00', '2026-08-30T14:00:00+00:00');
+        """
+    )
+    _override(conn, GAME, "time", MOVED)
+    _sync(conn, synced)
+    _sync(conn, synced, raw=_without_game())
+
+    with pytest.raises(OverrideError, match="another team"):
+        repo.reattach_overrides(conn, GAME, "robin-event", actor="dan")
+    assert _status(conn) == "orphaned"
+
+
+def test_a_rescheduled_game_is_asked_about_until_it_is_played(conn, synced):
+    """Judged by the start the calendar shows. The feed's date passing means
+    nothing when a person moved the game to next week."""
+    _override(conn, GAME, "time", {"starts_at": "2026-09-02T14:00:00+00:00",
+                                   "ends_at": "2026-09-02T15:00:00+00:00"})
+    _sync(conn, synced)
+    elsewhere = _feed_with(GAME_START, "DTSTART:20260829T143000Z")
+    between = datetime(2026, 8, 30, tzinfo=timezone.utc)
+    assert _sync(conn, synced, raw=elsewhere, now=between).fixes_changed == 1
+
+
+def test_a_moved_events_fix_outlives_the_feeds_date(conn, synced):
+    """Pruned by both starts: the fix is what keeps the event on the day it is
+    actually on, and it must not age out while that day is still to come."""
+    _override(conn, GAME, "time", {"starts_at": "2026-09-20T14:00:00+00:00",
+                                   "ends_at": "2026-09-20T15:00:00+00:00"})
+    _sync(conn, synced)
+    _sync(conn, synced, now=datetime(2026, 9, 10, tzinfo=timezone.utc))
+    assert "time" in repo.overrides_of(conn, GAME)
+    assert repo.stored_event(conn, GAME) is not None
+
+
+def test_a_line_break_in_the_notes_is_a_change():
+    a = {"body": "Bring water. Bring chairs."}
+    b = {"body": "Bring water.\nBring chairs."}
+    assert not overlay.same("notes", a, b)
+    assert overlay.same("notes", {"body": "Bring water.  \n"}, {"body": "Bring water."})
+    # Elsewhere a coach's doubled space is still nothing.
+    assert overlay.same("opponent", {"opponent": "Harbour  FC"}, {"opponent": "Harbour FC"})
+
+
+def test_the_api_stops_crediting_a_person_the_moment_a_fix_is_lifted(conn, synced):
+    _override(conn, GAME, "time", MOVED)
+    _sync(conn, synced)
+    caught_up = _feed_with(GAME_START + "\nDTEND:20260829T150000Z",
+                           "DTSTART:20260829T150000Z\nDTEND:20260829T160000Z")
+    _sync(conn, synced, raw=caught_up)
+
+    item = repo.stored_event(conn, GAME)
+    assert item.overrides is None
+    assert api_app._resolution(conn, item)["starts_at"]["owner"] == "source"
+
+
+def test_a_time_typed_across_the_november_change_is_the_local_time(conn, synced):
+    """The game is in August, daylight time. Moved into November, 10:00 is
+    10:00 standard time — the zone's rule for that date, not the event's old
+    offset carried across."""
+    from calsync.web import fix as fix_mod
+
+    subject = fix_mod.subject(conn, GAME)
+    plan = fix_mod.plan(subject, {"date": "2026-11-07", "start": "10:00", "end": "11:00"})
+    value = plan.sets["time"]
+    assert value["starts_at"] == "2026-11-07T10:00:00-05:00"
+    assert plan.moved_day is not None
+
+    repo.set_override(conn, GAME, "time", value, reason="moved")
+    conn.commit()
+    _sync(conn, synced)
+    assert synced.calendar[GAME].starts_at == datetime(2026, 11, 7, 15, tzinfo=timezone.utc)
+    assert "Start 10:00 EST" in synced.calendar[GAME].body

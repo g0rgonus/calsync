@@ -18,7 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 
-from . import overlay, repo, sources, warmup, withheld
+from . import overlay, repo, retire, sources, warmup, withheld
 from .diff import diff_poll, fingerprint
 from .fetch import FetchError, http_fetch, render_url
 from .models import Activity, Event, Venue
@@ -697,6 +697,7 @@ def _judge_overrides(conn, source_id: str, sourced: dict[str, Event], *,
     says nothing about whether its fix is still needed, and is left alone.
     """
     place = lambda name: repo.resolve_venue_alias(conn, name)  # noqa: E731
+    states = repo.event_states(conn, source_id)
     for item in repo.override_rows(conn, source_id):
         event = sourced.get(item.uid)
         if event is None:
@@ -716,9 +717,11 @@ def _judge_overrides(conn, source_id: str, sourced: dict[str, Event], *,
         elif verdict == overlay.UNCHANGED:
             if item.status == "changed":
                 repo.mark_settled(conn, item, action="settled")
-        elif event.starts_at < now:
+        elif not retire.upcoming(states[item.uid].shown_starts_at, now):
             # A game already played: nobody can act on the disagreement, and
-            # asking would be a question with no useful answer.
+            # asking would be a question with no useful answer. By the start
+            # the calendar shows — a game the feed has as yesterday and a
+            # person moved to next week has not been played.
             continue
         elif not (item.status == "changed"
                   and overlay.matches(item.unit, upstream, item.upstream_seen, place=place)):

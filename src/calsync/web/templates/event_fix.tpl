@@ -33,6 +33,9 @@
     <input type="hidden" name="uid" value="{{ uid }}">
     <input type="hidden" name="unit" value="{{ alert['unit'] }}">
     <input type="hidden" name="back" value="{{ back }}">
+    <input type="hidden" name="version" value="{{ version }}">
+    <label class="fix-in fix-in-name fix-alert-name">Your name
+      <input type="text" name="actor" value="{{ actor }}" autocomplete="name"></label>
     <button class="btn" type="submit" name="keep" value="mine">Keep {{ alert['mine'] }}</button>
     <button class="btn btn-answer" type="submit" name="keep" value="theirs">Use {{ alert['theirs'] }}</button>
   </form>
@@ -103,6 +106,7 @@
 <form method="post" action="/events/fix" class="card fix-form">
   <input type="hidden" name="uid" value="{{ uid }}">
   <input type="hidden" name="back" value="{{ back }}">
+  <input type="hidden" name="version" value="{{ version }}">
 
 % def fixed_line(unit):
 %   if unit['fixed']:

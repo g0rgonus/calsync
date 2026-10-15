@@ -35,6 +35,23 @@ LABELS = {
 }
 
 
+def version(overrides: dict) -> str:
+    """A short stamp of an event's fixes, as a page showed them.
+
+    Carried by every form that changes a fix, and compared on the way back in.
+    Two people with the page open would otherwise each save over the other with
+    nothing said; a poll raising a question in between counts too, because the
+    person is about to answer a page that no longer shows it.
+    """
+    import hashlib
+
+    parts = sorted(
+        (unit, o.revision, o.status, json.dumps(o.upstream_seen, sort_keys=True))
+        for unit, o in overrides.items()
+    )
+    return hashlib.sha256(json.dumps(parts).encode()).hexdigest()[:12]
+
+
 def app_name(kind: str) -> str:
     return APP_NAMES.get(kind, "the team app")
 
@@ -225,6 +242,7 @@ def page(conn, subject: Subject, *, now: datetime, back: str,
         "venues": [r["canonical_name"] for r in repo.list_venues(conn)],
         "actor": (form or {}).get("actor") or repo.last_override_actor(conn) or "",
         "alerts": alerts(conn, subject, now=now),
+        "version": version(subject.overrides),
     }
 
 
@@ -339,16 +357,20 @@ def _location_from(subject: Subject, form: dict, result: Plan) -> dict | None:
         return None
 
     address = typed_address
-    if address is None and source_venue is not None and overlay._squash(name) in {
-        overlay._squash(source_venue.name), overlay._squash(source_venue.raw),
-    }:
-        # The same place the feed named: keep the address the feed (or the
-        # venue table) gave it, rather than reading a blank box as "none".
-        address = source_venue.address
-    elif address is None:
-        known = subject.known_place(name)
-        if known is not None:
-            name, address = known.name or name, known.address
+    # The box is never prefilled, so blank means "as it is", not "none": keep
+    # the address of the same place as the calendar shows it now — a fixed one
+    # first, then the feed's — before asking the venue table about a new name.
+    for venue in (subject.current.venue, source_venue):
+        if (address is None and venue is not None
+                and overlay._squash(name) in {overlay._squash(venue.name),
+                                              overlay._squash(venue.raw)}):
+            address = venue.address
+            break
+    else:
+        if address is None:
+            known = subject.known_place(name)
+            if known is not None:
+                name, address = known.name or name, known.address
     return {"venue_name": name, "venue_field": field_, "venue_address": address}
 
 
@@ -462,6 +484,7 @@ def orphan_page(conn, uid: str, *, now: datetime, back: str) -> dict | None:
                                   activity=activity, child=child, settings=settings,
                                   place=place),
         "actor": repo.last_override_actor(conn) or "",
+        "version": version(repo.overrides_of(conn, uid)),
     }
 
 

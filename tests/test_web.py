@@ -2864,7 +2864,7 @@ def _filled_in(tmp_path, uid) -> dict:
         form["all_day"] = "1"
     if not context["is_game"]:
         form.pop("opponent")
-    return {"uid": uid, "back": "/calendar", **form}
+    return {"uid": uid, "back": "/calendar", "version": context["version"], **form}
 
 
 def _fixed(tmp_path, uid):
@@ -2967,7 +2967,8 @@ def test_putting_a_value_back_lifts_the_fix(writing, tmp_path):
     client.post("/events/fix", {**original, "opponent": "Hawks", "reason": "typo"})
     assert set(_fixed(tmp_path, uid)) == {"opponent"}
 
-    client.post("/events/fix", {**original, "reason": ""})
+    fresh = _filled_in(tmp_path, uid)["version"]
+    client.post("/events/fix", {**original, "version": fresh, "reason": ""})
     assert _fixed(tmp_path, uid) == {}
 
 
@@ -2980,7 +2981,8 @@ def test_one_part_of_a_fix_can_be_undone(writing, tmp_path):
     client.post("/events/fix", form)
     assert set(_fixed(tmp_path, uid)) == {"opponent", "detail"}
 
-    reply = client.post("/events/fix/undo", {"uid": uid, "unit": "opponent", "back": "/calendar"})
+    reply = client.post("/events/fix/undo", {"uid": uid, "unit": "opponent", "back": "/calendar",
+                                             "version": _filled_in(tmp_path, uid)["version"]})
     assert reply["status"] == 303
     assert set(_fixed(tmp_path, uid)) == {"detail"}
     stored = repo.stored_event(db.connect(tmp_path / "calsync.db"), uid)
@@ -3081,7 +3083,8 @@ def test_keeping_a_fix_answers_the_question(writing, tmp_path):
     _team_app_says(tmp_path, uid, "Falcons")
 
     reply = client.post("/events/fix/resolve",
-                        {"uid": uid, "unit": "opponent", "keep": "mine", "back": "/calendar"})
+                        {"uid": uid, "unit": "opponent", "keep": "mine", "back": "/calendar",
+                         "version": _filled_in(tmp_path, uid)["version"]})
     assert "Kept%20Hawks" in reply["headers"]["Location"]
     item = _fixed(tmp_path, uid)["opponent"]
     assert item.status == "active" and item.baseline == {"opponent": "Falcons"}
@@ -3096,7 +3099,8 @@ def test_taking_the_team_apps_value_lifts_the_fix(writing, tmp_path):
     _team_app_says(tmp_path, uid, "Falcons")
 
     reply = client.post("/events/fix/resolve",
-                        {"uid": uid, "unit": "opponent", "keep": "theirs", "back": "/calendar"})
+                        {"uid": uid, "unit": "opponent", "keep": "theirs", "back": "/calendar",
+                         "version": _filled_in(tmp_path, uid)["version"]})
     assert reply["status"] == 303
     assert _fixed(tmp_path, uid) == {}
     assert repo.stored_event(db.connect(tmp_path / "calsync.db"), uid).event.opponent != "Hawks"
@@ -3117,6 +3121,12 @@ def test_a_fix_the_team_app_caught_up_with_says_so(writing, tmp_path):
 
 
 # --- when the event goes from the team app -------------------------------------
+
+
+def _orphan_version(tmp_path, uid):
+    from calsync.web import fix as fix_mod
+
+    return fix_mod.version(repo.overrides_of(db.connect(tmp_path / "calsync.db"), uid))
 
 
 def _orphan(tmp_path, uid):
@@ -3161,7 +3171,8 @@ def test_an_orphaned_fix_moves_where_a_person_says(writing, tmp_path):
     ).fetchone()["uid"]
 
     reply = client.post("/events/fix/reattach",
-                        {"uid": uid, "to": other, "back": "/review", "actor": "Sam"})
+                        {"uid": uid, "to": other, "back": "/review", "actor": "Sam",
+                         "version": _orphan_version(tmp_path, uid)})
     assert reply["status"] == 303
     assert _fixed(tmp_path, uid) == {}
     assert _fixed(tmp_path, other)["opponent"].value == {"opponent": "Hawks"}
@@ -3175,7 +3186,93 @@ def test_an_orphaned_fix_can_be_forgotten(writing, tmp_path):
     _fix_opponent(client, tmp_path, uid)
     _orphan(tmp_path, uid)
 
-    reply = client.post("/events/fix/forget", {"uid": uid, "back": "/review"})
+    reply = client.post("/events/fix/forget", {"uid": uid, "back": "/review",
+                                               "version": _orphan_version(tmp_path, uid)})
     assert "Forgotten" in unquote(reply["headers"]["Location"])
     assert _fixed(tmp_path, uid) == {}
     assert "Fixes waiting on you" not in client.get("/review")["body"]
+
+
+# --- review fixes ----------------------------------------------------------------
+
+
+def test_saving_the_notes_keeps_a_fixed_places_address(writing, tmp_path):
+    """The address box is never prefilled, so a later save of something else
+    sends it blank — which must mean "unchanged", not "no address"."""
+    client, calendar = writing
+    synced(client, tmp_path, calendar)
+    uid = _a_game_to_fix(tmp_path)
+    client.post("/events/fix", {**_filled_in(tmp_path, uid), "venue_name": "Riverside Fields",
+                                "venue_address": "12 Elm St", "reason": "moved"})
+    assert _fixed(tmp_path, uid)["location"].value["venue_address"] == "12 Elm St"
+
+    client.post("/events/fix", {**_filled_in(tmp_path, uid), "notes": "Bring water",
+                                "reason": "water"})
+    assert _fixed(tmp_path, uid)["location"].value["venue_address"] == "12 Elm St"
+
+
+def test_a_save_made_over_somebody_elses_is_refused(writing, tmp_path):
+    """Two people with the page open: the second save would silently undo the
+    first. It is refused instead, and the page shows what is there now."""
+    client, calendar = writing
+    synced(client, tmp_path, calendar)
+    uid = _a_game_to_fix(tmp_path)
+    stale = _filled_in(tmp_path, uid)          # both open the page...
+    client.post("/events/fix", {**stale, "opponent": "Hawks", "reason": "first"})
+
+    page = client.post("/events/fix", {**stale, "detail": "Final", "reason": "second"})
+    assert "changed this event while you had it open" in page["body"]
+    assert set(_fixed(tmp_path, uid)) == {"opponent"}
+
+
+def test_answering_a_question_somebody_already_answered_is_refused(writing, tmp_path):
+    client, calendar = writing
+    synced(client, tmp_path, calendar)
+    uid = _a_game_to_fix(tmp_path)
+    _fix_opponent(client, tmp_path, uid)
+    _team_app_says(tmp_path, uid, "Falcons")
+    version = _filled_in(tmp_path, uid)["version"]
+    client.post("/events/fix/resolve", {"uid": uid, "unit": "opponent", "keep": "mine",
+                                        "version": version, "back": "/calendar"})
+
+    page = client.post("/events/fix/resolve", {"uid": uid, "unit": "opponent",
+                                               "keep": "theirs", "version": version,
+                                               "back": "/calendar"})
+    assert "changed this event while you had it open" in page["body"]
+    assert _fixed(tmp_path, uid)["opponent"].value == {"opponent": "Hawks"}
+
+
+def test_a_save_the_sync_did_not_land_does_not_say_it_did(writing, tmp_path, feed):
+    """A poll a guard holds can still finish without an error — and without
+    writing this event. "Everyone's phones will show the change" would then
+    be false, so the message is decided by what reached the calendar."""
+    client, calendar = writing
+    synced(client, tmp_path, calendar)
+    uid = _a_game_to_fix(tmp_path)
+    form = {**_filled_in(tmp_path, uid), "opponent": "Hawks", "reason": "x"}
+
+    # The feed loses most of its season — this game included — before the save.
+    blocks = OTTERS.decode().split("BEGIN:VEVENT")
+    kept = [b for b in blocks[1:] if uid.split("@")[0] not in b][-2:]
+    feed.body = ("BEGIN:VEVENT".join([blocks[0], *kept]).rstrip()
+                 + ("" if kept[-1].rstrip().endswith("END:VCALENDAR") else "\nEND:VCALENDAR\n")).encode()
+
+    location = unquote(client.post("/events/fix", form)["headers"]["Location"])
+    assert "phones will show" not in location
+    assert "next sync" in location
+    assert set(_fixed(tmp_path, uid)) == {"opponent"}
+
+
+def test_the_history_names_whoever_answered(writing, tmp_path):
+    client, calendar = writing
+    synced(client, tmp_path, calendar)
+    uid = _a_game_to_fix(tmp_path)
+    _fix_opponent(client, tmp_path, uid)          # Sam set it
+    _team_app_says(tmp_path, uid, "Falcons")
+
+    client.post("/events/fix/resolve", {"uid": uid, "unit": "opponent", "keep": "mine",
+                                        "actor": "Alex", "back": "/calendar",
+                                        "version": _filled_in(tmp_path, uid)["version"]})
+    last = repo.override_history(db.connect(tmp_path / "calsync.db"), uid)[-1]
+    assert (last["action"], last["actor"]) == ("kept", "Alex")
+    assert 'name="actor"' in client.get(f"/events/fix?uid={quote(uid, safe='')}")["body"]

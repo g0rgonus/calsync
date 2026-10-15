@@ -1168,7 +1168,17 @@ def create_app(
     #: Everything the fix form posts, read only when present: a field the form
     #: did not send (an opponent, for a practice) is not a request to clear it.
     _FIX_FIELDS = ("date", "start", "end", "venue_name", "venue_field",
-                   "venue_address", "opponent", "detail", "notes", "reason", "actor")
+                   "venue_address", "opponent", "detail", "notes", "reason", "actor",
+                   "version")
+
+    #: Said when a save would land on top of a change the person never saw.
+    _MOVED_ON = ("Somebody else changed this event while you had it open, so "
+                 "nothing was saved. This is what it says now — make your change "
+                 "again if it is still needed.")
+
+    def _current(found: fix_mod.Subject) -> bool:
+        """Is the page this form came from still what is saved?"""
+        return _field("version") == fix_mod.version(found.overrides)
 
     def _fix_form() -> dict:
         form = {name: _field(name) for name in _FIX_FIELDS if name in request.forms}
@@ -1189,19 +1199,32 @@ def create_app(
             )}
         return render("event_fix.tpl", flash=flash or _flash(), **context)
 
-    def _land(source_id: str) -> tuple[str, str]:
-        """Sync the source a fix belongs to, and say how it went in plain words."""
+    def _land(source_id: str, uid: str) -> tuple[str, str]:
+        """Sync the source a fix belongs to, and say how it went in plain words.
+
+        Whether the fix *landed* is read back from the receipt, not inferred
+        from the sync's status: a poll a guard holds finishes without an error
+        and may still not have written this event, and telling somebody their
+        change is on everyone's phones when it is not is the one message this
+        page must never get wrong.
+        """
         with connect() as conn:
             enabled = _require_source(conn, source_id).enabled
         if not enabled:
             return "ok", ("Saved. Updates for that team are paused, so the "
                           "calendar catches up when they resume.")
         try:
-            reports, problems = _sync_now([source_id])
+            _, problems = _sync_now([source_id])
         except Refused as exc:
             return "err", (f"Saved, but the calendar couldn’t be updated just now "
                            f"({exc}) — it will catch up on the next sync.")
-        if problems or any(r.status == "error" for r in reports):
+        with connect() as conn:
+            found = fix_mod.subject(conn, uid)
+            landed = found is not None and not found.item.cancelled and (
+                overlay_mod.values(found.item.overrides)
+                == {u: o.value for u, o in found.overrides.items()}
+            )
+        if problems or not landed:
             return "err", ("Saved, but the calendar couldn’t be updated just now — "
                            "it will catch up on the next sync.")
         return "ok", "Calendar updated. Everyone’s phones will show the change."
@@ -1230,6 +1253,8 @@ def create_app(
                     "changing it would rewrite the record of something that was "
                     "played."
                 )
+            if not _current(found):
+                return _fix_page(uid, back, flash={"kind": "bad", "text": _MOVED_ON})
             plan = fix_mod.plan(found, form)
             if plan.errors:
                 return _fix_page(uid, back, form=form,
@@ -1272,7 +1297,7 @@ def create_app(
                                      reason=reason or "put back to the team app’s")
             conn.commit()
             source_id = found.state.source_id
-        key, message = _land(source_id)
+        key, message = _land(source_id, uid)
         redirect(_fix_url(uid, back, **{key: message}))
 
     @app.post("/events/fix/undo")
@@ -1283,13 +1308,15 @@ def create_app(
             found = _fix_subject(conn, uid)
             if not found.upcoming(clock()):
                 raise Refused("that has already happened, so it can't be changed now.")
+            if not _current(found):
+                return _fix_page(uid, back, flash={"kind": "bad", "text": _MOVED_ON})
             actor = (_field("actor") or "").strip() or None
             if not repo.remove_override(conn, uid, unit, actor=actor,
                                         reason="put back to the team app’s"):
                 redirect(_fix_url(uid, back, ok="That was already the team app’s."))
             conn.commit()
             source_id = found.state.source_id
-        key, message = _land(source_id)
+        key, message = _land(source_id, uid)
         redirect(_fix_url(uid, back, **{key: message}))
 
     @app.post("/events/fix/resolve")
@@ -1301,13 +1328,15 @@ def create_app(
             found = _fix_subject(conn, uid)
             if not found.upcoming(clock()):
                 raise Refused("that has already happened, so it can't be changed now.")
+            if not _current(found):
+                return _fix_page(uid, back, flash={"kind": "bad", "text": _MOVED_ON})
             item = found.overrides.get(unit)
             if item is None or item.status != "changed":
                 redirect(_fix_url(uid, back, ok="That was already settled."))
             zone, app_ = found.zone, fix_mod.app_name(found.source_kind)
             mine = fix_mod.describe(unit, item.value, zone)
             theirs = fix_mod.describe(unit, item.upstream_seen, zone)
-            actor = repo.last_override_actor(conn)
+            actor = (_field("actor") or "").strip() or None
             if keep == "mine":
                 # Nothing on the calendar changes — it already shows the fix —
                 # so there is nothing to sync.
@@ -1321,7 +1350,7 @@ def create_app(
                                  reason=f"took {app_}’s {theirs}")
             conn.commit()
             source_id = found.state.source_id
-        key, message = _land(source_id)
+        key, message = _land(source_id, uid)
         if key == "ok":
             message = f"Calendar updated to {app_}’s {theirs}."
         redirect(_fix_url(uid, back, **{key: message}))
@@ -1343,6 +1372,9 @@ def create_app(
         if not to:
             raise Refused("pick the event your fix belongs on")
         with connect() as conn:
+            if _field("version") != fix_mod.version(repo.overrides_of(conn, uid)):
+                redirect(f"/events/fix/orphan?uid={quote(uid, safe='')}&back="
+                         f"{quote(back, safe='')}&err={_q(_MOVED_ON)}")
             target = fix_mod.subject(conn, to)
             if target is None or not target.upcoming(clock()):
                 raise Refused("pick an event that is still to come")
@@ -1352,7 +1384,7 @@ def create_app(
                 raise Refused(str(exc)) from exc
             conn.commit()
             source_id = target.state.source_id
-        key, message = _land(source_id)
+        key, message = _land(source_id, to)
         if key == "ok":
             message = ("Moved your fix here and updated the calendar: "
                        + fix_mod.joined([fix_mod.LABELS[u] for u in moved]) + ".")
@@ -1362,7 +1394,12 @@ def create_app(
     def forget_fix():
         uid, back = _field("uid"), _fix_back("/review")
         with connect() as conn:
-            removed = repo.forget_overrides(conn, uid, actor=repo.last_override_actor(conn))
+            if _field("version") != fix_mod.version(repo.overrides_of(conn, uid)):
+                redirect(f"/events/fix/orphan?uid={quote(uid, safe='')}&back="
+                         f"{quote(back, safe='')}&err={_q(_MOVED_ON)}")
+            removed = repo.forget_overrides(
+                conn, uid, actor=(_field("actor") or "").strip() or None
+            )
             conn.commit()
         if not removed:
             raise Refused("there is no fix waiting on that event")

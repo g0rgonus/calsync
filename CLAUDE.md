@@ -202,7 +202,7 @@ so a fresh clone needs:
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/pytest                                    # 814 tests, ~8s
+.venv/bin/pytest                                    # 825 tests, ~9s
 .venv/bin/pytest tests/test_player360.py -k content_hash    # single test
 ```
 
@@ -540,7 +540,15 @@ Decisions that span several files and are easy to undo by accident:
   Only a change of **day** asks for confirmation — a new time on the same day is
   the ordinary correction, and a confirm on every save would be clicked through.
   Saving runs the real sync, as *Put it back* does, and a calendar that cannot
-  be reached is "saved, lands on the next sync", never a second writer.
+  be reached is "saved, lands on the next sync", never a second writer. Whether
+  it landed is **read back from the receipt** (`_land`), never inferred from
+  the sync's status — a poll a guard holds finishes cleanly and may not have
+  written the event. Every form carries `fix.version`, a stamp of the event's
+  fixes as the page showed them; a save over anything that changed since —
+  another person's save, or a poll raising a question — is refused and the page
+  reloads, rather than the last save silently winning. A blank address box
+  means "as it is" (it is never prefilled), so `_location_from` keeps the shown
+  place's address. A fix moves only within its team (`reattach_overrides`).
 - **A poll may tidy the overlay; it may never decide for it**
   (`sync._judge_overrides`, `overlay.judge`). After the writes, each fix is
   judged per unit against what the feed says now and the `baseline` it was set

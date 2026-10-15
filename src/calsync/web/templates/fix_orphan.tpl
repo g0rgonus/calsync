@@ -19,41 +19,42 @@
   </dl>
 </div>
 
-% if candidates:
-<h2>Is it one of these?</h2>
-<form method="post" action="/events/fix/reattach" class="card">
+<form method="post" action="/events/fix/reattach">
   <input type="hidden" name="uid" value="{{ uid }}">
   <input type="hidden" name="back" value="{{ back }}">
+  <input type="hidden" name="version" value="{{ version }}">
+% if candidates:
+  <h2>Is it one of these?</h2>
+  <div class="card">
 % for c in candidates:
-  <label class="choice">
-    <input type="radio" name="to" value="{{ c['uid'] }}" required>
-    <span class="choice-body">
-      <span class="choice-title">{{ c['title'] }}</span>
-      <span class="choice-note">{{ c['when'] }}{{ (', ' + c['place']) if c['place'] else '' }}</span>
+    <label class="choice">
+      <input type="radio" name="to" value="{{ c['uid'] }}" required>
+      <span class="choice-body">
+        <span class="choice-title">{{ c['title'] }}</span>
+        <span class="choice-note">{{ c['when'] }}{{ (', ' + c['place']) if c['place'] else '' }}</span>
 %   if c['fixed_already']:
-      <span class="choice-note fix-agrees">{{ App }} already says what your fix says, so you
-        may not need it — forgetting it is fine too.</span>
+        <span class="choice-note fix-agrees">{{ App }} already says what your fix says, so you
+          may not need it — forgetting it is fine too.</span>
 %   end
-    </span>
-  </label>
+      </span>
+    </label>
 % end
-  <label class="fix-in fix-in-name">Your name
+  </div>
+% else:
+  <div class="empty">
+    <p><strong>Nothing still to come looks like it.</strong></p>
+    <p>If the coach hasn’t added it back yet, leave this and look again later. If
+       it is really off, forget the fix.</p>
+  </div>
+% end
+  <label class="fix-in fix-in-name fix-orphan-name">Your name
     <input type="text" name="actor" value="{{ actor }}" autocomplete="name"></label>
   <div class="btn-row fix-go">
+% if candidates:
     <button class="btn" type="submit">Move my fix there</button>
-  </div>
-</form>
-% else:
-<div class="empty">
-  <p><strong>Nothing still to come looks like it.</strong></p>
-  <p>If the coach hasn’t added it back yet, leave this and look again later. If
-     the {{ 'game' if 'opponent' in labels else 'event' }} is really off, forget the fix.</p>
-</div>
 % end
-
-<form method="post" action="/events/fix/forget" class="btn-row fix-forget">
-  <input type="hidden" name="uid" value="{{ uid }}">
-  <input type="hidden" name="back" value="{{ back }}">
-  <button class="btn btn-quiet" type="submit">Forget my fix</button>
-  <span class="note">It’s off the calendar either way; this just stops asking.</span>
+    <button class="btn btn-quiet" type="submit" formaction="/events/fix/forget"
+            formnovalidate>Forget my fix</button>
+  </div>
+  <p class="note">Either way it’s off the calendar; forgetting just stops asking.</p>
 </form>
