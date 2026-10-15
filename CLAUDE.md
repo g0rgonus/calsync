@@ -202,7 +202,7 @@ so a fresh clone needs:
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/pytest                                    # 793 tests, ~8s
+.venv/bin/pytest                                    # 814 tests, ~8s
 .venv/bin/pytest tests/test_player360.py -k content_hash    # single test
 ```
 
@@ -541,6 +541,25 @@ Decisions that span several files and are easy to undo by accident:
   the ordinary correction, and a confirm on every save would be clicked through.
   Saving runs the real sync, as *Put it back* does, and a calendar that cannot
   be reached is "saved, lands on the next sync", never a second writer.
+- **A poll may tidy the overlay; it may never decide for it**
+  (`sync._judge_overrides`, `overlay.judge`). After the writes, each fix is
+  judged per unit against what the feed says now and the `baseline` it was set
+  against. Caught up → the fix is lifted, which changes nothing on any phone
+  (the layers already summed to that event), and is the only reason a poll may
+  delete a row. Moved somewhere else → `changed`, once per new value, the fix
+  still showing, until a person keeps it (the new value becomes the baseline)
+  or takes the team app's. Back to the baseline → settled quietly. A venue
+  catches up **through the alias table**, so teaching an alias can lift a fix.
+  Every poll write is conditional on the row's `revision`, which only a
+  person's edit bumps — a poll never clears a value somebody changed after it
+  looked — and no poll write touches `value`.
+- **A fix whose event vanished is orphaned, never moved by calsync.** Only once
+  the deletion has landed (a held poll orphans nothing; `STATUS:CANCELLED` is
+  not an orphan). The same uid returning restores it. A different uid is a
+  person's call on `/events/fix/orphan`: candidates are suggested, same kind of
+  event, same name first, and **nothing is pre-selected**, because a wrong
+  match is a wrong time on a calendar the family reads with no sign anything
+  happened. `/review` lists both kinds of waiting fix.
 - **Stored content is checked independently of the feed's hash**, the same way
   placement is. `content_hash` covers the raw feed component, before venue
   enrichment — so teaching an alias or confirming an address changes what an

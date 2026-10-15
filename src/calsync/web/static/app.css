@@ -1049,3 +1049,8 @@ form.inline { display: inline-block; margin: 0.35rem 0 0; }
   /* The reason is a sentence; it gets the full width, and the name below it. */
   .fix-sign .fix-in-wide { flex-basis: 100%; }
 }
+
+/* The orphan page's list of what the fix was, without a clock column. */
+.fix-preview-flat { display: block; }
+.fix-agrees { color: var(--go); margin-top: 0.2rem; }
+.fix-forget { margin-top: 1.4rem; }

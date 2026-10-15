@@ -24,7 +24,8 @@ from bottle import Bottle, redirect, request, response, static_file, template
 from .. import __version__
 from .. import config as config_mod
 from .. import (
-    db, dormancy, enrichment, matrix, notify, repo, retire, sources, targeting,
+    db, dormancy, enrichment, matrix, notify, overlay as overlay_mod, repo, retire,
+    sources, targeting,
     warmup, withheld as withheld_mod, zones,
 )
 from ..fetch import FetchError, http_fetch, render_url
@@ -978,9 +979,9 @@ def create_app(
                         f"/events/fix?uid={quote(item.event.warmup_for or item.event.uid, safe='')}"
                         f"&back={quote(here, safe='')}"
                     ),
-                    "fixed": fix_mod.calendar_note(
+                    **dict(zip(("fixed", "disputed"), fix_mod.calendar_status(
                         item, repo.overrides_of(conn, item.event.uid)
-                    ),
+                    ))),
                 })
 
         entries.sort(key=lambda e: (e["local"], e["title"]))
@@ -1150,6 +1151,13 @@ def create_app(
         found = fix_mod.subject(conn, uid)
         if found is None:
             raise Refused("calsync has no record of writing that event")
+        if found.item.cancelled and any(
+            o.status == "orphaned" for o in found.overrides.values()
+        ):
+            # Gone from the team app with a fix still waiting: the question is
+            # where the fix goes, which is its own page.
+            redirect(f"/events/fix/orphan?uid={quote(uid, safe='')}"
+                     f"&back={quote(_fix_back(), safe='')}")
         if found.item.cancelled or found.state.withheld:
             raise Refused(
                 "that event is off the calendar, so there is nothing to fix. Put "
@@ -1284,6 +1292,83 @@ def create_app(
         key, message = _land(source_id)
         redirect(_fix_url(uid, back, **{key: message}))
 
+    @app.post("/events/fix/resolve")
+    def resolve_fix():
+        """Answer "which is right?" for a fix the team app has since contradicted."""
+        uid, back, unit = _field("uid"), _fix_back(), _field("unit")
+        keep = _field("keep")
+        with connect() as conn:
+            found = _fix_subject(conn, uid)
+            if not found.upcoming(clock()):
+                raise Refused("that has already happened, so it can't be changed now.")
+            item = found.overrides.get(unit)
+            if item is None or item.status != "changed":
+                redirect(_fix_url(uid, back, ok="That was already settled."))
+            zone, app_ = found.zone, fix_mod.app_name(found.source_kind)
+            mine = fix_mod.describe(unit, item.value, zone)
+            theirs = fix_mod.describe(unit, item.upstream_seen, zone)
+            actor = repo.last_override_actor(conn)
+            if keep == "mine":
+                # Nothing on the calendar changes — it already shows the fix —
+                # so there is nothing to sync.
+                repo.keep_override(conn, uid, unit, actor=actor)
+                conn.commit()
+                redirect(_fix_url(uid, back, ok=(
+                    f"Kept {mine}. If {app_} changes it again, you’ll be asked again.")))
+            if keep != "theirs":
+                raise Refused("choose which one is right")
+            repo.remove_override(conn, uid, unit, actor=actor,
+                                 reason=f"took {app_}’s {theirs}")
+            conn.commit()
+            source_id = found.state.source_id
+        key, message = _land(source_id)
+        if key == "ok":
+            message = f"Calendar updated to {app_}’s {theirs}."
+        redirect(_fix_url(uid, back, **{key: message}))
+
+    @app.get("/events/fix/orphan")
+    def orphaned_fix_page():
+        uid = request.query.getunicode("uid") or ""
+        with connect() as conn:
+            context = fix_mod.orphan_page(conn, uid, now=clock(), back=_fix_back("/review"))
+        if context is None:
+            raise Refused("there is no fix waiting on that event")
+        return render("fix_orphan.tpl", flash=_flash(), **context)
+
+    @app.post("/events/fix/reattach")
+    def reattach_fix():
+        """Move an orphaned fix onto the event a person says it became."""
+        uid, to, back = _field("uid"), _field("to"), _fix_back("/review")
+        actor = (_field("actor") or "").strip() or None
+        if not to:
+            raise Refused("pick the event your fix belongs on")
+        with connect() as conn:
+            target = fix_mod.subject(conn, to)
+            if target is None or not target.upcoming(clock()):
+                raise Refused("pick an event that is still to come")
+            try:
+                moved = repo.reattach_overrides(conn, uid, to, actor=actor)
+            except overlay_mod.OverrideError as exc:
+                raise Refused(str(exc)) from exc
+            conn.commit()
+            source_id = target.state.source_id
+        key, message = _land(source_id)
+        if key == "ok":
+            message = ("Moved your fix here and updated the calendar: "
+                       + fix_mod.joined([fix_mod.LABELS[u] for u in moved]) + ".")
+        redirect(_fix_url(to, back, **{key: message}))
+
+    @app.post("/events/fix/forget")
+    def forget_fix():
+        uid, back = _field("uid"), _fix_back("/review")
+        with connect() as conn:
+            removed = repo.forget_overrides(conn, uid, actor=repo.last_override_actor(conn))
+            conn.commit()
+        if not removed:
+            raise Refused("there is no fix waiting on that event")
+        redirect(back + ("&" if "?" in back else "?") + "ok=" + _q(
+            "Forgotten. Nothing on the calendar changed."))
+
     @app.post("/events/fix/edit")
     def refix_event():
         """Back from the day-change check, with everything typed still there."""
@@ -1346,6 +1431,7 @@ def create_app(
                 # The decision is on the source page, beside the list it is
                 # about; this is the signpost the Mac's menu bar sends you to.
                 held_polls=repo.held_polls(conn),
+                fixes=fix_mod.attention(conn, now=clock()),
                 venues=repo.list_venues(conn),
                 flash=_flash(),
             )

@@ -120,6 +120,11 @@
 % if entry.get('fixed') and not entry['cancelled'] and not entry['withheld']:
       <p class="note"><span class="tag tag-fixed">fixed</span> {{ entry['fixed'] }}</p>
 % end
+% if entry.get('disputed') and not entry['cancelled'] and not entry['withheld']:
+      <p class="note"><span class="tag tag-asking">changed</span>
+         The team app has a different value from your fix now.
+         <a href="{{ entry['fix_url'] }}">Which is right?</a></p>
+% end
 % if entry['upcoming'] and not entry['cancelled'] and not entry['withheld']:
       <div class="row-actions">
 % if entry.get('fix_url'):

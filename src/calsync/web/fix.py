@@ -13,12 +13,14 @@ put back to the feed's value lifts the override it had.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
+from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
-from .. import overlay, repo, retire
+from .. import overlay, repo, retire, warmup
 from ..normalize import title as title_norm
 from ..settings import Settings
 
@@ -126,6 +128,22 @@ def _when(event, zone: ZoneInfo) -> str:
             f"–{_clock(event.ends_at, zone)}")
 
 
+def describe(unit: str, value: dict | None, zone: ZoneInfo) -> str:
+    """One stored unit value, said the way the page says it."""
+    if not value:
+        return "nothing"
+    if unit == "time":
+        starts = datetime.fromisoformat(value["starts_at"])
+        if value["all_day"]:
+            return f"{_day(starts, zone)}, all day"
+        return f"{_day(starts, zone)}, {_clock(starts, zone)}"
+    if unit == "location":
+        name = value.get("venue_name") or value.get("venue_raw") or "nowhere"
+        return f"{name}, field {value['venue_field']}" if value.get("venue_field") else name
+    (column,) = overlay.UNITS[unit]
+    return value.get(column) or "nothing"
+
+
 def _place(event) -> str:
     venue = event.venue
     if venue is None:
@@ -206,7 +224,7 @@ def page(conn, subject: Subject, *, now: datetime, back: str,
         "form": {**defaults, **(form or {})},
         "venues": [r["canonical_name"] for r in repo.list_venues(conn)],
         "actor": (form or {}).get("actor") or repo.last_override_actor(conn) or "",
-        "alerts": [],
+        "alerts": alerts(conn, subject, now=now),
     }
 
 
@@ -332,3 +350,161 @@ def _location_from(subject: Subject, form: dict, result: Plan) -> dict | None:
         if known is not None:
             name, address = known.name or name, known.address
     return {"venue_name": name, "venue_field": field_, "venue_address": address}
+
+
+#: How long "the team app caught up" stays on an event's page. Long enough to
+#: be seen by whoever set the fix, short enough not to become furniture.
+CLEARED_NOTICE = timedelta(days=14)
+
+
+def alerts(conn, subject: Subject, *, now: datetime) -> list[dict]:
+    """What the page has to tell somebody before anything else.
+
+    A fix the team app has since contradicted is a question, and comes first.
+    A fix lifted because the team app caught up is news, kept for a fortnight.
+    """
+    zone = subject.zone
+    out = []
+    for unit, item in subject.overrides.items():
+        if item.status == "changed":
+            out.append({
+                "kind": "changed", "unit": unit, "label": LABELS[unit],
+                "mine": describe(unit, item.value, zone),
+                "theirs": describe(unit, item.upstream_seen, zone),
+            })
+    latest: dict[str, object] = {}
+    for row in repo.override_history(conn, subject.item.event.uid):
+        latest[row["unit"]] = row
+    for unit, row in latest.items():
+        if row["action"] != "auto_clear" or unit in subject.overrides:
+            continue
+        stamp = repo.parse_db_stamp(row["at"])
+        if stamp is None or now - stamp > CLEARED_NOTICE:
+            continue
+        upstream = json.loads(row["upstream"] or "{}")
+        upstream.pop("raw", None)
+        out.append({
+            "kind": "cleared", "unit": unit, "label": LABELS[unit],
+            "theirs": describe(unit, upstream, zone), "mine": "",
+        })
+    return out
+
+
+def calendar_status(item: repo.StoredEvent,
+                    overrides: dict[str, repo.Override]) -> tuple[str | None, bool]:
+    """The agenda's line about a fixed event, and whether it is waiting on somebody."""
+    return calendar_note(item, overrides), any(
+        o.status == "changed" for o in overrides.values()
+    )
+
+
+def attention(conn, *, now: datetime) -> list[dict]:
+    """Every fix waiting on a person, one row per event, for `/review`."""
+    settings = Settings.load(conn)
+    grouped: dict[str, list[repo.Override]] = {}
+    for item in repo.overrides_needing_attention(conn):
+        grouped.setdefault(item.uid, []).append(item)
+    rows = []
+    for uid, items in grouped.items():
+        stored = repo.stored_event(conn, uid)
+        if stored is None:
+            continue
+        activity = repo.get_activity(conn, stored.activity_id)
+        child = repo.get_child(conn, activity.child_id)
+        source = repo.get_source(conn, stored.source_id)
+        zone = ZoneInfo(stored.event.tz)
+        orphaned = any(i.status == "orphaned" for i in items)
+        app = app_name(source.kind if source else "")
+        rows.append({
+            "uid": uid,
+            "title": title_norm.render(stored.event, activity, [child], settings),
+            # The day only: a row in a list, read on a phone.
+            "when": _day(stored.event.starts_at, zone),
+            "app": app,
+            "App": app[:1].upper() + app[1:],
+            "kind": "orphaned" if orphaned else "changed",
+            "url": (f"/events/fix/orphan?uid={quote(uid, safe='')}&back=/review"
+                    if orphaned else
+                    f"/events/fix?uid={quote(uid, safe='')}&back=/review"),
+            "labels": joined([LABELS[i.unit] for i in items]),
+        })
+    return rows
+
+
+def joined(labels: list[str]) -> str:
+    return labels[0] if len(labels) == 1 else ", ".join(labels[:-1]) + " and " + labels[-1]
+
+
+# --- an orphaned fix, and where it might go ----------------------------------------
+
+
+def orphan_page(conn, uid: str, *, now: datetime, back: str) -> dict | None:
+    """The page for a fix whose event the team app no longer has."""
+    stored = repo.stored_event(conn, uid)
+    fixes = [o for o in repo.overrides_of(conn, uid).values() if o.status == "orphaned"]
+    if stored is None or not fixes:
+        return None
+    settings = Settings.load(conn)
+    activity = repo.get_activity(conn, stored.activity_id)
+    child = repo.get_child(conn, activity.child_id)
+    source = repo.get_source(conn, stored.source_id)
+    zone = ZoneInfo(stored.event.tz)
+    app = app_name(source.kind if source else "")
+    place = lambda name: repo.resolve_venue_alias(conn, name)  # noqa: E731
+    return {
+        "uid": uid, "back": back, "app": app, "App": app[:1].upper() + app[1:],
+        "title": title_norm.render(stored.event, activity, [child], settings),
+        "when": _when(stored.source_event, zone),
+        "fixes": [{"label": LABELS[o.unit], "value": describe(o.unit, o.value, zone)}
+                  for o in fixes],
+        "labels": joined([LABELS[o.unit] for o in fixes]),
+        "candidates": _candidates(conn, stored, fixes, now=now, zone=zone,
+                                  activity=activity, child=child, settings=settings,
+                                  place=place),
+        "actor": repo.last_override_actor(conn) or "",
+    }
+
+
+def _candidates(conn, stored, fixes, *, now, zone, activity, child, settings, place,
+                limit: int = 5) -> list[dict]:
+    """Events the vanished one may have become, likeliest first.
+
+    Ranked, never chosen: same team, still to come, not already fixed — then
+    the same name or opponent before a different one, then nearest in time.
+    The one that already says what the fix says is marked, because that is a
+    coach who re-added the game correctly, and the fix may not be needed.
+    """
+    def label(event) -> str | None:
+        return overlay._squash(event.detail) or overlay._squash(event.opponent)
+
+    gone = stored.source_event
+    pool = repo.stored_events(
+        conn, start=now.isoformat(),
+        end=(now + timedelta(days=settings.sync_window_forward_days)).isoformat(),
+        activity_id=stored.activity_id,
+    )
+    ranked = []
+    for item in pool:
+        uid = item.event.uid
+        if (uid == gone.uid or item.cancelled or item.withheld
+                or warmup.is_synthetic(uid) or repo.overrides_of(conn, uid)
+                # A game re-added is a game: a practice that week is not a
+                # place its opponent and kick-off could have gone.
+                or item.source_event.is_game != gone.is_game):
+            continue
+        same_label = label(item.source_event) == label(gone)
+        distance = abs((item.event.starts_at - gone.starts_at).total_seconds())
+        fixed_already = all(
+            overlay.matches(o.unit, repo.unit_value(item.source_event, o.unit), o.value,
+                            place=place)
+            for o in fixes
+        )
+        ranked.append(((not same_label, distance), {
+            "uid": uid,
+            "title": title_norm.render(item.event, activity, [child], settings),
+            "when": _when(item.event, zone),
+            "place": _place(item.event),
+            "fixed_already": fixed_already,
+        }))
+    ranked.sort(key=lambda pair: pair[0])
+    return [row for _, row in ranked[:limit]]
