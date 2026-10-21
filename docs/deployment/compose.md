@@ -145,7 +145,7 @@ The first three are required.
 | `CALSYNC_SETTING_DIGEST_SEND_AT` | `HH:MM` local. Empty means never. The poller carries it; there is no cron. |
 | `CALSYNC_SECRET_PUSHOVER_TOKEN`, `_USER` | Pushes. |
 | `CALSYNC_SETTING_DEFAULT_TZ`, `_TITLE_TEMPLATE`, `_COLLECTION_TEMPLATE` | Household conventions. Full list: `DEFAULT_SETTINGS` in `src/calsync/db/__init__.py`. |
-| `CALSYNC_TAG` | `release` (default), `latest`, `dev`, `v0.2`, `v0.2.0`, `sha-1a2b3c4`. |
+| `CALSYNC_TAG` | `release` (default), `latest`, `v0.2`, `v0.2.0`, `sha-1a2b3c4`. |
 
 ## Mounts
 
@@ -247,6 +247,6 @@ read API goes back to the team app's values, and the older version has no way to
 show or remove a fix. Before going back past the version that added them, take
 each fix off with *Use the team app's instead* on its page, then let a sync run.
 
-To run a build that has no version yet, pin the immutable `sha-` tag —
-`CALSYNC_TAG=sha-1a2b3c4`. Not `dev`, which repoints to whichever branch was
-pushed last.
+To run a build that has no version yet, pin its `sha-` tag —
+`CALSYNC_TAG=sha-1a2b3c4`. A branch has no image; run the workflow on it by
+hand to build one.

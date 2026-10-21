@@ -123,10 +123,8 @@ week.
 Published to `ghcr.io/g0rgonus/calsync` for `linux/amd64` and `linux/arm64`, so
 a Raspberry Pi or an Apple Silicon Mac is as good a host as an x86 box.
 
-Three moving tags, because one cannot mean "what I run", "what is merged" and
-"what I would hand a stranger" at the same time: **`release`** is the newest
-tagged version and what a deployment should track, **`latest`** is `main`, and
-**`dev`** is whatever branch is being worked on. `v0.2` pins a minor line,
+Two moving tags: **`release`** is the newest tagged version and what a
+deployment should track, and **`latest`** is `main`. `v0.2` pins a minor line,
 `v0.2.0` pins outright, and every build gets a `sha-` tag for bisecting.
 Compose defaults to `release`; `CALSYNC_TAG` in `.env` changes it.
 
