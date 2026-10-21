@@ -12,7 +12,7 @@ import time
 import sys
 from pathlib import Path
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 
 #: Additive column migrations, applied when absent. `schema.sql` uses
@@ -70,6 +70,7 @@ ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # v13: when that key last got past the check, read or write. The console
     # shows it, because a leaked key used only to read leaves no other trace.
     ("sources", "inbound_key_used_at", "TEXT"),
+    # Empty since v15 (`_move_keys`).
     # v14: when the event is on the calendar, and the overrides the last write
     # carried (`overlay.py`). Backfilled below: a row written before this has no
     # override, so it is on the calendar when the feed says.
@@ -270,6 +271,32 @@ def migrate(conn: sqlite3.Connection, *, attempts: int = 10) -> None:
             time.sleep(0.05 * (attempt + 1))
 
 
+def _move_keys(conn: sqlite3.Connection) -> None:
+    """v15: move keys into `api_keys`, clearing the originals so a rerun is a no-op."""
+    conn.execute(
+        "INSERT INTO api_keys (scope, source_id, label, sha256, last_used_at) "
+        "SELECT 'team', id, id, inbound_key_sha256, inbound_key_used_at "
+        "FROM sources WHERE inbound_key_sha256 IS NOT NULL"
+    )
+    conn.execute(
+        "UPDATE sources SET inbound_key_sha256 = NULL, inbound_key_used_at = NULL "
+        "WHERE inbound_key_sha256 IS NOT NULL"
+    )
+    read = {r["key"]: r["value"] for r in conn.execute(
+        "SELECT key, value FROM settings WHERE key IN "
+        "('inbound_read_key_sha256', 'inbound_read_key_used_at')")}
+    if read.get("inbound_read_key_sha256"):
+        conn.execute(
+            "INSERT INTO api_keys (scope, label, sha256, last_used_at) "
+            "VALUES ('household_read', 'household read key', ?, ?)",
+            (read["inbound_read_key_sha256"], read.get("inbound_read_key_used_at")),
+        )
+    conn.execute(
+        "DELETE FROM settings WHERE key IN "
+        "('inbound_read_key_sha256', 'inbound_read_key_used_at')"
+    )
+
+
 def _migrate_once(conn: sqlite3.Connection) -> None:
     """One pass. See `migrate` for why it may need more than one.
 
@@ -301,6 +328,7 @@ def _migrate_once(conn: sqlite3.Connection) -> None:
             "UPDATE event_state SET shown_starts_at = starts_at "
             "WHERE shown_starts_at IS NULL"
         )
+        _move_keys(conn)
 
         conn.executemany(
             "INSERT OR IGNORE INTO sports (id, name, emoji, builtin) VALUES (?, ?, ?, 1)",
