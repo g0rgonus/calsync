@@ -150,6 +150,7 @@ fi
 # The app holds its own timer, so there is no StartInterval here.
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
 
+mkdir -p "$(dirname "$PLIST")"   # absent on a fresh account
 cat > "$PLIST" <<PLISTEOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
