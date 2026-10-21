@@ -377,6 +377,26 @@ final class ReconcileTests: XCTestCase {
         XCTAssertNil(fields.alarmOffsetSeconds)
     }
 
+    /// EventKit reads an all-day end back as 23:59:59 on the last day. That is
+    /// the same day, not a change, or the event is rewritten every run.
+    func testAllDayEndReadBackAtEndOfDayIsUnchanged() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "America/New_York")!
+        let day = calendar.date(from: DateComponents(year: 2026, month: 10, day: 31))!
+        let next = calendar.date(byAdding: .day, value: 1, to: day)!
+        let event = ParsedEvent(
+            uid: "t", summary: "Block Party", start: day, end: next, isAllDay: true)
+        let fields = Reconcile.fields(for: event, calendar: calendar)
+        var existing = ExistingEvent(
+            identifier: "ek", title: fields.title, start: day,
+            end: next.addingTimeInterval(-1), isAllDay: true, notes: fields.notes)
+
+        XCTAssertEqual(Reconcile.changedFields(existing, fields, calendar: calendar), [])
+
+        existing.end = calendar.date(byAdding: .day, value: 1, to: existing.end)!
+        XCTAssertEqual(Reconcile.changedFields(existing, fields, calendar: calendar), [.end])
+    }
+
     func testFlagsAPossibleDuplicateWithoutActingOnIt() {
         let manual = ExistingEvent(
             identifier: "ek-manual", title: "Soccer game",

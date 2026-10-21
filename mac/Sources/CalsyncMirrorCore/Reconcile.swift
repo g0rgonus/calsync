@@ -212,10 +212,15 @@ public enum Reconcile {
     /// explains an update nobody made or stays silent about one that happened.
     /// Same reasoning as `repo.source_freshness` on the calsync side.
     public static func changedFields(
-        _ existing: ExistingEvent, _ desired: DesiredFields
+        _ existing: ExistingEvent, _ desired: DesiredFields,
+        calendar: Calendar = .current
     ) -> [EventField] {
+        // EventKit reads an all-day end back as 23:59:59, so all-day events
+        // compare by day.
+        let byDay = existing.isAllDay && desired.isAllDay
         func sameDate(_ a: Date, _ b: Date) -> Bool {
-            abs(a.timeIntervalSince(b)) < dateTolerance
+            byDay ? calendar.isDate(a, inSameDayAs: b)
+                  : abs(a.timeIntervalSince(b)) < dateTolerance
         }
         func sameText(_ a: String?, _ b: String?) -> Bool {
             (a ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
