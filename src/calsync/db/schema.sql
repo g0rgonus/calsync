@@ -348,3 +348,33 @@ CREATE TABLE IF NOT EXISTS inbound_events (
     updated_at   TEXT NOT NULL,
     PRIMARY KEY (source_id, external_id)
 );
+
+-- Inbound keys, by SHA-256. Revoked, never deleted while their team exists.
+-- scope: team (one source) | household_read | admin
+CREATE TABLE IF NOT EXISTS api_keys (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    scope        TEXT NOT NULL CHECK (scope IN ('team', 'household_read', 'admin')),
+    source_id    TEXT REFERENCES sources(id) ON DELETE CASCADE,
+    label        TEXT NOT NULL,       -- who holds it
+    sha256       TEXT NOT NULL,
+    created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now')),
+    last_used_at TEXT,
+    revoked_at   TEXT,
+    CHECK ((scope = 'team') = (source_id IS NOT NULL))
+);
+CREATE INDEX IF NOT EXISTS api_keys_sha256 ON api_keys(sha256);
+-- At most one working key per team, and one household read key.
+CREATE UNIQUE INDEX IF NOT EXISTS api_keys_one_team
+    ON api_keys(source_id) WHERE scope = 'team' AND revoked_at IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS api_keys_one_household_read
+    ON api_keys(scope) WHERE scope = 'household_read' AND revoked_at IS NULL;
+
+-- Append-only. actor: a key's label, or "console".
+CREATE TABLE IF NOT EXISTS admin_log (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    at       TEXT NOT NULL DEFAULT (datetime('now')),
+    actor    TEXT NOT NULL,
+    action   TEXT NOT NULL,
+    subject  TEXT,
+    detail   TEXT              -- JSON, never a key and never an event body
+);

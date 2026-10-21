@@ -2008,75 +2008,164 @@ def last_push(conn: sqlite3.Connection, source_id: str) -> str | None:
     return row["at"] if row else None
 
 
-def inbound_key_hash(conn: sqlite3.Connection, source_id: str) -> str | None:
-    row = conn.execute(
-        "SELECT inbound_key_sha256 FROM sources WHERE id = ?", (source_id,)
+# --- keys -----------------------------------------------------------------------
+#
+# Issuing a team or household key revokes the previous one. Every issue and
+# revocation is logged.
+
+
+@dataclass
+class ApiKey:
+    id: int
+    scope: str
+    source_id: str | None
+    label: str
+    created_at: str
+    last_used_at: str | None
+    revoked_at: str | None
+
+
+def _key(row) -> ApiKey:
+    return ApiKey(row["id"], row["scope"], row["source_id"], row["label"],
+                  row["created_at"], row["last_used_at"], row["revoked_at"])
+
+
+def _working(conn: sqlite3.Connection, scope: str, source_id: str | None = None):
+    return conn.execute(
+        "SELECT * FROM api_keys WHERE scope = ? AND source_id IS ? AND revoked_at IS NULL",
+        (scope, source_id),
     ).fetchone()
-    return row["inbound_key_sha256"] if row else None
 
 
-def set_inbound_key_hash(conn: sqlite3.Connection, source_id: str, digest: str) -> None:
-    """Replace the key. The old one stops working the moment this commits, and
-    "last used" starts again — it describes this key, not the team."""
-    conn.execute(
-        "UPDATE sources SET inbound_key_sha256 = ?, inbound_key_used_at = NULL "
-        "WHERE id = ?", (digest, source_id)
-    )
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _revoke_working(conn: sqlite3.Connection, scope: str, source_id: str | None,
+                    actor: str) -> None:
+    row = _working(conn, scope, source_id)
+    if row:
+        conn.execute("UPDATE api_keys SET revoked_at = ? WHERE id = ?", (_now_iso(), row["id"]))
+        log_admin(conn, actor, "key_revoked", f"key:{row['id']}",
+                  {"scope": scope, "label": row["label"]})
+
+
+def _issue(conn: sqlite3.Connection, scope: str, source_id: str | None, label: str,
+           digest: str, actor: str) -> int:
+    key_id = conn.execute(
+        "INSERT INTO api_keys (scope, source_id, label, sha256) VALUES (?, ?, ?, ?)",
+        (scope, source_id, label, digest),
+    ).lastrowid
+    log_admin(conn, actor, "key_issued", f"key:{key_id}", {"scope": scope, "label": label})
+    return key_id
+
+
+def inbound_key_hash(conn: sqlite3.Connection, source_id: str) -> str | None:
+    row = _working(conn, "team", source_id)
+    return row["sha256"] if row else None
+
+
+def set_inbound_key_hash(conn: sqlite3.Connection, source_id: str, digest: str,
+                         *, actor: str = "console") -> None:
+    """Replace the key. The old one stops working the moment this commits."""
+    _revoke_working(conn, "team", source_id, actor)
+    _issue(conn, "team", source_id, source_id, digest, actor)
     conn.commit()
 
 
 def inbound_key_used_at(conn: sqlite3.Connection, source_id: str) -> str | None:
-    row = conn.execute(
-        "SELECT inbound_key_used_at FROM sources WHERE id = ?", (source_id,)
-    ).fetchone()
-    return row["inbound_key_used_at"] if row else None
+    row = _working(conn, "team", source_id)
+    return row["last_used_at"] if row else None
 
 
 def touch_inbound_key(conn: sqlite3.Connection, source_id: str, at: str) -> None:
     conn.execute(
-        "UPDATE sources SET inbound_key_used_at = ? WHERE id = ?", (at, source_id)
+        "UPDATE api_keys SET last_used_at = ? "
+        "WHERE scope = 'team' AND source_id = ? AND revoked_at IS NULL", (at, source_id)
     )
 
 
 # --- the household read key -----------------------------------------------------
-#
-# One key that reads every team's calendar through the inbound service and
-# writes nothing. Its hash is a settings row written only by the console — not
-# in DEFAULT_SETTINGS, so no environment variable can seed one — and, like a
-# team key, the key itself is shown once and never stored.
-
-READ_KEY_HASH = "inbound_read_key_sha256"
-READ_KEY_USED = "inbound_read_key_used_at"
-
-
-def _setting(conn: sqlite3.Connection, key: str) -> str | None:
-    row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
-    return (row["value"] or None) if row else None
 
 
 def read_key_hash(conn: sqlite3.Connection) -> str | None:
-    return _setting(conn, READ_KEY_HASH)
+    row = _working(conn, "household_read")
+    return row["sha256"] if row else None
 
 
 def read_key_used_at(conn: sqlite3.Connection) -> str | None:
-    return _setting(conn, READ_KEY_USED)
+    row = _working(conn, "household_read")
+    return row["last_used_at"] if row else None
 
 
-def set_read_key_hash(conn: sqlite3.Connection, digest: str | None) -> None:
-    """Replace or remove the key. The old one stops working at once, and
-    "last used" starts again — it describes this key, not the household."""
-    conn.execute("DELETE FROM settings WHERE key IN (?, ?)", (READ_KEY_HASH, READ_KEY_USED))
+def set_read_key_hash(conn: sqlite3.Connection, digest: str | None,
+                      *, actor: str = "console") -> None:
+    """Replace or remove the key. The old one stops working at once."""
+    _revoke_working(conn, "household_read", None, actor)
     if digest:
-        conn.execute(
-            "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now'))",
-            (READ_KEY_HASH, digest),
-        )
+        _issue(conn, "household_read", None, "household read key", digest, actor)
     conn.commit()
 
 
 def touch_read_key(conn: sqlite3.Connection, at: str) -> None:
     conn.execute(
-        "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now')) "
-        "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
-        (READ_KEY_USED, at),
+        "UPDATE api_keys SET last_used_at = ? "
+        "WHERE scope = 'household_read' AND revoked_at IS NULL", (at,)
     )
+
+
+# --- admin keys -----------------------------------------------------------------
+
+
+def issue_admin_key(conn: sqlite3.Connection, label: str, digest: str,
+                    *, actor: str = "console") -> int:
+    key_id = _issue(conn, "admin", None, label, digest, actor)
+    conn.commit()
+    return key_id
+
+
+def admin_key(conn: sqlite3.Connection, digest: str) -> ApiKey | None:
+    """The working admin key with this hash, or None."""
+    row = conn.execute(
+        "SELECT * FROM api_keys WHERE scope = 'admin' AND sha256 = ? AND revoked_at IS NULL",
+        (digest,),
+    ).fetchone()
+    return _key(row) if row else None
+
+
+def api_keys(conn: sqlite3.Connection, *, include_revoked: bool = False) -> list[ApiKey]:
+    sql = "SELECT * FROM api_keys"
+    if not include_revoked:
+        sql += " WHERE revoked_at IS NULL"
+    return [_key(r) for r in conn.execute(sql + " ORDER BY id")]
+
+
+def revoke_key(conn: sqlite3.Connection, key_id: int, *, actor: str = "console") -> bool:
+    """Revoke one key of any scope. False if it was unknown or already revoked."""
+    row = conn.execute(
+        "SELECT * FROM api_keys WHERE id = ? AND revoked_at IS NULL", (key_id,)
+    ).fetchone()
+    if not row:
+        return False
+    conn.execute("UPDATE api_keys SET revoked_at = ? WHERE id = ?", (_now_iso(), key_id))
+    log_admin(conn, actor, "key_revoked", f"key:{key_id}",
+              {"scope": row["scope"], "label": row["label"]})
+    conn.commit()
+    return True
+
+
+# --- admin log ------------------------------------------------------------------
+
+
+def log_admin(conn: sqlite3.Connection, actor: str, action: str,
+              subject: str | None = None, detail: dict | None = None) -> None:
+    """Not committed here, so a rolled-back change leaves no entry."""
+    conn.execute(
+        "INSERT INTO admin_log (actor, action, subject, detail) VALUES (?, ?, ?, ?)",
+        (actor, action, subject, json.dumps(detail, sort_keys=True) if detail is not None else None),
+    )
+
+
+def admin_log(conn: sqlite3.Connection, limit: int = 100) -> list[dict]:
+    return [dict(r) for r in conn.execute(
+        "SELECT * FROM admin_log ORDER BY id DESC LIMIT ?", (limit,))]

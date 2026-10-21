@@ -57,9 +57,13 @@ any live part exists (`events.superseded`) — an explicit removal, never an
 absence, so a weekend of meets replaced at once cannot trip the guard. Examples
 there are invented like the fixtures: the docs page and the spec are served
 publicly from a public repo. `GET /inbound/v1/calendar` is the one read across
-teams: it takes a separate household read key (hash in a `settings` row the
-console writes, never seeded from the environment) and returns
+teams: it takes a separate household read key (issued by the console, never
+seeded from the environment) and returns
 `api.app.events_body` — the read API's own answer, not a second rendering.
+
+**Inbound keys live in `api_keys`** (hashed, revoked not deleted, one working
+key per team). Only `repo` reads them. The read API's bearer token is still a
+secret-store value.
 
 Events calsync **cannot place** are held in an `enrichment` collection instead
 of being filed under a guess, and `/review` is where a human answers the
