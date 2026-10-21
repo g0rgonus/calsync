@@ -178,6 +178,8 @@ P = {
                              "create. Sending it again returns the first result instead "
                              "of a second team; the key is not shown again.", True,
                              "create-kestrels-1"),
+    "force": Param("force", "query", "true to make a team live although its checks "
+                   "are not all green.", example="true"),
     "If-None-Match": Param("If-None-Match", "header", "* makes a PUT create-only; 412 "
                            "if the id was already used.", example="*"),
 }
@@ -296,6 +298,28 @@ ROUTES: tuple[Route, ...] = (
           "at once. The new one is shown only here.", params=("team_id",),
           responses={201: ("The new key", "TeamKey"), 404: ("No such team", _E),
                      409: ("A feed team has no key", _E)}),
+    Route("GET", PREFIX + "/admin/teams/{source_id}/review", "reviewTeam",
+          "What making a team live would do, checked now.",
+          "Admin key only. The console's four checks and whether the team can go "
+          "live; every event with its title, times, venue and the calendar it will "
+          "land in (lands_in); and clashes: timed events of other teams that "
+          "overlap.", params=("team_id",),
+          responses={200: ("The review", "Review"), 404: ("No such team", _E)}),
+    Route("POST", PREFIX + "/admin/teams/{source_id}/live", "makeTeamLive",
+          "Move a staged team's events to the real calendars.",
+          "Admin key only. Refused with not_ready unless every check passes, or "
+          "force=true. Runs a sync so the events move now. A live team is "
+          "returned unchanged.", params=("team_id", "force"),
+          responses={200: ("Live", "Team"), 404: ("No such team", _E),
+                     409: ("not_ready, with the reason", _E)}),
+    Route("DELETE", PREFIX + "/admin/teams/{source_id}", "discardTeam",
+          "Throw away a staged team.",
+          "Admin key only. Its events come off the staging calendar, then the team "
+          "is deleted. A live team is refused; retire it in the console.",
+          params=("team_id",),
+          responses={204: ("Discarded", None), 404: ("No such team", _E),
+                     409: ("not_staged", _E),
+                     503: ("The calendar could not be reached; nothing deleted", _E)}),
     Route("DELETE", PREFIX + "/admin/teams/{source_id}/key", "revokeTeamKey",
           "Revoke a team's key.", "Admin key only. Idempotent.", params=("team_id",),
           responses={204: ("Revoked, or there was none", None), 404: ("No such team", _E)}),
@@ -471,6 +495,14 @@ def openapi(server: str) -> dict:
                 "TeamList": {"type": "object", "properties": {
                     "count": {"type": "integer"},
                     "teams": {"type": "array", "items": {"$ref": "#/components/schemas/Team"}}}},
+                "Review": {"type": "object", "properties": {
+                    "team": {"$ref": "#/components/schemas/Team"},
+                    "promotable": {"type": "boolean"},
+                    "not_ready": {"type": ["string", "null"]},
+                    "checks": {"type": "array", "items": {"type": "object"}},
+                    "events": {"type": "array", "items": {"type": "object"},
+                               "description": "As the read API's events, plus lands_in."},
+                    "clashes": {"type": "array", "items": {"type": "object"}}}},
                 "TeamKey": {"type": "object", "properties": {
                     "source_id": {"type": "string"}, "team_key": {"type": "string"},
                     "key_id": {"type": "integer"}}},
@@ -657,7 +689,8 @@ child; cancelling is a <code>DELETE</code>.</p></div>
 <div class=card>
 <p>The <code>/admin</code> calls take an <strong>admin key</strong>, made on the
 console's settings page; team keys and the read key are refused. A new team starts
-staged, and its key is in the create response only. Send an <code>Idempotency-Key</code>
+staged, and its key is in the create response only. Review it, then make it live or
+discard it. Send an <code>Idempotency-Key</code>
 with every create: a retry with the same one returns the team with
 <code>key_already_issued</code> instead of making a second team. Kids are added in the
 console, not here.</p>

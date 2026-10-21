@@ -79,7 +79,8 @@ design contract, not as a description of the code.
 `config.py`. **Teams can also be created and managed through the admin API**
 (`/inbound/v1/admin`, `inbound/admin.py`) with an admin key from the console's
 settings. It reuses `onboarding.create`, so an API team is identical to a
-console one and starts staged. Creates need an `Idempotency-Key`; a retry gets
+console one and starts staged; the API can review it, make it live behind the
+console's gate, or discard it while staged. Creates need an `Idempotency-Key`; a retry gets
 the team back but never the key again. Kids, venues and settings stay
 console-only. Nothing but calsync writes to Radicale.
 

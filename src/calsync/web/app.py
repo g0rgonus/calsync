@@ -45,7 +45,7 @@ from ..routing import slugify
 from ..secrets import SecretError, SecretStore
 from ..settings import Settings, set_setting
 from ..targets import TargetError
-from ..sync import sync_source
+from ..sync import NoTarget as _NoTarget, sync_source
 from . import fix as fix_mod
 from . import gate
 
@@ -61,24 +61,6 @@ CHECK_WORKERS = 4
 
 class Refused(RuntimeError):
     """Shown to the operator as a message, not as a traceback."""
-
-
-class _NoTarget:
-    """Stands in for a calendar during a preview.
-
-    ``sync_source(dry_run=True)`` returns before it touches a target. Passing
-    something that raises rather than something that writes means that if the
-    ordering in the sync loop ever changes, a preview fails loudly instead of
-    quietly writing to the family's real calendar.
-    """
-
-    def __getattr__(self, name):
-        def refuse(*_args, **_kwargs):
-            raise RuntimeError(
-                f"a dry run reached target.{name}(); previews must never write"
-            )
-
-        return refuse
 
 
 def create_app(

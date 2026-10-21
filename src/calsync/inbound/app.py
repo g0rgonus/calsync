@@ -41,11 +41,11 @@ from zoneinfo import ZoneInfo
 
 from bottle import Bottle, HTTPResponse, request, response
 
-from .. import db, onboarding, repo, sources, targeting
-from ..api.app import _QuietHandler, _Threaded, events_body
+from .. import db, onboarding, repo, retire, routing, sources, targeting
+from ..api.app import _QuietHandler, _Threaded, _event_json, events_body
 from ..secrets import SecretError, SecretStore
 from ..settings import Settings
-from ..sync import sync_source
+from ..sync import NoTarget, sync_source
 from ..targets import TargetError
 from . import admin, contract
 from . import events as inbound
@@ -810,6 +810,127 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
             caller = authorise_admin(conn)
             admin_source(conn, source_id)
             repo.revoke_team_key(conn, source_id, actor=caller.label)
+        return HTTPResponse(status=204)
+
+    # --- admin: staging ----------------------------------------------------------------
+
+    def staged_events(conn, activity, settings) -> list:
+        now = clock()
+        return repo.stored_events(
+            conn, start=(now - timedelta(days=settings.sync_window_back_days)).isoformat(),
+            end=(now + timedelta(days=settings.sync_window_forward_days)).isoformat(),
+            activity_id=activity.id)
+
+    def clashes(conn, mine: list, settings) -> list[dict]:
+        """Timed events of other teams that overlap this team's timed events."""
+        if not mine:
+            return []
+        live = [e for e in mine if not e.cancelled and not e.event.all_day]
+        start = min(e.event.starts_at for e in mine).isoformat()
+        end = max(e.event.ends_at for e in mine).isoformat()
+        others = [o for o in repo.stored_events(conn, start=start, end=end)
+                  if o.activity_id != mine[0].activity_id and not o.cancelled
+                  and not o.event.all_day]
+        out = []
+        for e in live:
+            for o in others:
+                if o.event.starts_at < e.event.ends_at and e.event.starts_at < o.event.ends_at:
+                    other = _event_json(conn, o, settings)
+                    out.append({"uid": e.event.uid, "starts_at": e.event.starts_at.isoformat(),
+                                "with": {k: other[k] for k in (
+                                    "uid", "child", "activity", "summary_rendered",
+                                    "starts_at", "ends_at")}})
+        return out
+
+    def preview(conn, source):
+        return sync_source(conn, source, NoTarget(), now=clock(), secrets=secrets,
+                           dry_run=True)
+
+    def not_ready(report) -> str:
+        if report.pushed and report.events_seen == 0:
+            return "nothing has been sent yet"
+        if not report.pushed and report.fixtures_seen == 0:
+            return "no games have appeared yet"
+        return "the parse still has gaps"
+
+    @app.get(ADMIN + "/teams/<source_id>/review")
+    def review_team(source_id):
+        """What making this team live would put on the calendars, checked now."""
+        from ..web import gate   # here, not at the top: web imports this module
+        with connect() as conn:
+            authorise_admin(conn)
+            source = admin_source(conn, source_id)
+            report = preview(conn, source)
+            activity = repo.get_activity(conn, source.activity_id)
+            child = repo.get_child(conn, activity.child_id)
+            settings = Settings.load(conn)
+            mine = staged_events(conn, activity, settings)
+            events = []
+            for item in mine:
+                body_ = _event_json(conn, item, settings)
+                body_["lands_in"] = routing.collection_for(item.event, activity, child, settings)
+                events.append(body_)
+            return _dump({
+                "team": team_body(conn, source),
+                "promotable": report.promotable,
+                "not_ready": None if report.promotable else not_ready(report),
+                "checks": [{"key": c.key, "label": c.label, "state": c.state,
+                            "headline": c.headline, "detail": c.detail,
+                            "items": list(c.items)}
+                           for c in gate.conditions(report, activity)],
+                "events": events,
+                "clashes": clashes(conn, mine, settings),
+            })
+
+    @app.post(ADMIN + "/teams/<source_id>/live")
+    def make_live(source_id):
+        """Promote a staged team, behind the console's gate, and move its events."""
+        force = request.query.get("force") == "true"
+        with lock_for(source_id), connect() as conn:
+            caller = authorise_admin(conn)
+            source = admin_source(conn, source_id)
+            if source.staging_collection:
+                report = preview(conn, source)
+                if not report.promotable and not force:
+                    raise Problem(409, "not_ready", f"not made live: {not_ready(report)}",
+                                  hint="GET the review for the checks, or resend with "
+                                       "?force=true")
+                repo.log_admin(conn, caller.label, "team_made_live", f"team:{source_id}",
+                               {"forced": True} if force and not report.promotable else None)
+                repo.set_staging(conn, source_id, None)
+            team = team_body(conn, repo.get_source(conn, source_id))
+        return _dump({**team, "sync": sync(source)})
+
+    @app.delete(ADMIN + "/teams/<source_id>")
+    def discard_team(source_id):
+        """Throw away a staged team: its events leave the staging calendar, then its rows go.
+
+        A live team is refused; taking one off the family's calendars stays in
+        the console.
+        """
+        with lock_for(source_id), connect() as conn:
+            caller = authorise_admin(conn)
+            source = admin_source(conn, source_id)
+            if not source.staging_collection:
+                raise Problem(409, "not_staged", "only a staged team can be discarded; "
+                              "retire a live team in the console")
+            try:
+                target = write_target or targeting.build_target(conn, secrets=secrets)
+                report = retire.retire_source(conn, source, target, now=clock())
+            except (SecretError, TargetError) as exc:
+                raise Problem(503, "calendar_unreachable", f"nothing was deleted: {exc}",
+                              headers={"Retry-After": "60"}) from None
+            if not report.ok:
+                raise Problem(503, "calendar_unreachable",
+                              "some staged events could not be removed; nothing was "
+                              "deleted, retry", headers={"Retry-After": "60"})
+            retire.forget_source(conn, source_id, now=clock())
+            conn.execute("DELETE FROM activities WHERE id = ? AND NOT EXISTS "
+                         "(SELECT 1 FROM sources WHERE activity_id = ?)",
+                         (source.activity_id, source.activity_id))
+            repo.log_admin(conn, caller.label, "team_discarded", f"team:{source_id}")
+            conn.commit()
+        audit(source_id, "DELETE admin/teams", source_id, "204")
         return HTTPResponse(status=204)
 
     return app

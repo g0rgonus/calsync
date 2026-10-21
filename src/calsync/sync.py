@@ -748,3 +748,21 @@ def sync_all(
             )
         )
     return reports
+
+
+class NoTarget:
+    """Stands in for a calendar during a preview.
+
+    ``sync_source(dry_run=True)`` returns before it touches a target. Passing
+    something that raises rather than something that writes means that if the
+    ordering in the sync loop ever changes, a preview fails loudly instead of
+    quietly writing to the family's real calendar.
+    """
+
+    def __getattr__(self, name):
+        def refuse(*_args, **_kwargs):
+            raise RuntimeError(
+                f"a dry run reached target.{name}(); previews must never write"
+            )
+
+        return refuse
