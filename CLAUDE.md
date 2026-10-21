@@ -341,8 +341,8 @@ constraint is real and non-obvious, one factual line saying what it is, and the
 detail in the doc.
 
 The image is published to `ghcr.io/g0rgonus/calsync` by CI, for amd64 and
-arm64, on three moving tags — `release` (newest version tag), `latest` (main)
-and `dev` (a feature branch) — plus `sha-` on every build. Compose defaults to
+arm64, on two moving tags — `release` (newest version tag) and `latest`
+(main) — plus `sha-` on every build. Branches build no image. Compose defaults to
 `release`, so a deployment does not follow work in progress. It carries its own
 deployment assets: `docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/out"
 <image> init-deploy /out` writes the compose file, Radicale's config and the
