@@ -2133,10 +2133,6 @@ def admin_key(conn: sqlite3.Connection, digest: str) -> ApiKey | None:
     return _key(row) if row else None
 
 
-def touch_key(conn: sqlite3.Connection, key_id: int, at: str) -> None:
-    conn.execute("UPDATE api_keys SET last_used_at = ? WHERE id = ?", (at, key_id))
-
-
 def api_keys(conn: sqlite3.Connection, *, include_revoked: bool = False) -> list[ApiKey]:
     sql = "SELECT * FROM api_keys"
     if not include_revoked:
@@ -2166,7 +2162,7 @@ def log_admin(conn: sqlite3.Connection, actor: str, action: str,
     """Not committed here, so a rolled-back change leaves no entry."""
     conn.execute(
         "INSERT INTO admin_log (actor, action, subject, detail) VALUES (?, ?, ?, ?)",
-        (actor, action, subject, json.dumps(detail, sort_keys=True) if detail else None),
+        (actor, action, subject, json.dumps(detail, sort_keys=True) if detail is not None else None),
     )
 
 

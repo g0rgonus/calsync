@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import datetime
 
 import pytest
 
@@ -83,7 +84,7 @@ def test_removing_the_read_key_revokes_it(conn):
     assert len(repo.api_keys(conn, include_revoked=True)) == 1
 
 
-def test_admin_keys_are_one_per_caller_and_revoked_one_at_a_time(conn):
+def test_admin_keys_are_revoked_one_at_a_time(conn):
     grok = repo.issue_admin_key(conn, "Grok Bot", "grok-hash")
     repo.issue_admin_key(conn, "Dropbot", "drop-hash")
 
@@ -112,3 +113,20 @@ def test_a_change_that_rolls_back_leaves_no_log_entry(conn):
     repo.log_admin(conn, "Grok Bot", "team_created", "team:x")
     conn.rollback()
     assert repo.admin_log(conn) == []
+
+
+@pytest.mark.parametrize("scope, source_id", [
+    ("owner", None),            # not a scope
+    ("team", None),             # a team key needs its team
+    ("admin", "in-herons"),     # only a team key names one
+])
+def test_a_key_must_have_a_valid_scope(conn, scope, source_id):
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute("INSERT INTO api_keys (scope, source_id, label, sha256) "
+                     "VALUES (?, ?, 'x', 'h')", (scope, source_id))
+
+
+def test_created_at_is_iso_like_the_other_timestamps(conn):
+    repo.issue_admin_key(conn, "Grok Bot", "grok-hash")
+    created = repo.api_keys(conn)[0].created_at
+    assert datetime.fromisoformat(created).tzinfo is not None
