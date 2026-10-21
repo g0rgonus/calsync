@@ -178,8 +178,6 @@ P = {
                              "create. Sending it again returns the first result instead "
                              "of a second team; the key is not shown again.", True,
                              "create-kestrels-1"),
-    "force": Param("force", "query", "true to make a team live although its checks "
-                   "are not all green.", example="true"),
     "If-None-Match": Param("If-None-Match", "header", "* makes a PUT create-only; 412 "
                            "if the id was already used.", example="*"),
 }
@@ -307,15 +305,16 @@ ROUTES: tuple[Route, ...] = (
           responses={200: ("The review", "Review"), 404: ("No such team", _E)}),
     Route("POST", PREFIX + "/admin/teams/{source_id}/live", "makeTeamLive",
           "Move a staged team's events to the real calendars.",
-          "Admin key only. Refused with not_ready unless every check passes, or "
-          "force=true. Runs a sync so the events move now. A live team is "
-          "returned unchanged.", params=("team_id", "force"),
+          "Admin key only. Refused with not_ready unless every check passes; only "
+          "a person in the console can override that. Runs a sync so the events "
+          "move now. A live team is returned unchanged.", params=("team_id",),
           responses={200: ("Live", "Team"), 404: ("No such team", _E),
                      409: ("not_ready, with the reason", _E)}),
     Route("DELETE", PREFIX + "/admin/teams/{source_id}", "discardTeam",
           "Throw away a staged team.",
-          "Admin key only. Its events come off the staging calendar, then the team "
-          "is deleted. A live team is refused; retire it in the console.",
+          "Admin key only. All its events come off the staging calendar, then the "
+          "team is deleted. A live team is refused; retire it in the console. A "
+          "createTeam retry for a discarded team gets 410 team_discarded.",
           params=("team_id",),
           responses={204: ("Discarded", None), 404: ("No such team", _E),
                      409: ("not_staged", _E),

@@ -736,6 +736,9 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
                     raise Problem(422, "idempotency_key_reused",
                                   "this Idempotency-Key was used with a different body")
                 replay = json.loads(stored["body"])
+                if repo.get_source(conn, replay["source_id"]) is None:
+                    raise Problem(410, "team_discarded",
+                                  "the team this request created has been discarded")
                 replay["key_already_issued"] = True
                 return _dump(replay, stored["status"], headers={"Idempotent-Replayed": "true"})
             try:
@@ -884,20 +887,22 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
 
     @app.post(ADMIN + "/teams/<source_id>/live")
     def make_live(source_id):
-        """Promote a staged team, behind the console's gate, and move its events."""
-        force = request.query.get("force") == "true"
+        """Promote a staged team behind the console's gate, and move its events.
+
+        No override here: only a person in the console can force one through.
+        """
         with lock_for(source_id), connect() as conn:
             caller = authorise_admin(conn)
             source = admin_source(conn, source_id)
-            if source.staging_collection:
-                report = preview(conn, source)
-                if not report.promotable and not force:
-                    raise Problem(409, "not_ready", f"not made live: {not_ready(report)}",
-                                  hint="GET the review for the checks, or resend with "
-                                       "?force=true")
-                repo.log_admin(conn, caller.label, "team_made_live", f"team:{source_id}",
-                               {"forced": True} if force and not report.promotable else None)
-                repo.set_staging(conn, source_id, None)
+            if not source.staging_collection:
+                return _dump(team_body(conn, source))
+            report = preview(conn, source)
+            if not report.promotable:
+                raise Problem(409, "not_ready", f"not made live: {not_ready(report)}",
+                              hint="GET the review for the checks; a person can "
+                                   "answer them in the console")
+            repo.log_admin(conn, caller.label, "team_made_live", f"team:{source_id}")
+            repo.set_staging(conn, source_id, None)
             team = team_body(conn, repo.get_source(conn, source_id))
         return _dump({**team, "sync": sync(source)})
 
@@ -916,19 +921,24 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
                               "retire a live team in the console")
             try:
                 target = write_target or targeting.build_target(conn, secrets=secrets)
-                report = retire.retire_source(conn, source, target, now=clock())
+                # From the start of time, so past events go too: a staged team's
+                # events were never on the family's calendars.
+                report = retire.retire_source(conn, source, target,
+                                              now=datetime.min.replace(tzinfo=timezone.utc))
             except (SecretError, TargetError) as exc:
-                raise Problem(503, "calendar_unreachable", f"nothing was deleted: {exc}",
+                raise Problem(503, "calendar_unreachable",
+                              f"the team was not discarded: {exc}",
                               headers={"Retry-After": "60"}) from None
             if not report.ok:
                 raise Problem(503, "calendar_unreachable",
-                              "some staged events could not be removed; nothing was "
-                              "deleted, retry", headers={"Retry-After": "60"})
-            retire.forget_source(conn, source_id, now=clock())
+                              f"{report.cancelled} staged events removed, "
+                              f"{len(report.errors)} could not be; the team was not "
+                              "discarded, retry", headers={"Retry-After": "60"})
+            repo.log_admin(conn, caller.label, "team_discarded", f"team:{source_id}")
+            conn.execute("DELETE FROM sources WHERE id = ?", (source_id,))
             conn.execute("DELETE FROM activities WHERE id = ? AND NOT EXISTS "
                          "(SELECT 1 FROM sources WHERE activity_id = ?)",
                          (source.activity_id, source.activity_id))
-            repo.log_admin(conn, caller.label, "team_discarded", f"team:{source_id}")
             conn.commit()
         audit(source_id, "DELETE admin/teams", source_id, "204")
         return HTTPResponse(status=204)

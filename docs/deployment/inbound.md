@@ -74,10 +74,10 @@ retry got `409 already_exists` for that same team. Kids are added in the console
 
 A staged team is reviewed with `…/review`: the console's four checks, every
 event with the calendar it will land in, and timed clashes with other teams.
-`…/live` makes it live behind the same gate as the console (`?force=true`
-overrides), and syncs so the events move at once. `DELETE …/{source}` discards
-a staged team, taking its events off the staging calendar; a live team is
-refused and is retired in the console.
+`…/live` makes it live behind the same gate as the console, and syncs so the
+events move at once; only the console can override a failed check.
+`DELETE …/{source}` discards a staged team, taking all its events off the
+staging calendar; a live team is refused and is retired in the console.
 
 A 401 carries `WWW-Authenticate: CalsyncKey`, not `Basic`, so a client in
 "extended compatibility" mode does not answer it by resending the proxy's
@@ -127,7 +127,7 @@ GET    /inbound/v1                                                   this list, 
 GET    /inbound/v1/admin/teams                                       every team (admin key)
 POST   /inbound/v1/admin/teams                                       create a team; Idempotency-Key required
 GET    /inbound/v1/admin/teams/{source}/review                       checks, events, clashes
-POST   /inbound/v1/admin/teams/{source}/live                         make a staged team live (?force=true)
+POST   /inbound/v1/admin/teams/{source}/live                         make a staged team live
 DELETE /inbound/v1/admin/teams/{source}                              discard a staged team
 POST   /inbound/v1/admin/teams/{source}/pause                        stop writing its events
 POST   /inbound/v1/admin/teams/{source}/resume                       start again

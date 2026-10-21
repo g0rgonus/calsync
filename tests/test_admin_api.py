@@ -287,10 +287,30 @@ def test_making_a_team_live_moves_its_events_now(client, tmp_path, db_path):
     conn.close()
 
 
-def test_force_makes_a_team_live_that_is_not_ready(client):
+def test_the_api_cannot_force_a_team_live(client):
     source, _ = staged_team(client)
     r = client.call("POST", f"{TEAMS}/{source}/live?force=true")
-    assert r["status"] == 200 and r["json"]["staged_to"] is None
+    assert r["status"] == 409 and r["json"]["error"]["code"] == "not_ready"
+
+
+def test_making_a_live_team_live_changes_nothing(client):
+    r = client.call("POST", f"{TEAMS}/in-herons/live")
+    assert r["status"] == 200 and "sync" not in r["json"]
+
+
+def test_discarding_takes_past_staged_events_too(client, tmp_path, clock):
+    source, key = staged_team(client)
+    push(client, source, key)
+    clock["now"] = NOW + timedelta(days=120)       # every practice has happened
+    assert client.delete(f"{TEAMS}/{source}")["status"] == 204
+    assert ics_dirs(tmp_path) == set()
+
+
+def test_a_retry_of_a_discarded_teams_create_is_gone(client):
+    source, _ = staged_team(client)
+    client.delete(f"{TEAMS}/{source}")
+    r = create(client, contract.NEW_TEAM, idem="create-Kestrels")
+    assert r["status"] == 410 and r["json"]["error"]["code"] == "team_discarded"
 
 
 def test_a_discarded_team_leaves_nothing_behind(client, tmp_path, db_path):
@@ -323,3 +343,34 @@ def test_the_same_wall_clock_in_another_zone_is_no_clash(client):
     push(client, source, key)
     push(client, "in-herons", TEAM_KEY)          # 17:45 in Chicago, hours apart
     assert client.get(f"{TEAMS}/{source}/review")["json"]["clashes"] == []
+
+
+def test_a_discard_the_calendar_half_refuses_says_what_happened(db_path, tmp_path):
+    from calsync.targets import TargetError
+
+    class Refusing:
+        def __init__(self, inner):
+            self.inner = inner
+
+        def __getattr__(self, name):
+            return getattr(self.inner, name)
+
+        def cancel(self, ref):
+            raise TargetError("calendar said no")
+
+    inner = build("ics_file", directory=tmp_path / "out")
+    writing = Client(inbound_app.create_app(
+        db_path, secrets=SecretStore(path=tmp_path / "secrets.json"),
+        clock=lambda: NOW, log=lambda line: None, write_target=inner), key=ADMIN_KEY)
+    source, key = staged_team(writing)
+    push(writing, source, key)
+    refusing = Client(inbound_app.create_app(
+        db_path, secrets=SecretStore(path=tmp_path / "secrets.json"),
+        clock=lambda: NOW, log=lambda line: None, write_target=Refusing(inner)),
+        key=ADMIN_KEY)
+    r = refusing.delete(f"{TEAMS}/{source}")
+    assert r["status"] == 503
+    import re as _re
+    assert _re.match(r"0 staged events removed, [1-9]\d* could not be; the team was not "
+                     r"discarded", r["json"]["error"]["detail"])
+    assert source in [t["source_id"] for t in refusing.get(TEAMS)["json"]["teams"]]
