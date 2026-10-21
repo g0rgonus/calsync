@@ -69,7 +69,8 @@ key**, one per tool, made and revoked on the console's settings page under
 and its key is in the create response only. Every create needs an
 `Idempotency-Key` header: a retry with the same value returns the team with
 `key_already_issued` instead of a second team, for a day. A lost team key is
-replaced with `POST …/admin/teams/{source}/key`. Kids are added in the console.
+replaced with `POST …/admin/teams/{source}/key`; so is the key of a create whose
+retry got `409 already_exists` for that same team. Kids are added in the console.
 
 A 401 carries `WWW-Authenticate: CalsyncKey`, not `Basic`, so a client in
 "extended compatibility" mode does not answer it by resending the proxy's

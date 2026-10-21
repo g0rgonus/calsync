@@ -15,15 +15,20 @@ from .events import Invalid, _err
 
 FIELDS = frozenset({"name", "children", "sport", "tz", "season_end",
                     "alarm_game_min", "alarm_practice_min"})
+ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 IDEMPOTENCY_KEY = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 MAX_NAME = 80
 MAX_ALARM_MIN = 24 * 60
 
 
 def validate_team(body, conn) -> dict:
-    """A create body, checked against the household's kids and sports."""
+    """A create body, checked against the household's kids and sports.
+
+    A null is treated as a missing field, so it takes the default.
+    """
     if not isinstance(body, dict):
         raise Invalid([_err("body", "not_an_object", "send a JSON object")])
+    body = {k: v for k, v in body.items() if v is not None}
     errors: list[dict] = []
     for name in sorted(set(body) - FIELDS):
         errors.append(_err(name, "unknown_field", "not a field of a team"))
@@ -41,13 +46,14 @@ def validate_team(body, conn) -> dict:
     elif len(children) > 1:
         errors.append(_err("children", "one_child_only",
                            "one kid per team for now; shared teams are not built yet"))
-    elif children[0] not in kids:
+    elif not isinstance(children[0], str) or children[0] not in kids:
         errors.append({**_err("children", "unknown_child",
                               "not a kid in calsync; add new kids in the console"),
                        "candidates": sorted(kids)})
 
     sports = {r["id"] for r in repo.list_sports(conn)}
-    if body.get("sport") not in sports:
+    sport = body.get("sport")
+    if not isinstance(sport, str) or sport not in sports:
         errors.append({**_err("sport", "unknown_sport", "not a sport in calsync"),
                        "candidates": sorted(sports)})
 
@@ -58,6 +64,8 @@ def validate_team(body, conn) -> dict:
     season_end = body.get("season_end")
     if season_end is not None:
         try:
+            if not ISO_DATE.match(season_end):
+                raise ValueError
             date.fromisoformat(season_end)
         except (TypeError, ValueError):
             errors.append(_err("season_end", "bad_date", "a date, YYYY-MM-DD"))

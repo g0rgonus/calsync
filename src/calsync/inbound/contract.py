@@ -275,7 +275,8 @@ ROUTES: tuple[Route, ...] = (
           "calendar until it is made live in the console. The response carries the "
           "team's key once. A retry with the same Idempotency-Key returns the team "
           "with key_already_issued instead of the key; if the key was lost, call "
-          "newTeamKey.",
+          "newTeamKey. A retry that gets 409 already_exists for the team it meant to "
+          "create means the create went through; call newTeamKey for its key.",
           params=("Idempotency-Key",), body="NewTeam", example=NEW_TEAM,
           responses={201: ("Created, with team_key; or a retry, with "
                            "key_already_issued instead", "Team"),

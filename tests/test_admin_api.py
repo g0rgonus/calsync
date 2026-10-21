@@ -191,3 +191,26 @@ def test_a_revoked_admin_key_stops_at_once(client, db_path):
     repo.revoke_key(conn, repo.admin_key(conn, inbound.hash_key(ADMIN_KEY)).id)
     conn.close()
     assert client.get(TEAMS)["status"] == 401
+
+
+@pytest.mark.parametrize("bad, field", [
+    ({"children": [["nadia"]]}, "children"),
+    ({"children": [{"id": "nadia"}]}, "children"),
+    ({"sport": ["swimming"]}, "sport"),
+    ({"season_end": "20270531"}, "season_end"),
+    ({"season_end": 20270531}, "season_end"),
+])
+def test_a_wrongly_typed_field_is_a_422_not_a_crash(client, bad, field):
+    r = create(client, {**contract.NEW_TEAM, **bad})
+    assert r["status"] == 422
+    assert [e["field"] for e in r["json"]["error"]["errors"]] == [field]
+
+
+def test_a_null_field_takes_its_default(client):
+    r = create(client, {**contract.NEW_TEAM, "alarm_game_min": None, "tz": None})
+    assert r["status"] == 201
+
+
+def test_the_admin_refusal_asks_for_an_admin_key(client):
+    detail = client.get(TEAMS, key=None)["json"]["error"]["detail"]
+    assert detail.startswith("send an admin key")

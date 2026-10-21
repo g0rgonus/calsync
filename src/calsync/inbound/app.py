@@ -83,10 +83,10 @@ class Problem(HTTPResponse):
         )
 
 
-def _unauthorised() -> Problem:
+def _unauthorised(whose: str = "this source's key") -> Problem:
     return Problem(
         401, "bad_credential",
-        f"send this source's key in {KEY_HEADER}; Authorization is not read",
+        f"send {whose} in {KEY_HEADER}; Authorization is not read",
         # Not "Basic": see the module docstring.
         headers={"WWW-Authenticate": 'CalsyncKey realm="calsync-inbound"'},
     )
@@ -678,7 +678,7 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
         if key is None:
             log(f"inbound admin refused: {'no key' if not presented else 'wrong key'} "
                 f"from {client()}")
-            raise _unauthorised()
+            raise _unauthorised("an admin key")
         touch(conn, lambda: repo.key_used_at(conn, key.id),
               lambda at: repo.touch_key(conn, key.id, at))
         return key
