@@ -75,16 +75,13 @@ answerer of the same three questions later.
 two read endpoints specify components that do not exist — read those as the
 design contract, not as a description of the code.
 
-**Configuration does not go through the API.** The console edits children,
-activities, sources, venues and settings directly in SQLite via `repo.py` and
-`config.py`, in the same process. Reasoning in `docs/API.md`, "Configuration is
-not in this API".
-
-The boundary that decision respects is **agent versus human, not network
-position**: Hermes and the pollers still submit proposals, still cannot approve
-them, and nothing but calsync writes to Radicale. "It's on a private tailnet" is
-not a reason to weaken those — the risk there is an agent acting on a bad parse,
-not a stranger on the internet.
+**The console edits configuration directly in SQLite** via `repo.py` and
+`config.py`. **Teams can also be created and managed through the admin API**
+(`/inbound/v1/admin`, `inbound/admin.py`) with an admin key from the console's
+settings. It reuses `onboarding.create`, so an API team is identical to a
+console one and starts staged. Creates need an `Idempotency-Key`; a retry gets
+the team back but never the key again. Kids, venues and settings stay
+console-only. Nothing but calsync writes to Radicale.
 
 The Google target is **withdrawn as a destination** — not in `targeting.KINDS`,
 not in the `--target` choices, not in the console's picker. Its payload builder

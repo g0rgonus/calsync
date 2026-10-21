@@ -9,9 +9,8 @@ template engine, and speaks plain WSGI so this runs under the stdlib server. It
 is the smallest thing that covers the job, which is the same argument
 ``sqlite3``-instead-of-an-ORM makes elsewhere in this package.
 
-**Why direct SQLite.** Configuration is edited in this process rather than
-through the calsync API (docs/API.md, "Configuration is not in this API"). That
-makes the poller and this app two writers on one file, so:
+**Why direct SQLite.** Configuration is edited in this process. That makes the
+poller and this app two writers on one file, so:
 
 - every request gets its own connection, opened and closed inside the handler.
   ``db.connect`` sets the busy timeout that stops a config edit during a poll

@@ -845,6 +845,7 @@ def create_app(
             tz_loadable=zones.loadable(settings.default_tz),
             read_key_set=repo.read_key_hash(conn) is not None,
             read_key_used=repo.read_key_used_at(conn),
+            admin_keys=[k for k in repo.api_keys(conn) if k.scope == "admin"],
             api_token_ref=Settings.load(conn).api_token_ref,
             api_has_token=secrets.has(Settings.load(conn).api_token_ref),
             pushed=pushed,
@@ -1626,6 +1627,25 @@ def create_app(
         with connect() as conn:
             repo.set_read_key_hash(conn, None)
         _saved("read-key", "Read key removed. Nothing can read the whole calendar now.")
+
+    @app.post("/settings/admin-keys")
+    def make_admin_key():
+        """An admin key for a tool. Shown in this response only, like the read key."""
+        label = _field("label").strip()
+        if not label:
+            raise Refused("say who the key is for, e.g. Grok Bot")
+        key = inbound_events.new_key()
+        with connect() as conn:
+            repo.issue_admin_key(conn, label[:60], inbound_events.hash_key(key))
+        response.set_header("Cache-Control", "no-store")
+        return render("admin_key.tpl", key=key, label=label[:60],
+                      header=inbound_app.KEY_HEADER, prefix=inbound_app.PREFIX, flash=None)
+
+    @app.post("/settings/admin-keys/<key_id:int>/revoke")
+    def revoke_admin_key(key_id):
+        with connect() as conn:
+            repo.revoke_key(conn, key_id)
+        _saved("admin-keys", "Admin key revoked. It stopped working at once.")
 
     @app.post("/settings/notifications/test")
     def test_notification():

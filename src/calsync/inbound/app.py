@@ -41,13 +41,13 @@ from zoneinfo import ZoneInfo
 
 from bottle import Bottle, HTTPResponse, request, response
 
-from .. import db, repo, sources, targeting
+from .. import db, onboarding, repo, sources, targeting
 from ..api.app import _QuietHandler, _Threaded, events_body
 from ..secrets import SecretError, SecretStore
 from ..settings import Settings
 from ..sync import sync_source
 from ..targets import TargetError
-from . import contract
+from . import admin, contract
 from . import events as inbound
 
 from .contract import KEY_HEADER, PREFIX, ROUTES  # noqa: F401  (re-exported)
@@ -83,10 +83,10 @@ class Problem(HTTPResponse):
         )
 
 
-def _unauthorised() -> Problem:
+def _unauthorised(whose: str = "this source's key") -> Problem:
     return Problem(
         401, "bad_credential",
-        f"send this source's key in {KEY_HEADER}; Authorization is not read",
+        f"send {whose} in {KEY_HEADER}; Authorization is not read",
         # Not "Basic": see the module docstring.
         headers={"WWW-Authenticate": 'CalsyncKey realm="calsync-inbound"'},
     )
@@ -667,6 +667,150 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
     @app.delete(PREFIX + "/sources/<source_id>/events/<external_id>/occurrences/<date>")
     def delete_occurrence(source_id, external_id, date):
         return occurrence(source_id, external_id, date, cancel=True)
+
+    # --- admin ----------------------------------------------------------------------
+
+    ADMIN = PREFIX + "/admin"
+
+    def authorise_admin(conn) -> repo.ApiKey:
+        presented = (request.get_header(KEY_HEADER) or "").strip()
+        key = repo.admin_key(conn, inbound.hash_key(presented)) if presented else None
+        if key is None:
+            log(f"inbound admin refused: {'no key' if not presented else 'wrong key'} "
+                f"from {client()}")
+            raise _unauthorised("an admin key")
+        touch(conn, lambda: repo.key_used_at(conn, key.id),
+              lambda at: repo.touch_key(conn, key.id, at))
+        return key
+
+    def admin_source(conn, source_id: str) -> repo.Source:
+        source = repo.get_source(conn, source_id)
+        if source is None:
+            raise Problem(404, "no_such_team", "no team has that id")
+        return source
+
+    def team_body(conn, source: repo.Source) -> dict:
+        activity = repo.get_activity(conn, source.activity_id)
+        key = repo.team_key(conn, source.id)
+        return {
+            "source_id": source.id,
+            "activity_id": activity.id,
+            "name": activity.name,
+            "children": [activity.child_id],
+            "sport": activity.sport,
+            "tz": activity.tz,
+            "kind": source.kind,
+            "enabled": source.enabled,
+            "staged_to": source.staging_collection,
+            "key": None if key is None else {
+                "id": key.id, "created_at": key.created_at,
+                "last_used_at": key.last_used_at},
+        }
+
+    @app.get(ADMIN + "/teams")
+    def list_teams():
+        with connect() as conn:
+            authorise_admin(conn)
+            teams = [team_body(conn, s) for s in repo.list_sources(conn, enabled_only=False)]
+        return _dump({"count": len(teams), "teams": teams})
+
+    @app.post(ADMIN + "/teams")
+    def create_team():
+        """Create a team from typed fields. It starts staged, like the console's."""
+        idem = (request.get_header("Idempotency-Key") or "").strip()
+        with connect() as conn:
+            caller = authorise_admin(conn)
+        if not admin.IDEMPOTENCY_KEY.match(idem):
+            raise Problem(400, "idempotency_key_required",
+                          "send Idempotency-Key: a unique value per intended create, "
+                          "1-128 of A-Z a-z 0-9 . _ : -")
+        throttle(f"admin:{caller.id}")
+        payload = body()
+        digest = admin.request_hash(payload)
+        # One create at a time: onboarding commits as it goes, so the duplicate
+        # and replay checks need this to see each other's results.
+        with lock_for("admin"), connect() as conn:
+            stored = repo.idempotent_result(conn, caller.id, idem, now=clock())
+            if stored:
+                if stored["request_sha256"] != digest:
+                    raise Problem(422, "idempotency_key_reused",
+                                  "this Idempotency-Key was used with a different body")
+                replay = json.loads(stored["body"])
+                replay["key_already_issued"] = True
+                return _dump(replay, stored["status"], headers={"Idempotent-Replayed": "true"})
+            try:
+                fields = admin.validate_team(payload, conn)
+            except inbound.Invalid as exc:
+                raise Problem(422, "invalid", "the team was not created",
+                              errors=exc.errors) from None
+            child_id = fields["children"][0]
+            existing = repo.team_named(conn, child_id, fields["name"])
+            if existing:
+                raise Problem(409, "already_exists",
+                              "this kid already has a team with that name",
+                              team=team_body(conn, repo.get_source(conn, existing)))
+            previous = onboarding.clone_forward(conn, child_id, fields["sport"])
+            draft = onboarding.Draft(
+                url="", child_id=child_id, sport=fields["sport"],
+                team_name=fields["name"].strip(), kind="inbound",
+                tz=(fields.get("tz") or (previous.tz if previous else None)
+                    or Settings.load(conn).default_tz),
+                season_end=fields.get("season_end"),
+                emoji=previous.emoji if previous else None,
+                league=previous.league if previous else None,
+                age_group=previous.age_group if previous else None,
+                alarm_game_min=fields.get(
+                    "alarm_game_min", previous.alarm_game_min if previous else 90),
+                alarm_practice_min=fields.get(
+                    "alarm_practice_min", previous.alarm_practice_min if previous else 30),
+            )
+            created = onboarding.create(conn, draft, secrets=secrets, actor=caller.label)
+            team = team_body(conn, repo.get_source(conn, created.source_id))
+            repo.log_admin(conn, caller.label, "team_created", f"team:{created.source_id}")
+            repo.save_idempotent(conn, caller.id, idem, request_sha256=digest,
+                                 status=201, body=team, now=clock())
+            conn.commit()
+        audit(created.source_id, "POST admin/teams", idem, "201")
+        return _dump({**team, "team_key": created.key}, 201)
+
+    def set_team_enabled(source_id: str, enabled: bool):
+        with connect() as conn:
+            caller = authorise_admin(conn)
+            admin_source(conn, source_id)
+            repo.log_admin(conn, caller.label, "team_resumed" if enabled else "team_paused",
+                           f"team:{source_id}")
+            repo.set_enabled(conn, source_id, enabled)
+            return _dump(team_body(conn, repo.get_source(conn, source_id)))
+
+    @app.post(ADMIN + "/teams/<source_id>/pause")
+    def pause_team(source_id):
+        return set_team_enabled(source_id, False)
+
+    @app.post(ADMIN + "/teams/<source_id>/resume")
+    def resume_team(source_id):
+        return set_team_enabled(source_id, True)
+
+    @app.post(ADMIN + "/teams/<source_id>/key")
+    def new_team_key(source_id):
+        """A new key for a pushed team. The old one stops working at once."""
+        with connect() as conn:
+            caller = authorise_admin(conn)
+            source = admin_source(conn, source_id)
+            if source.kind not in sources.PUSHED:
+                raise Problem(409, "not_pushed", "this team is read from a feed; it has no key")
+            key = inbound.new_key()
+            repo.set_inbound_key_hash(conn, source_id, inbound.hash_key(key),
+                                      actor=caller.label)
+            return _dump({"source_id": source_id, "team_key": key,
+                          "key_id": repo.team_key(conn, source_id).id}, 201)
+
+    @app.delete(ADMIN + "/teams/<source_id>/key")
+    def revoke_team_key(source_id):
+        with connect() as conn:
+            caller = authorise_admin(conn)
+            admin_source(conn, source_id)
+            repo.revoke_team_key(conn, source_id, actor=caller.label)
+        return HTTPResponse(status=204)
 
     return app
 

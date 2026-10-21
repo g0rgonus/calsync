@@ -2834,6 +2834,29 @@ def test_a_household_read_key_is_shown_once_and_can_be_replaced_or_removed(
     assert "Make a read key" in client.get("/settings")["body"]
 
 
+def test_an_admin_key_is_shown_once_listed_by_label_and_revocable(client, tmp_path):
+    import re as _re
+
+    from calsync.inbound import events as inbound_events
+
+    assert client.post("/settings/admin-keys", {"label": " "})["status"] >= 400
+    page = client.post("/settings/admin-keys", {"label": "Grok Bot"})
+    assert page["status"] == 200
+    assert page["headers"].get("Cache-Control") == "no-store"
+    key = _re.search(r"csk_[A-Za-z0-9_-]{20,}", page["body"]).group(0)
+    conn = db.connect(tmp_path / "calsync.db")
+    admin = repo.admin_key(conn, inbound_events.hash_key(key))
+    conn.close()
+    assert admin.label == "Grok Bot"
+    settings = client.get("/settings")["body"]
+    assert "Grok Bot" in settings and key not in settings
+
+    client.post(f"/settings/admin-keys/{admin.id}/revoke")
+    conn = db.connect(tmp_path / "calsync.db")
+    assert repo.admin_key(conn, inbound_events.hash_key(key)) is None
+    conn.close()
+
+
 # --- fixing one event -------------------------------------------------------
 #
 # The page a non-technical member of the family uses when the coach got it
