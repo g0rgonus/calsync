@@ -5,9 +5,9 @@ family already has on their phones. Runs on one Mac, under launchd, every 15
 minutes.
 
 ```text
-Radicale /games      ──┐                        ┌─→  Goergen Kid Activities
+Radicale /games      ──┐                        ┌─→  Kid Activities
                        ├─→  calsync-mirror  ────┤
-Radicale /practices  ──┘      (this tool)       └─→  Goergen Grandparents
+Radicale /practices  ──┘      (this tool)       └─→  Grandparents
 ```
 
 It replaces an earlier tool that copied between two local EventKit calendars.
@@ -174,8 +174,8 @@ hold a calendar password):
 {
   "radicaleURL": "http://homebox:5232/calsync",
   "pairs": [
-    {"collection": "games",     "calendar": "Goergen Kid Activities"},
-    {"collection": "practices", "calendar": "Goergen Grandparents"}
+    {"collection": "games",     "calendar": "Kid Activities"},
+    {"collection": "practices", "calendar": "Grandparents"}
   ],
   "windowBackDays": 30,
   "windowForwardDays": 365,
