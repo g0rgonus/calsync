@@ -147,20 +147,8 @@ public enum Reconcile {
     /// timed event reached EventKit with `timeZone == nil` — and the start such
     /// an event reports back is not stable across a change of device zone.
     ///
-    /// What that cost, measured rather than assumed: flying Eastern to Pacific
-    /// on 2026-09-07 made 64 of 67 events compare unequal to Radicale on the
-    /// next run, and every one was rewritten. Radicale had not been written to
-    /// for two days (`getlastmodified` on both collections), so nothing
-    /// upstream had moved — the mirror was rewriting events to the values they
-    /// already held.
-    ///
-    /// It is churn, **not** corruption. The stored instants were right
-    /// throughout: on the day, the same event read 13:00 on a Mac in Pacific
-    /// and 16:00 on one in Eastern, which is one instant shown in two zones and
-    /// is precisely what a floating event cannot do. Do not let this comment
-    /// grow back into a story about wrong times on a phone; the defect is that
-    /// **every timezone change rewrites the whole calendar**, and a mass
-    /// rewrite of a calendar other people subscribe to is not free.
+    /// Without one, every device zone change rewrote the whole calendar.
+    /// That is churn, not wrong times: the stored instants were correct.
     ///
     /// Any concrete zone settles it. A real zone from `TZID` would be nicer to
     /// read in Calendar.app; `homeTimeZone` picks what is shown; UTC is the

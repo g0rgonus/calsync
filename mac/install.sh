@@ -7,8 +7,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 BIN_DIR="$HOME/.local/bin"
 CLI="$BIN_DIR/calsync-mirror"
 APP="$HOME/Applications/Calsync Mirror.app"
-LABEL="com.goergen.calsync-mirror"
-OLD_LABEL="com.goergen.sports-calendar-sync"
+LABEL="com.dadalorian.calsync-mirror"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 LOG="$HOME/Library/Logs/calsync-mirror.log"
 CONFIG="$HOME/.config/calsync-mirror/config.json"
@@ -148,10 +147,7 @@ fi
 
 # --- login item ------------------------------------------------------------
 #
-# The app holds its own timer, so there is no StartInterval here. Any older
-# agent that ran the CLI on a schedule is removed: two processes writing the
-# same calendar would race, and EventKit has no lock to arbitrate it.
-launchctl bootout "gui/$(id -u)/$OLD_LABEL" 2>/dev/null || true
+# The app holds its own timer, so there is no StartInterval here.
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
 
 cat > "$PLIST" <<PLISTEOF

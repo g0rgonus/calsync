@@ -143,8 +143,8 @@ public struct Config: Codable, Equatable {
         username: nil,
         password: nil,
         pairs: [
-            Pair(collection: "games", calendar: "Goergen Kid Activities"),
-            Pair(collection: "practices", calendar: "Goergen Grandparents"),
+            Pair(collection: "games", calendar: "Kid Activities"),
+            Pair(collection: "practices", calendar: "Grandparents"),
         ]
     )
 

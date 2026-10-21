@@ -26,11 +26,11 @@ import CalsyncMirrorEventKit
 /// somebody who read `install.sh` will look. `Logger` goes to the unified log,
 /// which is the only one that survives being launched some other way — by
 /// `open`, or from Login Items — and is retrievable after the fact with
-/// `log show --predicate 'subsystem == "com.goergen.calsync-mirror"'`.
+/// `log show --predicate 'subsystem == "com.dadalorian.calsync-mirror"'`.
 /// An app that runs at login and keeps no record is one you cannot debug from
 /// the outside, and this one runs unattended for weeks at a time.
 enum Log {
-    static let logger = Logger(subsystem: "com.goergen.calsync-mirror", category: "sync")
+    static let logger = Logger(subsystem: "com.dadalorian.calsync-mirror", category: "sync")
 
     static let stamp: DateFormatter = {
         let formatter = DateFormatter()

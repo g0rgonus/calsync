@@ -213,8 +213,8 @@ final class DetailLinesTests: XCTestCase {
     /// whole screen, which is how the calendar-not-found error rendered.
     func testALongLineIsCappedForTheMenu() {
         let long = "no calendar titled \"ZZ\". Available: 360Player Event calendar, "
-            + "Birthdays, Birthdays, Calendar, Daniel, F1, Family, Goergen "
-            + "Grandparents, Goergen Kid Activities, Home, TeamReach - Games"
+            + "Birthdays, Birthdays, Calendar, Work, Family, Grandparents, "
+            + "Kid Activities, Home, Holidays, Book Club, TeamReach - Games"
         let status = MenuStatus(symbol: "x", title: "t", detail: long)
         let lines = status.detailLines()
         XCTAssertEqual(lines.count, 1)
