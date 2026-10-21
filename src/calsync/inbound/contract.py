@@ -18,6 +18,7 @@ import html
 import json
 from dataclasses import dataclass, field
 
+from . import admin
 from . import events as inbound
 
 PREFIX = "/inbound/v1"
@@ -60,6 +61,7 @@ SESSION = {
     "part_of": "harbor-invitational",
 }
 OVERRIDE = {"start": "2026-10-27T18:30:00", "location": "Larkmoor Pool"}
+NEW_TEAM = {"name": "Kestrels", "children": ["nadia"], "sport": "robotics"}
 
 
 @dataclass(frozen=True)
@@ -70,6 +72,7 @@ class Field:
     required: str = ""  # "" | "always" | a condition, in words
     enum: tuple = ()
     example: object = None
+    items: str = "string"   # JSON Schema format of an array's items, or "string"
 
 
 #: Every field `events.validate_event` reads, in the order a person writes them.
@@ -97,7 +100,7 @@ FIELDS: tuple[Field, ...] = (
           "per date. There is no default season end.",
           example="FREQ=WEEKLY;BYDAY=TU;UNTIL=20270531T235959Z"),
     Field("exdates", "array", "Dates the series skips, YYYY-MM-DD.",
-          example=["2026-11-24"]),
+          example=["2026-11-24"], items="date"),
     Field("part_of", "string", "The external_id of the event this is part of — a "
           "meet's session or warm-up names the meet. While any live part points at "
           "it, the whole meet comes off the calendar (every day of it, not only the "
@@ -116,6 +119,25 @@ OVERRIDE_FIELDS: tuple[Field, ...] = (
     Field("label", "string", "Label for this date only."),
 )
 assert {f.name for f in OVERRIDE_FIELDS} == inbound.OVERRIDE_FIELDS
+
+TEAM_FIELDS: tuple[Field, ...] = (
+    Field("name", "string", "The team's name, as the family says it.", "always",
+          example="Kestrels"),
+    Field("children", "array", "The kid's id, in a list of one. Kids are added in "
+          "the console; an unknown id is refused with the known ones.", "always",
+          example=["nadia"]),
+    Field("sport", "string", "calsync's sport id; it decides the emoji. An unknown "
+          "one is refused with the known ones.", "always", example="robotics"),
+    Field("tz", "string", "IANA zone. Defaults to the kid's last team in this sport, "
+          "then the household's.", example="America/New_York"),
+    Field("season_end", "string", "Last day of the season, YYYY-MM-DD.",
+          example="2027-05-31"),
+    Field("alarm_game_min", "integer", "Minutes before a game to alert. Default 90.",
+          example=90),
+    Field("alarm_practice_min", "integer", "Minutes before a practice to alert. "
+          "Default 30.", example=30),
+)
+assert {f.name for f in TEAM_FIELDS} == admin.FIELDS
 
 
 @dataclass(frozen=True)
@@ -150,6 +172,12 @@ P = {
     "activity": Param("activity", "query", "Only this team's events (activity id)."),
     "If-Match": Param("If-Match", "header", "Write only if the event's ETag still "
                       "matches; 412 otherwise."),
+    "team_id": Param("source_id", "path", "The team's source_id, from listTeams or "
+                     "createTeam.", True, "in-kestrels"),
+    "Idempotency-Key": Param("Idempotency-Key", "header", "A unique value per intended "
+                             "create. Sending it again returns the first result instead "
+                             "of a second team; the key is not shown again.", True,
+                             "create-kestrels-1"),
     "If-None-Match": Param("If-None-Match", "header", "* makes a PUT create-only; 412 "
                            "if the id was already used.", example="*"),
 }
@@ -238,6 +266,38 @@ ROUTES: tuple[Route, ...] = (
           params=("source_id", "external_id", "date", "If-Match"),
           responses={204: ("Cancelled, or already was", None),
                      422: ("Not a date the series has", _E)}),
+    Route("GET", PREFIX + "/admin/teams", "listTeams", "Every team, paused ones included.",
+          "Admin key only.",
+          responses={200: ("The teams", "TeamList")}),
+    Route("POST", PREFIX + "/admin/teams", "createTeam",
+          "Create a team whose events you will send.",
+          "Admin key only. The team starts staged: its events go to the onboarding "
+          "calendar until it is made live in the console. The response carries the "
+          "team's key once. A retry with the same Idempotency-Key returns the team "
+          "with key_already_issued instead of the key; if the key was lost, call "
+          "newTeamKey.",
+          params=("Idempotency-Key",), body="NewTeam", example=NEW_TEAM,
+          responses={201: ("Created, with team_key; or a retry, with "
+                           "key_already_issued instead", "Team"),
+                     400: ("No Idempotency-Key", _E),
+                     409: ("already_exists: this kid has a team with that name", _E),
+                     422: ("Invalid, or the Idempotency-Key was used with another body", _E)}),
+    Route("POST", PREFIX + "/admin/teams/{source_id}/pause", "pauseTeam",
+          "Stop writing a team's events.", "Admin key only. Events already on the "
+          "calendar stay.", params=("team_id",),
+          responses={200: ("The team", "Team"), 404: ("No such team", _E)}),
+    Route("POST", PREFIX + "/admin/teams/{source_id}/resume", "resumeTeam",
+          "Start writing a paused team's events again.", "Admin key only.",
+          params=("team_id",),
+          responses={200: ("The team", "Team"), 404: ("No such team", _E)}),
+    Route("POST", PREFIX + "/admin/teams/{source_id}/key", "newTeamKey",
+          "Issue a new key for a team.", "Admin key only. The old key stops working "
+          "at once. The new one is shown only here.", params=("team_id",),
+          responses={201: ("The new key", "TeamKey"), 404: ("No such team", _E),
+                     409: ("A feed team has no key", _E)}),
+    Route("DELETE", PREFIX + "/admin/teams/{source_id}/key", "revokeTeamKey",
+          "Revoke a team's key.", "Admin key only. Idempotent.", params=("team_id",),
+          responses={204: ("Revoked, or there was none", None), 404: ("No such team", _E)}),
 )
 
 
@@ -271,7 +331,8 @@ def _schema(fields: tuple[Field, ...], *, required=()) -> dict:
     for f in fields:
         prop: dict = {"type": f.type, "description": f.summary}
         if f.type == "array":
-            prop["items"] = {"type": "string", "format": "date"}
+            prop["items"] = ({"type": "string"} if f.items == "string"
+                             else {"type": "string", "format": f.items})
         if f.enum:
             prop["enum"] = list(f.enum)
         if f.example is not None:
@@ -324,6 +385,19 @@ def openapi(server: str) -> dict:
         "duplicates": {"type": "array", "items": {"type": "object", "properties": {
             "external_id": {"type": "string"}, "date": {"type": "string"}}}},
     }}}}
+    team = {"type": "object", "properties": {
+        "source_id": {"type": "string"}, "activity_id": {"type": "string"},
+        "name": {"type": "string"},
+        "children": {"type": "array", "items": {"type": "string"}},
+        "sport": {"type": "string"}, "tz": {"type": "string"}, "kind": {"type": "string"},
+        "enabled": {"type": "boolean"},
+        "staged_to": {"type": ["string", "null"], "description": "The staging calendar, "
+                      "or null once live."},
+        "key": {"type": ["object", "null"], "description": "The working key's id, "
+                "created_at and last_used_at. Never the key."},
+        "team_key": {"type": "string", "description": "Only on createTeam's 201."},
+        "key_already_issued": {"type": "boolean", "description": "On a createTeam retry."},
+    }}
     paths: dict = {}
     for r in ROUTES:
         op: dict = {"operationId": r.op, "summary": r.summary}
@@ -370,7 +444,8 @@ def openapi(server: str) -> dict:
         "components": {
             "securitySchemes": {
                 "calsyncKey": {"type": "apiKey", "in": "header", "name": KEY_HEADER,
-                               "description": "The team's key from the console."},
+                               "description": "A team key, the household read key, "
+                                              "or an admin key, from the console."},
                 "proxyBasic": {"type": "http", "scheme": "basic",
                                "description": "The authenticating proxy's own login, "
                                               "e.g. Pangolin Basic Header Auth. Never "
@@ -390,6 +465,14 @@ def openapi(server: str) -> dict:
                         ("child", "string"), ("tz", "string"), ("enabled", "boolean"),
                         ("staged_to", "string"), ("last_push_at", "string"))}},
                 "Error": error,
+                "NewTeam": _schema(TEAM_FIELDS, required=("name", "children", "sport")),
+                "Team": team,
+                "TeamList": {"type": "object", "properties": {
+                    "count": {"type": "integer"},
+                    "teams": {"type": "array", "items": {"$ref": "#/components/schemas/Team"}}}},
+                "TeamKey": {"type": "object", "properties": {
+                    "source_id": {"type": "string"}, "team_key": {"type": "string"},
+                    "key_id": {"type": "integer"}}},
                 "Calendar": {"type": "object", "description": "The read API's "
                              "GET /v1/events body.", "properties": {
                     "from": {"type": "string", "format": "date-time"},
@@ -412,8 +495,10 @@ def openapi(server: str) -> dict:
 
 def _curl(server: str, r: Route) -> str:
     path = r.path
+    team_id = "team_id" in r.params
     for name in ("source_id", "external_id", "date"):
-        path = path.replace("{" + name + "}", P[name].example)
+        path = path.replace("{" + name + "}", P["team_id" if team_id and name ==
+                                                "source_id" else name].example)
     if "from" in r.params:
         path += "?from=2026-10-27&to=2026-10-27"
     if "window_from" in r.params:
@@ -421,8 +506,13 @@ def _curl(server: str, r: Route) -> str:
     lines = [f"curl -X {r.method} '{server}{path}' \\"]
     if r.auth:
         lines.append('  -u "$PROXY_USER:$PROXY_PASS" \\')
-        key = "$CALSYNC_READ_KEY" if r.op == "getCalendar" else "$CALSYNC_KEY"
-        lines.append(f'  -H "{KEY_HEADER}: {key}"' + (" \\" if r.body else ""))
+        key = ("$CALSYNC_READ_KEY" if r.op == "getCalendar" else
+               "$CALSYNC_ADMIN_KEY" if "/admin/" in r.path else "$CALSYNC_KEY")
+        more = r.body or "Idempotency-Key" in r.params
+        lines.append(f'  -H "{KEY_HEADER}: {key}"' + (" \\" if more else ""))
+    if "Idempotency-Key" in r.params:
+        lines.append(f'  -H "Idempotency-Key: {P["Idempotency-Key"].example}"'
+                     + (" \\" if r.body else ""))
     if r.body:
         lines.append("  -H 'Content-Type: application/json' \\")
         lines.append("  -d '" + json.dumps(r.example, indent=2, ensure_ascii=False)
@@ -561,6 +651,20 @@ promotes it.</td></tr>
 <p>Refused, with the reason: {', '.join(f'<code>{e(n)}</code>' for n in sorted(inbound._REFUSED))}.
 calsync composes the title and chooses the calendar; one source is one team for one
 child; cancelling is a <code>DELETE</code>.</p></div>
+
+<h2>Admin: creating teams</h2>
+<div class=card>
+<p>The <code>/admin</code> calls take an <strong>admin key</strong>, made on the
+console's settings page; team keys and the read key are refused. A new team starts
+staged, and its key is in the create response only. Send an <code>Idempotency-Key</code>
+with every create: a retry with the same one returns the team with
+<code>key_already_issued</code> instead of making a second team. Kids are added in the
+console, not here.</p>
+</div>
+<div class="card wrap"><table>
+<tr><th>Field</th><th>Type</th><th>Required</th><th></th></tr>
+{_rows(TEAM_FIELDS)}
+</table></div>
 
 <h2>Changing one date</h2>
 <div class="card wrap"><table>

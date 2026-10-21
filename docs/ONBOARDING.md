@@ -138,10 +138,9 @@ and does not need a model to be right first time.
 
 ## 7. How the UI reaches the data
 
-**Directly, via `repo.py` and `config.py` in the same process.** Configuration
-does not go through the calsync API — see "Configuration is not in this API" in
-[API.md](API.md) for the reasoning and, importantly, for what that does *not*
-license: agents still propose rather than write, and still cannot approve.
+**Directly, via `repo.py` and `config.py` in the same process.** A tool can
+also create a team through the admin API, which calls the same `onboarding.create`
+(see "Configuration" in [API.md](API.md)).
 
 Practically this means the onboarding flow is a thin web layer over functions
 that already exist and are already tested — `config.apply`, `repo.set_staging`,

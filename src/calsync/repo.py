@@ -1300,9 +1300,8 @@ def set_enabled(conn: sqlite3.Connection, source_id: str, enabled: bool) -> None
 
 # --- reads the web UI needs -------------------------------------------------
 #
-# Onboarding is CRUD over these tables in the same process rather than over an
-# HTTP API (docs/API.md, "Configuration is not in this API"), so the queries it
-# needs belong here with every other query. Each one is a single statement and
+# The console edits these tables in its own process, so the queries it needs
+# belong here with every other query. Each one is a single statement and
 # holds no transaction open, because the poller is a second writer on the same
 # file.
 
@@ -2133,6 +2132,25 @@ def admin_key(conn: sqlite3.Connection, digest: str) -> ApiKey | None:
     return _key(row) if row else None
 
 
+def touch_key(conn: sqlite3.Connection, key_id: int, at: str) -> None:
+    conn.execute("UPDATE api_keys SET last_used_at = ? WHERE id = ?", (at, key_id))
+
+
+def key_used_at(conn: sqlite3.Connection, key_id: int) -> str | None:
+    row = conn.execute("SELECT last_used_at FROM api_keys WHERE id = ?", (key_id,)).fetchone()
+    return row["last_used_at"] if row else None
+
+
+def team_key(conn: sqlite3.Connection, source_id: str) -> ApiKey | None:
+    row = _working(conn, "team", source_id)
+    return _key(row) if row else None
+
+
+def revoke_team_key(conn: sqlite3.Connection, source_id: str, *, actor: str) -> None:
+    _revoke_working(conn, "team", source_id, actor)
+    conn.commit()
+
+
 def api_keys(conn: sqlite3.Connection, *, include_revoked: bool = False) -> list[ApiKey]:
     sql = "SELECT * FROM api_keys"
     if not include_revoked:
@@ -2169,3 +2187,36 @@ def log_admin(conn: sqlite3.Connection, actor: str, action: str,
 def admin_log(conn: sqlite3.Connection, limit: int = 100) -> list[dict]:
     return [dict(r) for r in conn.execute(
         "SELECT * FROM admin_log ORDER BY id DESC LIMIT ?", (limit,))]
+
+
+# --- idempotency ----------------------------------------------------------------
+
+IDEMPOTENCY_HOURS = 24
+
+
+def idempotent_result(conn: sqlite3.Connection, key_id: int, idem: str, *,
+                      now: datetime) -> sqlite3.Row | None:
+    """The stored response for this key and Idempotency-Key, pruning old ones."""
+    cutoff = (now - timedelta(hours=IDEMPOTENCY_HOURS)).isoformat()
+    conn.execute("DELETE FROM idempotency_keys WHERE created_at < ?", (cutoff,))
+    return conn.execute(
+        "SELECT request_sha256, status, body FROM idempotency_keys "
+        "WHERE key_id = ? AND idem = ?", (key_id, idem)).fetchone()
+
+
+def save_idempotent(conn: sqlite3.Connection, key_id: int, idem: str, *,
+                    request_sha256: str, status: int, body: dict, now: datetime) -> None:
+    conn.execute(
+        "INSERT INTO idempotency_keys (key_id, idem, request_sha256, status, body, "
+        "created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (key_id, idem, request_sha256, status, json.dumps(body, sort_keys=True),
+         now.isoformat()))
+
+
+def team_named(conn: sqlite3.Connection, child_id: str, name: str) -> str | None:
+    """The source of this kid's team with this name, ignoring case, if any."""
+    row = conn.execute(
+        "SELECT s.id FROM activities a JOIN sources s ON s.activity_id = a.id "
+        "WHERE a.child_id = ? AND lower(a.name) = lower(?) ORDER BY s.id LIMIT 1",
+        (child_id, name.strip())).fetchone()
+    return row["id"] if row else None

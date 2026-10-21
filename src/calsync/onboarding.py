@@ -339,7 +339,7 @@ def clone_forward(conn, child_id: str, sport: str) -> "Draft | None":
     )
 
 
-def create(conn, draft: Draft, *, secrets: SecretStore) -> Created:
+def create(conn, draft: Draft, *, secrets: SecretStore, actor: str = "console") -> Created:
     """Create the activity and the source, staged to the onboarding calendar.
 
     Ordering matters. The credential is written first: a source row pointing at
@@ -419,7 +419,7 @@ def create(conn, draft: Draft, *, secrets: SecretStore) -> Created:
     key = None
     if pushed:
         key = inbound.new_key()
-        repo.set_inbound_key_hash(conn, source_id, inbound.hash_key(key))
+        repo.set_inbound_key_hash(conn, source_id, inbound.hash_key(key), actor=actor)
 
     return Created(
         activity_id=activity_id,

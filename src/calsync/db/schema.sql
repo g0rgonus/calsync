@@ -298,7 +298,7 @@ CREATE TABLE IF NOT EXISTS poll_runs (
 -- until a person approves it, and approving is what writes the alias, the
 -- vocabulary word or the venue row. That is the whole review gate: an agent
 -- cannot approve its own answer because approving does not happen here at all,
--- it happens in the console (docs/API.md, "Configuration is not in this API").
+-- it happens in the console.
 --
 -- Rows are written when a task is *dispatched*, which is what lets the endpoint
 -- refuse an answer to a question calsync never asked. Without that, anything
@@ -377,4 +377,16 @@ CREATE TABLE IF NOT EXISTS admin_log (
     action   TEXT NOT NULL,
     subject  TEXT,
     detail   TEXT              -- JSON, never a key and never an event body
+);
+
+-- A create's response by (admin key, Idempotency-Key), so a retry gets it back
+-- instead of creating twice. Never holds a key. Kept a day.
+CREATE TABLE IF NOT EXISTS idempotency_keys (
+    key_id          INTEGER NOT NULL REFERENCES api_keys(id) ON DELETE CASCADE,
+    idem            TEXT NOT NULL,
+    request_sha256  TEXT NOT NULL,
+    status          INTEGER NOT NULL,
+    body            TEXT NOT NULL,
+    created_at      TEXT NOT NULL,
+    PRIMARY KEY (key_id, idem)
 );

@@ -61,6 +61,16 @@ sent in the same `X-Calsync-Key` header:
 It holds only what calsync wrote. Appointments added by hand in a calendar app
 are not in calsync, so they are not here either.
 
+### Admin keys
+
+The `/inbound/v1/admin` calls create and manage teams. They take an **admin
+key**, one per tool, made and revoked on the console's settings page under
+"Admin keys"; team keys and the read key are refused. A new team starts staged,
+and its key is in the create response only. Every create needs an
+`Idempotency-Key` header: a retry with the same value returns the team with
+`key_already_issued` instead of a second team, for a day. A lost team key is
+replaced with `POST …/admin/teams/{source}/key`. Kids are added in the console.
+
 A 401 carries `WWW-Authenticate: CalsyncKey`, not `Basic`, so a client in
 "extended compatibility" mode does not answer it by resending the proxy's
 password in a loop. An unknown source and a wrong key are the same 401.
@@ -105,6 +115,13 @@ DELETE /inbound/v1/sources/{source}/events/{id}/occurrences/{date}   cancel one 
 GET    /inbound/v1/sources/{source}                                  which team this key writes to
 GET    /inbound/v1/calendar?from=&to=&child=&activity=               every team's events (household read key)
 GET    /inbound/v1                                                   this list, no key needed
+
+GET    /inbound/v1/admin/teams                                       every team (admin key)
+POST   /inbound/v1/admin/teams                                       create a team; Idempotency-Key required
+POST   /inbound/v1/admin/teams/{source}/pause                        stop writing its events
+POST   /inbound/v1/admin/teams/{source}/resume                       start again
+POST   /inbound/v1/admin/teams/{source}/key                          new team key; the old one stops
+DELETE /inbound/v1/admin/teams/{source}/key                          revoke the team key
 ```
 
 `{id}` is the tool's own: 1–128 of `A-Z a-z 0-9 . _ -`. Repeating a PUT is

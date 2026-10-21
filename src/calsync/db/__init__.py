@@ -12,7 +12,7 @@ import time
 import sys
 from pathlib import Path
 
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 
 #: Additive column migrations, applied when absent. `schema.sql` uses
@@ -193,8 +193,7 @@ DEFAULT_SETTINGS: dict[str, str] = {
 
 
 #: Milliseconds to wait for a write lock before giving up. The poller and the web
-#: UI are two processes on one file (docs/API.md, "Configuration is not in this
-#: API"), and SQLite's default is to fail *immediately* on contention rather than
+#: UI are two processes on one file (docs/API.md, "Configuration"), and SQLite's default is to fail *immediately* on contention rather than
 #: wait — so without this an ordinary config edit during a poll raises
 #: "database is locked". WAL already allows readers to proceed throughout; this
 #: only covers writer-against-writer, which is brief and rare here.

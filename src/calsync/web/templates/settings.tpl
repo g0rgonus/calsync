@@ -416,6 +416,28 @@
 % end
 </div>
 
+<h2 id="admin-keys">Admin keys</h2>
+% include('_saved.tpl', flash=flash, at=at, section='admin-keys')
+<div class="card">
+  <p class="note" style="margin-top:0">
+    Lets a tool create and manage teams through the inbound service's
+    <span class="raw">/inbound/v1/admin</span> calls. One key per tool, so each
+    can be revoked on its own.
+  </p>
+% for k in admin_keys:
+  <div class="btn-row">
+    <p class="note">{{ k.label }} · made {{ k.created_at[:10] }} · last used {{ (k.last_used_at or 'never')[:16] }}</p>
+    <form method="post" action="/settings/admin-keys/{{ k.id }}/revoke">
+      <button class="btn btn-quiet" type="submit">Revoke</button>
+    </form>
+  </div>
+% end
+  <form method="post" action="/settings/admin-keys" class="btn-row">
+    <input name="label" placeholder="Who it's for, e.g. Grok Bot" maxlength="60" required>
+    <button class="btn" type="submit">Make an admin key</button>
+  </form>
+</div>
+
 <h2 id="matrix">Matrix</h2>
 % include('_saved.tpl', flash=flash, at=at, section='matrix')
 <div class="card">
