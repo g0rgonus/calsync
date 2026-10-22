@@ -7,6 +7,7 @@ test_shared_teams.py, so a title is an assertion about what a phone would show.
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 
 import pytest
@@ -371,3 +372,66 @@ def test_the_read_api_does_not_call_a_dropped_copy_cancelled(env, tmp_path):
     assert dropped["cancelled"] is False and dropped["merged_into"] == herons_uid
     carrier = read.get(f"/v1/events/{herons_uid}")["json"]["event"]
     assert carrier["merged_into"] is None
+
+
+def meets(env, source, key, n):
+    for i in range(1, n + 1):
+        push(env, source, key, ext=f"g{i}", label=f"Gala {i}",
+             start=f"2026-12-{3 * i:02d}", end=f"2026-12-{3 * i + 1:02d}")
+
+
+def on_calendar(env) -> int:
+    return len(list(env["out"].rglob("*.ics")))
+
+
+def otters_first(env, shared, total):
+    """Otters has `total` meets live; Herons then goes live with the first `shared`."""
+    herons, hk = team(env, "Herons", "jesse")
+    otters, ok = team(env, "Otters", "nadia")
+    meets(env, otters, ok, total)
+    live(env, otters)
+    assert on_calendar(env) == total
+    meets(env, herons, hk, shared)
+    live(env, herons)
+    return herons, otters
+
+
+def test_a_mass_merge_is_held_until_a_person_confirms_it(env):
+    herons, otters = otters_first(env, shared=5, total=5)
+    conn = db.connect(env["path"])
+    report = sync_source(conn, repo.get_source(conn, otters), env["target"], now=NOW,
+                         secrets=env["secrets"])
+    assert report.status == "held" and report.held_kind == "merge"
+    assert len(report.held_cancellations) == 5 and report.held_fingerprint
+    assert on_calendar(env) == 10               # nothing deleted; both copies stand
+    assert conn.execute("SELECT COUNT(*) FROM event_state WHERE withheld IS NOT NULL"
+                        ).fetchone()[0] == 0
+    stale = sync_source(conn, repo.get_source(conn, otters), env["target"], now=NOW,
+                        secrets=env["secrets"], confirm_held="not-that-set")
+    assert stale.status == "held" and on_calendar(env) == 10
+    done = sync_source(conn, repo.get_source(conn, otters), env["target"], now=NOW,
+                       secrets=env["secrets"], confirm_held=report.held_fingerprint)
+    assert done.status == "ok" and done.held is None
+    conn.close()
+    assert on_calendar(env) == 5
+
+
+def test_the_console_shows_a_held_merge_in_its_own_words(env):
+    herons, otters = otters_first(env, shared=5, total=5)
+    page = env["console"].get(f"/sources/{otters}")["body"]
+    assert "another team" in page and "confirm-cancellations" in page
+    assert "Gone from the feed" not in page
+    fingerprint = re.search(r'name="held" value="([0-9a-f]+)"', page).group(1)
+    r = env["console"].post(f"/sources/{otters}/confirm-cancellations", {"held": fingerprint})
+    assert r["status"] in (302, 303)
+    assert on_calendar(env) == 5
+
+
+def test_a_single_merged_copy_is_not_held(env):
+    herons, otters = otters_first(env, shared=1, total=10)
+    conn = db.connect(env["path"])
+    report = sync_source(conn, repo.get_source(conn, otters), env["target"], now=NOW,
+                         secrets=env["secrets"])
+    conn.close()
+    assert report.status == "ok" and report.held is None
+    assert on_calendar(env) == 10

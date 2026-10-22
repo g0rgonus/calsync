@@ -480,7 +480,7 @@ def sync_source(
                     key=lambda c: (c.birth_order, c.name))
     # Dropped like a withheld event, and never stored as one: only a person sets
     # `event_state.withheld`, and this copy returns the moment the group ends.
-    off = off | dropped
+    base_off, off = off, off | dropped
 
     if not dry_run and delta.confirm(confirm_held):
         report.confirmed = len(delta.cancelled)
@@ -503,6 +503,33 @@ def sync_source(
         # left to apply. A disappearance still has valid creates and updates:
         # the events that ARE present are real, only their absence is suspect.
 
+    # Copies about to come off because another team now writes the meet. A deleted
+    # event is a deleted event however it got there, so a mass of them (a first
+    # sync after deploy, say) meets the disappearance guard's thresholds and is
+    # held for a person; a held poll leaves them written as before.
+    new_drops = {u for u in dropped if u in states and not states[u].cancelled}
+    merge_held = False
+    if new_drops and (confirm_held == fingerprint(new_drops)) and not dry_run:
+        report.confirmed += len(new_drops)
+    elif new_drops:
+        live = sum(1 for u, st in states.items()
+                   if not st.cancelled and not warmup.is_synthetic(u))
+        # A lone copy is an ordinary merge, never a mass, whatever its share.
+        if len(new_drops) > max_count or (
+                len(new_drops) > 1 and len(new_drops) / live > max_pct):
+            dropped -= new_drops
+            off = base_off | dropped
+            merge_held = True
+            if not delta.is_anomalous:
+                report.status = "held"
+                report.held = (
+                    f"{len(new_drops)} of {live} tracked events would come off the "
+                    "calendar at once because another team's source now writes "
+                    "them — holding them pending confirmation")
+                report.held_kind = "merge"
+                report.held_cancellations = sorted(new_drops)
+                report.held_fingerprint = fingerprint(new_drops)
+
     def _kept(events: list[Event]) -> list[Event]:
         """``events``, minus the ones somebody has taken off the calendar.
 
@@ -521,10 +548,10 @@ def sync_source(
             - report.created - report.updated
         return report
 
-    if delta.is_anomalous:
+    if delta.is_anomalous or merge_held:
         repo.record_poll_run(
             conn, source_id=source.id, status="held",
-            detail=delta.anomaly, raw_sha256=result.raw_sha256,
+            detail=delta.anomaly or report.held, raw_sha256=result.raw_sha256,
         )
 
     # Committed before anything is written or deleted, for the same reader and
@@ -748,7 +775,7 @@ def sync_source(
             detail=detail, raw_sha256=result.raw_sha256,
         )
         repo.record_source_error(conn, source.id, detail)
-    elif not delta.is_anomalous:
+    elif not (delta.is_anomalous or merge_held):
         # What was done, not what the diff proposed: the diff counts a withheld
         # event the feed still publishes as new on every poll, and the log said
         # "3 new" for weeks while nothing was written.

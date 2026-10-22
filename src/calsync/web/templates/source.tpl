@@ -13,9 +13,35 @@
 % elif report.held:
 <div class="banner banner-bad">
   <strong>A guard held this poll.</strong> {{ report.held }}
+%   if report.held_kind == 'merge':
+  Nothing was taken off. Both teams' copies stay on the calendar until you decide.
+%   else:
   Nothing was cancelled. Look at the feed before doing anything else.
+%   end
 </div>
 %   if held and report.held_fingerprint:
+%   if report.held_kind == 'merge':
+<div class="card">
+  <h2 style="margin-top:0">Written by another team now</h2>
+  <p class="note">
+    Another team's source now writes each of these meets for both kids, so this
+    team's copy is no longer needed. Until you confirm, both copies are on the
+    calendar.
+  </p>
+  <table class="derived">
+% for row in held:
+    <tr>
+      <th style="width:auto;white-space:normal">{{ row['when'] }}</th>
+      <td>
+        {{ row['label'] }}{{ ' + warm-up' if row['warmup'] else '' }}
+        <span class="note" style="display:block">
+          <span class="raw">{{ row['uid'] }}</span> · {{ row['collection'] }}
+        </span>
+      </td>
+    </tr>
+% end
+  </table>
+%   else:
 <% replaced = sum(1 for row in held if row['twin']) %>
 <div class="card">
   <h2 style="margin-top:0">Gone from the feed</h2>
@@ -54,10 +80,15 @@
     </tr>
 % end
   </table>
+%   end
   <form method="post" action="/sources/{{ source.id }}/confirm-cancellations"
         style="margin-top:1rem">
     <input type="hidden" name="held" value="{{ report.held_fingerprint }}">
+%   if report.held_kind == 'merge':
+    <button class="btn" type="submit">Another team has these — take this team's copies off</button>
+%   else:
     <button class="btn" type="submit">These are gone — take them off the calendar</button>
+%   end
   </form>
   <p class="note">
     Cancels exactly this list, past ones included, which is what the poll would
