@@ -522,3 +522,83 @@ def test_hiding_an_event_through_the_api_sends_a_push(db_path, tmp_path):
     assert sent == ["Grok Bot marked Herons on Tue 20 Oct 17:45 not attending: School trip."]
     set_status(pushing, uid, None)
     assert len(sent) == 1                          # putting back is not news
+
+
+# --- venues ---------------------------------------------------------------------------
+
+VENUES = TEAMS.replace("/teams", "/venues")
+
+
+def wrenfield(client):
+    return client.get(VENUES + "?q=wren")["json"]["venues"][0]
+
+
+def test_an_unknown_place_is_answered_with_an_alias_and_the_team_goes_live(client):
+    source, key = staged_team(client)
+    push(client, source, key, body={**contract.PRACTICE, "location": "Main pool"})
+    assert client.get(f"{TEAMS}/{source}/review")["json"]["promotable"] is False
+
+    venue = wrenfield(client)
+    r = client.call("POST", f"{VENUES}/{venue['id']}/aliases", {"alias": "Main pool"})
+    assert r["status"] == 200 and "Main pool" in r["json"]["aliases"]
+    again = client.call("POST", f"{VENUES}/{venue['id']}/aliases", {"alias": "main POOL"})
+    assert again["status"] == 200                   # the same alias, harmless
+
+    assert client.get(f"{TEAMS}/{source}/review")["json"]["promotable"] is True
+    assert client.call("POST", f"{TEAMS}/{source}/live")["status"] == 200
+
+
+def test_a_venue_is_created_with_its_aliases(client, db_path):
+    r = client.call("POST", VENUES, contract.NEW_VENUE)
+    assert r["status"] == 201
+    assert r["json"]["aliases"] == ["LM Pool", "Larkmoor", "Larkmoor Pool"]
+    found = client.get(VENUES + "?q=lm pool")["json"]
+    assert [v["name"] for v in found["venues"]] == ["Larkmoor Pool"]
+    conn = conn_for(db_path)
+    assert ("Grok Bot", "venue_created") in [(e["actor"], e["action"])
+                                             for e in repo.admin_log(conn)]
+    conn.close()
+
+
+def test_one_place_stays_one_venue(client):
+    dup = client.call("POST", VENUES, {"name": "wrenfield aquatic center"})
+    assert dup["status"] == 409 and dup["json"]["error"]["code"] == "already_exists"
+    assert dup["json"]["error"]["venue"]["name"] == "Wrenfield Aquatic Center"
+
+    client.call("POST", VENUES, contract.NEW_VENUE)
+    taken = client.call("POST", VENUES, {"name": "Fenwick Natatorium", "aliases": ["Larkmoor"]})
+    assert taken["status"] == 409 and taken["json"]["error"]["code"] == "alias_taken"
+    wren = wrenfield(client)
+    steal = client.call("POST", f"{VENUES}/{wren['id']}/aliases", {"alias": "LM Pool"})
+    assert steal["status"] == 409
+    assert steal["json"]["error"]["venue"]["name"] == "Larkmoor Pool"
+
+
+def test_a_field_number_is_not_a_venue(client):
+    r = client.call("POST", VENUES, {"name": "Kingsmere #2"})
+    assert r["status"] == 422
+    error = r["json"]["error"]["errors"][0]
+    assert error["code"] == "field_in_name" and error["suggestion"] == "Kingsmere"
+
+
+@pytest.mark.parametrize("path", ["/999/aliases", "/abc/aliases"])
+def test_an_alias_for_no_venue_is_404(client, path):
+    assert client.call("POST", VENUES + path, {"alias": "x"})["status"] == 404
+
+
+def test_a_teams_home_venue_is_set_and_cleared(client):
+    wren = wrenfield(client)
+    r = client.call("PUT", f"{TEAMS}/in-herons/home-venue", {"venue_id": wren["id"]})
+    assert r["json"] == {"source_id": "in-herons", "home_venue": "Wrenfield Aquatic Center"}
+    assert wrenfield(client)["home_to"] == ["Herons"]
+    cleared = client.call("PUT", f"{TEAMS}/in-herons/home-venue", {"venue_id": None})
+    assert cleared["json"]["home_venue"] is None
+    assert client.call("PUT", f"{TEAMS}/in-herons/home-venue",
+                       {"venue_id": 999})["status"] == 404
+    assert client.call("PUT", f"{TEAMS}/in-herons/home-venue",
+                       {"venue": 1})["status"] == 422
+
+
+def test_venues_need_an_admin_key(client):
+    assert client.get(VENUES, key=TEAM_KEY)["status"] == 401
+    assert client.call("POST", VENUES, contract.NEW_VENUE, key=TEAM_KEY)["status"] == 401

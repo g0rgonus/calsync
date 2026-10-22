@@ -63,6 +63,8 @@ SESSION = {
 OVERRIDE = {"start": "2026-10-27T18:30:00", "location": "Larkmoor Pool"}
 STATUS = {"uid": "tue-swim-2026-10-27@in-herons", "status": "not_attending",
           "note": "School trip"}
+NEW_VENUE = {"name": "Larkmoor Pool", "address": "40 Larkmoor Ln, Fenwick, NX 40219",
+             "aliases": ["Larkmoor", "LM Pool"]}
 NEW_TEAM = {"name": "Kestrels", "children": ["nadia"], "sport": "robotics"}
 
 
@@ -151,6 +153,17 @@ STATUS_FIELDS: tuple[Field, ...] = (
 )
 assert {f.name for f in STATUS_FIELDS} == admin.STATUS_FIELDS
 
+VENUE_FIELDS: tuple[Field, ...] = (
+    Field("name", "string", "The place, without a field number: Kingsmere, not "
+          "Kingsmere #2.", "always", example="Larkmoor Pool"),
+    Field("address", "string", "Street address. Goes into every event there.",
+          example="40 Larkmoor Ln, Fenwick, NX 40219"),
+    Field("short_name", "string", "A shorter name for titles."),
+    Field("aliases", "array", "Other names the feeds or the family use for it.",
+          example=["Larkmoor", "LM Pool"]),
+)
+assert {f.name for f in VENUE_FIELDS} == admin.VENUE_FIELDS
+
 
 @dataclass(frozen=True)
 class Param:
@@ -190,6 +203,9 @@ P = {
                              "create. Sending it again returns the first result instead "
                              "of a second team; the key is not shown again.", True,
                              "create-kestrels-1"),
+    "venue_id": Param("venue_id", "path", "The venue's id, from listVenues.", True, "7"),
+    "q": Param("q", "query", "Only venues whose name or an alias contains this.",
+               example="larkmoor"),
     "If-None-Match": Param("If-None-Match", "header", "* makes a PUT create-only; 412 "
                            "if the id was already used.", example="*"),
 }
@@ -344,6 +360,30 @@ ROUTES: tuple[Route, ...] = (
                      404: ("calsync has not written that event", _E),
                      409: ("already_started", _E),
                      422: ("Invalid, or a warm-up", _E)}),
+    Route("GET", PREFIX + "/admin/venues", "listVenues", "Find venues by name or alias.",
+          "Admin key only. Look before creating, so one place stays one venue.",
+          params=("q",), responses={200: ("The venues", "VenueList")}),
+    Route("POST", PREFIX + "/admin/venues", "createVenue", "Add a venue.",
+          "Admin key only. A name that exists, ignoring case, is 409 already_exists "
+          "with that venue, which is also what a retry gets. A name or alias another "
+          "venue already has is 409 alias_taken. Editing and merging venues is done "
+          "in the console.", body="NewVenue", example=NEW_VENUE,
+          responses={201: ("Created", "Venue"), 409: ("already_exists or alias_taken", _E),
+                     422: ("Invalid, e.g. a field number in the name", _E)}),
+    Route("POST", PREFIX + "/admin/venues/{venue_id}/aliases", "addVenueAlias",
+          "Say that a name a feed uses means this venue.",
+          "Admin key only. This is how a staged team's unknown place is answered; "
+          "review it again afterwards. Repeating it is harmless; an alias another "
+          "venue has is 409 alias_taken.", params=("venue_id",), body="Alias",
+          example={"alias": "Main pool"},
+          responses={200: ("The venue", "Venue"), 404: ("No such venue", _E),
+                     409: ("alias_taken", _E)}),
+    Route("PUT", PREFIX + "/admin/teams/{source_id}/home-venue", "setHomeVenue",
+          "Set or clear a team's home ground.",
+          "Admin key only. calsync uses it to mark games home or away; it does not "
+          "fill in locations. Send venue_id null to clear it.", params=("team_id",),
+          body="HomeVenue", example={"venue_id": 7},
+          responses={200: ("The team's home venue", None), 404: ("No such team or venue", _E)}),
     Route("DELETE", PREFIX + "/admin/teams/{source_id}/key", "revokeTeamKey",
           "Revoke a team's key.", "Admin key only. Idempotent.", params=("team_id",),
           responses={204: ("Revoked, or there was none", None), 404: ("No such team", _E)}),
@@ -536,6 +576,22 @@ def openapi(server: str) -> dict:
                     "on_calendar": {"type": "boolean"},
                     "detail": {"type": "string"},
                     "sync": {"type": "object"}}},
+                "NewVenue": _schema(VENUE_FIELDS, required=("name",)),
+                "Venue": {"type": "object", "properties": {
+                    "id": {"type": "integer"}, "name": {"type": "string"},
+                    "short_name": {"type": ["string", "null"]},
+                    "address": {"type": ["string", "null"]},
+                    "aliases": {"type": "array", "items": {"type": "string"}},
+                    "home_to": {"type": "array", "items": {"type": "string"},
+                                "description": "Teams whose home ground it is."}}},
+                "VenueList": {"type": "object", "properties": {
+                    "count": {"type": "integer"},
+                    "venues": {"type": "array", "items": {"$ref": "#/components/schemas/Venue"}}}},
+                "Alias": {"type": "object", "additionalProperties": False,
+                          "required": ["alias"], "properties": {"alias": {"type": "string"}}},
+                "HomeVenue": {"type": "object", "additionalProperties": False,
+                              "required": ["venue_id"],
+                              "properties": {"venue_id": {"type": ["integer", "null"]}}},
                 "TeamKey": {"type": "object", "properties": {
                     "source_id": {"type": "string"}, "team_key": {"type": "string"},
                     "key_id": {"type": "integer"}}},
@@ -731,6 +787,13 @@ console, not here.</p>
 <div class="card wrap"><table>
 <tr><th>Field</th><th>Type</th><th>Required</th><th></th></tr>
 {_rows(TEAM_FIELDS)}
+</table></div>
+<p>A place calsync does not know keeps a staged team staged. Find it with
+<code>GET …/admin/venues?q=</code>, then add the feed's name as an alias, or create the
+venue:</p>
+<div class="card wrap"><table>
+<tr><th>Field</th><th>Type</th><th>Required</th><th></th></tr>
+{_rows(VENUE_FIELDS)}
 </table></div>
 <p>To mark one event not attending or cancelled, find its <code>uid</code> with the
 calendar read, then <code>POST …/admin/events/status</code>:</p>

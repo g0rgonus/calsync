@@ -86,6 +86,13 @@ is), and a warm-up is changed through its game. Every hide sends a Pushover
 alert naming the key, the team and the time, when Pushover is set up. An admin key also reads `GET /inbound/v1/calendar`, which is
 where a tool finds the event's `uid`.
 
+A place calsync does not know keeps a staged team staged. The tool finds the
+venue with `…/admin/venues?q=` and adds the feed's name as an alias, or creates
+the venue. One name means one venue: a name or alias another venue has is
+`409 alias_taken`, and a field number is refused in a venue name ("Kingsmere",
+not "Kingsmere #2"). A team's home venue only decides home or away. Editing and
+merging venues stay in the console.
+
 A 401 carries `WWW-Authenticate: CalsyncKey`, not `Basic`, so a client in
 "extended compatibility" mode does not answer it by resending the proxy's
 password in a loop. An unknown source and a wrong key are the same 401.
@@ -137,6 +144,10 @@ GET    /inbound/v1/admin/teams/{source}/review                       checks, eve
 POST   /inbound/v1/admin/teams/{source}/live                         make a staged team live
 DELETE /inbound/v1/admin/teams/{source}                              discard a staged team
 POST   /inbound/v1/admin/events/status                               not attending / cancelled / put back
+GET    /inbound/v1/admin/venues?q=                                   find venues by name or alias
+POST   /inbound/v1/admin/venues                                      add a venue
+POST   /inbound/v1/admin/venues/{id}/aliases                         a feed's name for a venue
+PUT    /inbound/v1/admin/teams/{source}/home-venue                   home ground (home vs away)
 POST   /inbound/v1/admin/teams/{source}/pause                        stop writing its events
 POST   /inbound/v1/admin/teams/{source}/resume                       start again
 POST   /inbound/v1/admin/teams/{source}/key                          new team key; the old one stops

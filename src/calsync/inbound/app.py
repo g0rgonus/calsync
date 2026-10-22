@@ -1034,6 +1034,104 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
         except notify.NotifyError as exc:
             log(f"inbound admin: push failed: {exc}")
 
+    # --- admin: venues -----------------------------------------------------------------
+
+    def venue_body(v: repo.VenueDetail) -> dict:
+        return {"id": v.id, "name": v.name, "short_name": v.short_name,
+                "address": v.address, "aliases": list(v.aliases),
+                "home_to": list(v.home_to)}
+
+    def admin_write(conn) -> repo.ApiKey:
+        caller = authorise_admin(conn)
+        throttle(f"admin:{caller.id}")
+        return caller
+
+    def alias_taken(conn, alias: str, venue_id: int | None) -> None:
+        owner = repo.alias_owner(conn, alias)
+        if owner is not None and owner != venue_id:
+            raise Problem(409, "alias_taken", f"{alias!r} already means another venue",
+                          venue=venue_body(repo.get_venue_detail(conn, owner)))
+
+    @app.get(ADMIN + "/venues")
+    def list_venues_():
+        """Every venue, or those whose name or an alias contains q."""
+        q = (request.query.getunicode("q") or "").strip().casefold()
+        with connect() as conn:
+            authorise_admin(conn)
+            venues = [venue_body(v) for v in repo.venues_detailed(conn)
+                      if not q or any(q in n.casefold() for n in (v.name, *v.aliases))]
+        return _dump({"count": len(venues), "venues": venues})
+
+    @app.post(ADMIN + "/venues")
+    def create_venue():
+        """A new venue. A name or alias another venue already has is refused."""
+        with connect() as conn:
+            caller = admin_write(conn)
+        try:
+            venue = admin.validate_venue(body())
+        except inbound.Invalid as exc:
+            raise Problem(422, "invalid", "the venue was not created",
+                          errors=exc.errors) from None
+        with lock_for("admin"), transaction() as conn:
+            existing = repo.venue_named(conn, venue["name"])
+            if existing is not None:
+                raise Problem(409, "already_exists", "a venue has that name",
+                              venue=venue_body(repo.get_venue_detail(conn, existing)))
+            for alias in [venue["name"], *venue["aliases"]]:
+                alias_taken(conn, alias, None)
+            venue_id = repo.upsert_venue(conn, name=venue["name"],
+                                         short_name=venue["short_name"],
+                                         address=venue["address"], commit=False)
+            for alias in venue["aliases"]:
+                repo.add_venue_alias(conn, venue_id, alias, commit=False)
+            repo.log_admin(conn, caller.label, "venue_created", f"venue:{venue_id}",
+                           {"name": venue["name"]})
+            conn.commit()
+            return _dump(venue_body(repo.get_venue_detail(conn, venue_id)), 201)
+
+    @app.post(ADMIN + "/venues/<venue_id>/aliases")
+    def add_alias(venue_id):
+        """Say that a name a feed uses means this venue. Repeating it is harmless."""
+        if not venue_id.isdigit():
+            raise Problem(404, "no_such_venue", "no venue has that id")
+        venue_id = int(venue_id)
+        with connect() as conn:
+            caller = admin_write(conn)
+        try:
+            alias = admin.validate_alias(body())
+        except inbound.Invalid as exc:
+            raise Problem(422, "invalid", "nothing was changed", errors=exc.errors) from None
+        with lock_for("admin"), transaction() as conn:
+            if repo.get_venue_detail(conn, venue_id) is None:
+                raise Problem(404, "no_such_venue", "no venue has that id")
+            alias_taken(conn, alias, venue_id)
+            if repo.alias_owner(conn, alias) is None:
+                repo.log_admin(conn, caller.label, "venue_alias_added", f"venue:{venue_id}",
+                               {"alias": alias})
+                repo.add_venue_alias(conn, venue_id, alias, commit=False)
+                conn.commit()
+            return _dump(venue_body(repo.get_venue_detail(conn, venue_id)))
+
+    @app.put(ADMIN + "/teams/<source_id>/home-venue")
+    def set_home_venue(source_id):
+        """A team's home ground, which is how calsync tells home games from away."""
+        with connect() as conn:
+            caller = admin_write(conn)
+        try:
+            venue_id = admin.validate_home(body())
+        except inbound.Invalid as exc:
+            raise Problem(422, "invalid", "nothing was changed", errors=exc.errors) from None
+        with transaction() as conn:
+            source = admin_source(conn, source_id)
+            if venue_id is not None and repo.get_venue_detail(conn, venue_id) is None:
+                raise Problem(404, "no_such_venue", "no venue has that id")
+            repo.set_home_venue(conn, source.activity_id, venue_id)
+            repo.log_admin(conn, caller.label, "team_home_venue", f"team:{source_id}",
+                           {"venue_id": venue_id})
+            conn.commit()
+            activity = repo.get_activity(conn, source.activity_id)
+            return _dump({"source_id": source_id, "home_venue": activity.home_venue})
+
     return app
 
 
