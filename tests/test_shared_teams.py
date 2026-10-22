@@ -305,3 +305,14 @@ def test_splitting_a_feed_team_keeps_the_feed_on_the_team(env):
     assert r["status"] == 303 and "feed" in r["headers"]["Location"]
     teams = {t["source_id"]: t["children"] for t in env["api"].get(TEAMS)["json"]["teams"]}
     assert teams == {"tr-wrens": ["jesse"]}
+
+
+def test_the_command_line_cannot_split_calendars_by_kid_either(env, capsys):
+    from calsync import cli
+    team(env, "Herons", ["jesse", "nadia"])
+    assert cli.main(["--db", str(env["path"]), "set", "collection_template",
+                     "{child}-{type}"]) == 2
+    assert "shared" in capsys.readouterr().err
+    conn = db.connect(env["path"])
+    assert "{child}" not in Settings.load(conn).collection_template
+    conn.close()

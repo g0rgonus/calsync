@@ -46,7 +46,7 @@ from ..onboarding import (
 )
 from ..routing import slugify
 from ..secrets import SecretError, SecretStore
-from ..settings import Settings, set_setting
+from ..settings import Settings, check_setting, set_setting
 from ..targets import TargetError
 from ..sync import NoTarget as _NoTarget, sync_source
 from . import fix as fix_mod
@@ -1644,10 +1644,11 @@ def create_app(
     @app.post("/settings/calendar")
     def save_calendar_settings():
         with connect() as conn:
-            if "{child}" in _field("collection_template") and conn.execute(
-                    "SELECT 1 FROM activity_children LIMIT 1").fetchone():
-                raise Refused("a team is shared by more than one kid, and a shared event "
-                              "cannot go on a calendar per kid; split it first")
+            # Checked before the loop, so a refusal saves nothing.
+            try:
+                check_setting(conn, "collection_template", _field("collection_template"))
+            except ValueError as exc:
+                raise Refused(str(exc)) from exc
             for key in ("target_kind",
                         "radicale_url", "radicale_user", "radicale_secret_ref",
                         "collection_template", "collection_game_label",
