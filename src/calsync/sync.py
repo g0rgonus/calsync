@@ -281,10 +281,14 @@ def sync_source(
     )
     settings = Settings.load(conn)
     activity: Activity = repo.get_activity(conn, source.activity_id)
-    # One child per activity: the schema binds them 1:1. Shared events (two kids
-    # on one team) need a join table that does not exist yet — until it does,
-    # multi-kid titles are only reachable through the amendment path.
-    children = [repo.get_child(conn, activity.child_id)]
+    # Every kid on the team; one of them missing an event takes them off that
+    # event's title, and the event goes only when nobody is left (`withheld`).
+    children = repo.team_children(conn, activity)
+    away = repo.absences(conn, source.id)
+
+    def kids_for(uid: str) -> list:
+        gone = away.get(warmup.parent_of(uid) or uid, set())
+        return [c for c in children if c.id not in gone] or children
 
     # --- fetch + parse: any failure aborts before the diff ------------------
     try:
@@ -323,7 +327,7 @@ def sync_source(
     # happen, and a venue warning for it would be asking a question about a
     # place nobody is going.
     states = repo.event_states(conn, source.id)
-    off = {uid for uid, state in states.items() if state.withheld}
+    off = withheld.off_uids(conn, source.id, states)
     # A person's corrections, laid over the feed below. Loaded here for the same
     # reason as `off`: a venue somebody has already corrected is not a question
     # worth asking about the place the feed named.
@@ -504,6 +508,11 @@ def sync_source(
         if belongs != state.collection:
             pending.append(event)
             moved_uids.add(event.uid)
+        elif (state.kids or (activity.child_id,)) != tuple(c.id for c in kids_for(event.uid)):
+            # Who is going changed — an absence, or a kid added to the team —
+            # and the title says who.
+            pending.append(event)
+            refreshed_uids.add(event.uid)
         elif stored is None:
             pending.append(event)
             refreshed_uids.add(event.uid)
@@ -541,7 +550,7 @@ def sync_source(
             )
         try:
             rendered = render(
-                event, activity, children, settings,
+                event, activity, kids_for(event.uid), settings,
                 alarm_minutes=activity.alarm_minutes(is_game=event.alarms_as_game),
 
                 collection_override=source.staging_collection,
@@ -569,6 +578,7 @@ def sync_source(
             starts_at=original.starts_at.isoformat(),
             shown_starts_at=event.starts_at.isoformat(),
             applied_overlay=overrides.get(event.uid),
+            kids=tuple(c.id for c in kids_for(event.uid)),
         )
         # Placement and content are recorded together, behind the same barrier:
         # both describe a write the target has just accepted, and a copy of the

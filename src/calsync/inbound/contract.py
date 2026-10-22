@@ -127,8 +127,9 @@ assert {f.name for f in OVERRIDE_FIELDS} == inbound.OVERRIDE_FIELDS
 TEAM_FIELDS: tuple[Field, ...] = (
     Field("name", "string", "The team's name, as the family says it.", "always",
           example="Kestrels"),
-    Field("children", "array", "The kid's id, in a list of one. Kids are added in "
-          "the console; an unknown id is refused with the known ones.", "always",
+    Field("children", "array", "The kids' ids. Several kids on one team share it: each "
+          "event is written once, titled for all of them. Kids are added in the "
+          "console; an unknown id is refused with the known ones.", "always",
           example=["nadia"]),
     Field("sport", "string", "calsync's sport id; it decides the emoji. An unknown "
           "one is refused with the known ones.", "always", example="robotics"),
@@ -150,6 +151,9 @@ STATUS_FIELDS: tuple[Field, ...] = (
           enum=("not_attending", "cancelled", None)),
     Field("note", "string", "Why, in a few words. Kept in the admin log.",
           example="School trip"),
+    Field("child", "string", "On a team kids share: only this kid is not attending "
+          "(or, with status null, going again). The title drops the kid, and the event "
+          "comes off only when no kid is left. Not with cancelled.", example="nadia"),
 )
 assert {f.name for f in STATUS_FIELDS} == admin.STATUS_FIELDS
 

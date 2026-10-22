@@ -315,3 +315,9 @@ Every entry names its own type — no implicit cases to remember.
 
 **One event listing both kids**, not one per kid. Duplicates in a shared
 calendar are worse than an imperfect title.
+
+A team can have several kids (`activity_children`; `activities.child_id` is its
+first). Each event is written once and titled for the kids going. One kid not
+attending drops them from that event's title, and the event comes off only when
+no kid is left (`event_absences`). A household whose calendars are split by kid
+(`{child}` in the template) cannot share a team yet.

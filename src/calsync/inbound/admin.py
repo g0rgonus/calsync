@@ -18,7 +18,7 @@ FIELDS = frozenset({"name", "children", "sport", "tz", "season_end",
                     "alarm_game_min", "alarm_practice_min"})
 ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 IDEMPOTENCY_KEY = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
-STATUS_FIELDS = frozenset({"uid", "status", "note"})
+STATUS_FIELDS = frozenset({"uid", "status", "note", "child"})
 MAX_NOTE = 200
 VENUE_FIELDS = frozenset({"name", "short_name", "address", "aliases"})
 MAX_VENUE_TEXT = 200
@@ -48,13 +48,12 @@ def validate_team(body, conn) -> dict:
     children = body.get("children")
     if not isinstance(children, list) or not children:
         errors.append(_err("children", "required", "a list with the kid's id"))
-    elif len(children) > 1:
-        errors.append(_err("children", "one_child_only",
-                           "one kid per team for now; shared teams are not built yet"))
-    elif not isinstance(children[0], str) or children[0] not in kids:
+    elif not all(isinstance(c, str) and c in kids for c in children):
         errors.append({**_err("children", "unknown_child",
                               "not a kid in calsync; add new kids in the console"),
                        "candidates": sorted(kids)})
+    elif len(set(children)) != len(children):
+        errors.append(_err("children", "repeated", "each kid once"))
 
     sports = {r["id"] for r in repo.list_sports(conn)}
     sport = body.get("sport")
@@ -101,6 +100,12 @@ def validate_status(body) -> dict:
                                          or body["status"] not in withheld.REASONS):
         errors.append({**_err("status", "unknown_status", "not a status"),
                        "candidates": sorted(withheld.REASONS)})
+    child = body.get("child")
+    if child is not None and not (isinstance(child, str) and child):
+        errors.append(_err("child", "bad_child", "a kid's id"))
+    elif child is not None and body.get("status") == "cancelled":
+        errors.append(_err("child", "not_for_cancelled",
+                           "an event is cancelled for everyone; leave child out"))
     note = body.get("note")
     if note is not None and not (isinstance(note, str) and len(note.strip()) <= MAX_NOTE):
         errors.append(_err("note", "bad_note", f"text, at most {MAX_NOTE} characters"))

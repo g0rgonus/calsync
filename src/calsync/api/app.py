@@ -469,7 +469,7 @@ def _stamp(value, *, default: datetime) -> datetime:
 def _event_json(conn, item: repo.StoredEvent, settings: Settings) -> dict:
     event = item.event
     activity = repo.get_activity(conn, item.activity_id)
-    children = [repo.get_child(conn, item.child_id)]
+    children = [repo.get_child(conn, k) for k in item.kids]
     child = children[0]
 
     venue = None
@@ -488,7 +488,10 @@ def _event_json(conn, item: repo.StoredEvent, settings: Settings) -> dict:
 
     return {
         "uid": event.uid,
+        # The first kid, as before, and every kid the event is for: a shared
+        # team's event is busy for each of them.
         "child": {"id": child.id, "name": child.name},
+        "children": [{"id": c.id, "name": c.name} for c in children],
         "activity": {"id": activity.id, "name": activity.name, "sport": activity.sport},
         # Binary, as documented. A warm-up reports "practice" here because that
         # is genuinely which of the two it is and which calendar it lands in;
