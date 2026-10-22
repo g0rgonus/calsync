@@ -466,7 +466,7 @@
 % include('_saved.tpl', flash=flash, at=at, section='admin-password')
 <div class="card">
   <p class="note" style="margin-top:0">
-    Asked for before every key can be revoked at once. calsync keeps only a hash.
+    Asked for before every key is revoked at once. calsync keeps only a hash.
   </p>
   <form method="post" action="/settings/admin-password">
 % if password_set:
@@ -482,7 +482,7 @@
 % include('_saved.tpl', flash=flash, at=at, section='kill-switch')
 <div class="card">
   <p class="note" style="margin-top:0">
-    For a suspected leak. Every key stops working at once, after five confirmations.
+    For a suspected leak. Every key stops working at once, after the admin password.
     Calendars and teams are not touched.
   </p>
   <a class="btn btn-quiet" href="/settings/kill-switch">Start</a>

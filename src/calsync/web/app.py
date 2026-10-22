@@ -5,7 +5,6 @@ from __future__ import annotations
 import calendar as calendar_mod
 import hashlib
 import json
-import secrets as secrets_mod
 import socketserver
 import sqlite3
 import threading
@@ -66,13 +65,6 @@ class Refused(RuntimeError):
     """Shown to the operator as a message, not as a traceback."""
 
 
-#: The kill switch: what step 3 asks for, how long an attempt may sit idle, and
-#: how long step 5 waits before it will fire.
-KILL_PHRASE = "REVOKE ALL TOKENS"
-KILL_IDLE_S = 300
-KILL_WAIT_S = 10
-
-
 def create_app(
     db_path,
     *,
@@ -104,9 +96,6 @@ def create_app(
     of them and not the other would be testing a console nobody runs.
     """
     app = Bottle()
-    # Kill switch attempts in progress, by a random id the form carries.
-    kill_flows: dict[str, dict] = {}
-    kill_lock = threading.Lock()
     secrets = secrets or SecretStore()
     clock = clock or _now
     trusted_origins = set(trusted_origins or ())
@@ -1667,76 +1656,31 @@ def create_app(
             conn.commit()
         _saved("admin-password", "Admin password saved.")
 
-    def _kill_page(step: int, flow_id: str | None = None, error: str | None = None, *,
-                   status: int = 200, retry_after: int | None = None, **extra):
+    def _kill_page(error: str | None = None, *, status: int = 200):
         response.status = status
         response.set_header("Cache-Control", "no-store")
-        if retry_after:
-            response.set_header("Retry-After", str(retry_after))
         with connect() as conn:
             keys = repo.api_keys(conn)
             feeds = [s_ for s_ in repo.list_sources(conn) if s_.kind not in sources.PUSHED]
-        return render("kill_switch.tpl", step=step, flow=flow_id, error=error, keys=keys,
-                      feeds=feeds, phrase=KILL_PHRASE, wait=KILL_WAIT_S, flash=None, **extra)
+            password_set = repo.setting_row(conn, repo.ADMIN_PASSWORD) is not None
+        return render("kill_switch.tpl", error=error, keys=keys, feeds=feeds,
+                      password_set=password_set, flash=None)
 
     @app.get("/settings/kill-switch")
-    def kill_switch_start():
-        with connect() as conn:
-            if repo.setting_row(conn, repo.ADMIN_PASSWORD) is None:
-                return _kill_page(0, error="Set an admin password first, under Settings.",
-                                  status=409)
-        flow_id = secrets_mod.token_urlsafe(24)
-        now = clock()
-        with kill_lock:
-            kill_flows[flow_id] = {"step": 1, "at": now, "seen": now, "pause": False,
-                                   "tries": 0}
-        return _kill_page(1, flow_id)
+    def kill_switch_page():
+        return _kill_page()
 
     @app.post("/settings/kill-switch")
-    def kill_switch_step():
-        """One step of five. Out of order, idle, or cancelled ends it with nothing done."""
-        flow_id, now = _field("flow"), clock()
-        with kill_lock:
-            flow = kill_flows.get(flow_id)
-            if _field("cancel") or flow is None or \
-                    (now - flow["at"]).total_seconds() > KILL_IDLE_S or \
-                    _field("step") != str(flow["step"]):
-                kill_flows.pop(flow_id, None)
-                cancelled = bool(_field("cancel"))
-                why = "Cancelled." if cancelled else "That attempt expired or went out of order."
-                return _kill_page(0, error=f"{why} Nothing was revoked.",
-                                  status=200 if cancelled else 409)
-            step, flow["at"] = flow["step"], now
-            error, status, retry = None, 422, None
-            if step == 2 and not _field("read"):
-                error = "Tick the box to say you have read the list."
-            elif step == 3 and _field("phrase") != KILL_PHRASE:
-                error = f"Type {KILL_PHRASE} exactly."
-            elif step == 4:
-                with connect() as conn:
-                    stored = repo.setting_row(conn, repo.ADMIN_PASSWORD)
-                if not password_mod.check_password(_field("password"), stored):
-                    flow["tries"] += 1
-                    if flow["tries"] >= 3:
-                        kill_flows.pop(flow_id, None)
-                        return _kill_page(0, error="Three wrong passwords. Nothing was "
-                                                   "revoked.", status=403)
-                    error, status = "That is not the admin password.", 403
-            elif step == 5:
-                left = KILL_WAIT_S - (now - flow["seen"]).total_seconds()
-                if left > 0:
-                    retry = int(left) + 1
-                    error, status = f"Wait {retry} more seconds, or cancel.", 429
-            if error:
-                return _kill_page(step, flow_id, error, status=status, retry_after=retry)
-            if step == 2:
-                flow["pause"] = bool(_field("pause_feeds"))
-            if step < 5:
-                flow["step"], flow["seen"] = step + 1, now
-                return _kill_page(step + 1, flow_id)
-            kill_flows.pop(flow_id, None)
-            pause = flow["pause"]
-        _revoke_everything(now, pause_feeds=pause)
+    def kill_switch():
+        """Revoke every key, once the admin password checks out."""
+        with connect() as conn:
+            stored = repo.setting_row(conn, repo.ADMIN_PASSWORD)
+        if stored is None:
+            return _kill_page("Set an admin password first, under Settings.", status=409)
+        if not password_mod.check_password(_field("password"), stored):
+            return _kill_page("That is not the admin password. Nothing was revoked.",
+                              status=403)
+        _revoke_everything(clock(), pause_feeds=bool(_field("pause_feeds")))
         redirect("/settings#recovery")
 
     def _revoke_everything(now, *, pause_feeds: bool) -> None:

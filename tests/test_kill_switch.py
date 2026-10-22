@@ -1,14 +1,10 @@
-"""Revoking every key at once from the console, and what each service says after.
-
-Five deliberate steps, each its own request; anything out of order, idle or
-cancelled ends the attempt with nothing done.
-"""
+"""Revoking every key at once from the console, and what each service says after."""
 
 from __future__ import annotations
 
 import json
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import pytest
 
@@ -80,25 +76,8 @@ def set_password(console, new=PASSWORD, current=None):
     return console.post("/settings/admin-password", data)
 
 
-def start(env) -> str:
-    assert set_password(env["console"])["status"] == 303
-    page = env["console"].get("/settings/kill-switch")
-    assert page["status"] == 200 and "Step 1 of 5" in page["body"]
-    return re.search(r'name="flow" value="([^"]+)"', page["body"]).group(1)
-
-
-STEP_FIELDS = {1: {}, 2: {"read": "1"}, 3: {"phrase": "REVOKE ALL TOKENS"},
-               4: {"password": PASSWORD}}
-
-
-def step(env, flow, n, **fields):
-    data = {"flow": flow, "step": str(n), **(STEP_FIELDS.get(n, {}) if not fields else fields)}
-    return env["console"].post("/settings/kill-switch", data)
-
-
-def through(env, flow, last: int):
-    for n in range(1, last + 1):
-        assert step(env, flow, n)["status"] == 200
+def revoke(env, password=PASSWORD, **extra):
+    return env["console"].post("/settings/kill-switch", {"password": password, **extra})
 
 
 def working_keys(env) -> int:
@@ -108,12 +87,11 @@ def working_keys(env) -> int:
     return count
 
 
-def test_five_steps_revoke_every_key_and_each_service_says_so(env):
-    flow = start(env)
-    through(env, flow, 4)
-    env["clock"]["now"] += timedelta(seconds=11)
-    done = step(env, flow, 5)
-    assert done["status"] == 303
+def test_revoking_every_key_and_each_service_says_so(env):
+    assert set_password(env["console"])["status"] == 303
+    page = env["console"].get("/settings/kill-switch")
+    assert page["status"] == 200 and "Grok Bot" in page["body"]
+    assert revoke(env)["status"] == 303
     assert working_keys(env) == 0
 
     team = env["inbound"].get("/inbound/v1/sources/in-herons", key=TEAM_KEY)
@@ -137,89 +115,33 @@ def test_five_steps_revoke_every_key_and_each_service_says_so(env):
 
 
 def test_a_new_key_works_after_the_revoke(env):
-    flow = start(env)
-    through(env, flow, 4)
-    env["clock"]["now"] += timedelta(seconds=11)
-    step(env, flow, 5)
+    set_password(env["console"])
+    revoke(env)
     page = env["console"].post("/sources/in-herons/inbound-key")["body"]
     fresh = re.search(r"csk_[A-Za-z0-9_-]{20,}", page).group(0)
     assert env["inbound"].get("/inbound/v1/sources/in-herons", key=fresh)["status"] == 200
 
 
-def test_revoke_waits_ten_seconds_after_the_last_step_appears(env):
-    flow = start(env)
-    through(env, flow, 4)
-    env["clock"]["now"] += timedelta(seconds=4)
-    early = step(env, flow, 5)
-    assert early["status"] == 429 and early["headers"]["Retry-After"] == "7"
-    assert working_keys(env) == 3
-    env["clock"]["now"] += timedelta(seconds=7)
-    assert step(env, flow, 5)["status"] == 303
-
-
-@pytest.mark.parametrize("n, fields, code", [
-    (2, {"read": ""}, 422),
-    (3, {"phrase": "revoke all tokens"}, 422),
-    (4, {"password": "wrong password"}, 403),
-])
-def test_each_step_must_be_answered(env, n, fields, code):
-    flow = start(env)
-    through(env, flow, n - 1)
-    r = step(env, flow, n, **fields)
-    assert r["status"] == code
-    assert f"Step {n} of 5" in r["body"]          # the same step again, not the next
-
-
-def test_three_wrong_passwords_end_the_attempt(env):
-    flow = start(env)
-    through(env, flow, 3)
-    for _ in range(2):
-        assert step(env, flow, 4, password="nope")["status"] == 403
-    last = step(env, flow, 4, password="nope")
-    assert last["status"] == 403 and "Three wrong passwords" in last["body"]
-    assert step(env, flow, 4)["status"] == 409     # the attempt is gone
-    assert working_keys(env) == 3
-
-
-def test_a_step_cannot_be_skipped(env):
-    flow = start(env)
-    r = step(env, flow, 3)
-    assert r["status"] == 409 and "Nothing was revoked" in r["body"]
-    assert step(env, flow, 1)["status"] == 409     # ended, not rewound
-
-
-def test_an_idle_attempt_expires(env):
-    flow = start(env)
-    through(env, flow, 2)
-    env["clock"]["now"] += timedelta(minutes=6)
-    assert step(env, flow, 3)["status"] == 409
-
-
-def test_cancel_at_any_step_revokes_nothing(env):
-    flow = start(env)
-    through(env, flow, 4)
-    r = env["console"].post("/settings/kill-switch", {"flow": flow, "cancel": "1"})
-    assert r["status"] == 200 and "Cancelled" in r["body"]
+def test_a_wrong_password_revokes_nothing(env):
+    set_password(env["console"])
+    r = revoke(env, "wrong password")
+    assert r["status"] == 403 and "Nothing was revoked" in r["body"]
     assert working_keys(env) == 3 and env["sent"] == []
 
 
+def test_no_password_no_kill_switch(env):
+    assert "Set an admin password" in env["console"].get("/settings/kill-switch")["body"]
+    assert revoke(env)["status"] == 409
+    assert working_keys(env) == 3
+
+
 def test_feed_teams_keep_syncing_unless_asked(env):
-    flow = start(env)
-    step(env, flow, 1)
-    step(env, flow, 2, read="1", pause_feeds="1")
-    step(env, flow, 3)
-    step(env, flow, 4)
-    env["clock"]["now"] += timedelta(seconds=11)
-    step(env, flow, 5)
+    set_password(env["console"])
+    revoke(env, pause_feeds="1")
     conn = db.connect(env["path"])
     enabled = {s.id: s.enabled for s in repo.list_sources(conn, enabled_only=False)}
     conn.close()
     assert enabled == {"in-herons": True, "tr-wrens": False}
-
-
-def test_no_password_no_kill_switch(env):
-    r = env["console"].get("/settings/kill-switch")
-    assert r["status"] == 409 and "Set an admin password first" in r["body"]
 
 
 def test_changing_the_password_needs_the_current_one(env):
