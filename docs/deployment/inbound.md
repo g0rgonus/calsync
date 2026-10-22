@@ -82,9 +82,20 @@ staging calendar; a live team is refused and is retired in the console.
 `…/admin/events/status` marks one event `not_attending` or `cancelled`, or puts
 it back with `null`, for any team's event. It is the console's mark: it survives
 later syncs, hiding an event that has started is refused (putting one back never
-is), and a warm-up is changed through its game. Every hide sends a Pushover
-alert naming the key, the team and the time, when Pushover is set up. An admin key also reads `GET /inbound/v1/calendar`, which is
+is), and a warm-up is changed through its game. An admin key also reads `GET /inbound/v1/calendar`, which is
 where a tool finds the event's `uid`.
+
+A place calsync does not know keeps a staged team staged. The tool finds the
+venue with `…/admin/venues?q=` and adds the feed's name as an alias, or creates
+the venue. One name means one venue: a name or alias another venue has is
+`409 alias_taken`, and a field number is refused in a venue name ("Kingsmere",
+not "Kingsmere #2"). A team's home venue only decides home or away, from its
+next poll. Editing and merging venues stay in the console.
+
+**Every admin change that can reach a live calendar sends a Pushover alert** —
+pausing or resuming a live team, making a team live, hiding or putting back an
+event, adding a venue or an alias, setting a live team's home venue — and each
+can be undone through the API. Staged teams and key changes are silent.
 
 A 401 carries `WWW-Authenticate: CalsyncKey`, not `Basic`, so a client in
 "extended compatibility" mode does not answer it by resending the proxy's
@@ -137,6 +148,11 @@ GET    /inbound/v1/admin/teams/{source}/review                       checks, eve
 POST   /inbound/v1/admin/teams/{source}/live                         make a staged team live
 DELETE /inbound/v1/admin/teams/{source}                              discard a staged team
 POST   /inbound/v1/admin/events/status                               not attending / cancelled / put back
+GET    /inbound/v1/admin/venues?q=                                   find venues by name or alias
+POST   /inbound/v1/admin/venues                                      add a venue
+POST   /inbound/v1/admin/venues/{id}/aliases                         a feed's name for a venue
+DELETE /inbound/v1/admin/venues/{id}/aliases                         undo one
+PUT    /inbound/v1/admin/teams/{source}/home-venue                   home ground (home vs away)
 POST   /inbound/v1/admin/teams/{source}/pause                        stop writing its events
 POST   /inbound/v1/admin/teams/{source}/resume                       start again
 POST   /inbound/v1/admin/teams/{source}/key                          new team key; the old one stops

@@ -1418,6 +1418,7 @@ def upsert_venue(
     lon: float | None = None,
     pin_confirmed: bool = False,
     geocoder: str | None = None,
+    commit: bool = True,
 ) -> int:
     """Create or rename a venue, keeping its canonical name as an alias.
 
@@ -1448,11 +1449,13 @@ def upsert_venue(
         "INSERT OR IGNORE INTO venue_aliases (venue_id, alias, source) VALUES (?, ?, 'ui')",
         (venue_id, name),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
     return venue_id
 
 
-def add_venue_alias(conn: sqlite3.Connection, venue_id: int, alias: str) -> None:
+def add_venue_alias(conn: sqlite3.Connection, venue_id: int, alias: str, *,
+                    commit: bool = True) -> None:
     alias = alias.strip()
     if not alias:
         return
@@ -1460,7 +1463,8 @@ def add_venue_alias(conn: sqlite3.Connection, venue_id: int, alias: str) -> None
         "INSERT OR IGNORE INTO venue_aliases (venue_id, alias, source) VALUES (?, ?, 'ui')",
         (venue_id, alias),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def remove_venue_alias(conn: sqlite3.Connection, venue_id: int, alias: str) -> None:
@@ -2220,3 +2224,24 @@ def team_named(conn: sqlite3.Connection, child_id: str, name: str) -> str | None
         "WHERE a.child_id = ? AND lower(a.name) = lower(?) ORDER BY s.id LIMIT 1",
         (child_id, name.strip())).fetchone()
     return row["id"] if row else None
+
+
+# --- venues, for the admin API --------------------------------------------------
+
+
+def venue_named(conn: sqlite3.Connection, name: str) -> int | None:
+    row = conn.execute("SELECT id FROM venues WHERE canonical_name = ? COLLATE NOCASE",
+                       (name.strip(),)).fetchone()
+    return row["id"] if row else None
+
+
+def alias_owner(conn: sqlite3.Connection, alias: str) -> int | None:
+    """The venue an alias resolves to, matched the way resolution matches."""
+    row = conn.execute("SELECT venue_id FROM venue_aliases WHERE alias = ? COLLATE NOCASE",
+                       (alias.strip(),)).fetchone()
+    return row["venue_id"] if row else None
+
+
+def set_home_venue(conn: sqlite3.Connection, activity_id: str, venue_id: int | None) -> None:
+    conn.execute("UPDATE activities SET home_venue_id = ? WHERE id = ?",
+                 (venue_id, activity_id))
