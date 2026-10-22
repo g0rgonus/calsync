@@ -25,11 +25,13 @@ def _name(text: str | None) -> str:
     return " ".join(re.sub(r"[^\w\s]", " ", text).split())
 
 
-def key(event: Event, sport: str) -> str | None:
+def key(event: Event, sport: str, collection: str) -> str | None:
     """The blocking key for an event, or None when it can never be merged.
 
     Venue is left out on purpose: it is checked per group (:func:`venues_conflict`)
     because an unresolved venue has no opinion and must not split a group.
+    ``collection`` is where the copy would be written: the merged event lives
+    on the carrier's calendar only, so copies bound for different ones never merge.
     """
     if not event.is_game or event.is_warmup or event.cancelled:
         return None
@@ -39,7 +41,7 @@ def key(event: Event, sport: str) -> str | None:
     when = ("day",) if event.all_day else (
         "timed", event.starts_at.astimezone(timezone.utc).isoformat(),
         event.ends_at.astimezone(timezone.utc).isoformat())
-    return json.dumps([sport, start.date().isoformat(), end.date().isoformat(), *when,
+    return json.dumps([sport, collection, start.date().isoformat(), end.date().isoformat(), *when,
                        _name(event.detail), _name(event.opponent)])
 
 

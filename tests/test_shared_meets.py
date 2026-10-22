@@ -13,6 +13,7 @@ import pytest
 from icalendar import Calendar
 
 from calsync import correlate, db, repo
+from calsync.settings import set_setting
 from calsync.inbound import app as inbound_app
 from calsync.inbound import events as inbound
 from calsync.secrets import SecretStore
@@ -292,10 +293,11 @@ def test_names_match_after_normalising_and_practices_have_no_key():
         uid="u", activity_id="a", starts_at=datetime(2026, 11, 14, 5, tzinfo=timezone.utc),
         ends_at=datetime(2026, 11, 15, 5, tzinfo=timezone.utc), is_game=True,
         tz="America/New_York", all_day=True, **kw)
-    assert correlate.key(mk(detail="Harbor  Invitational!"), "swimming") == \
-        correlate.key(mk(detail="harbor invitational", opponent=""), "swimming")
-    assert correlate.key(mk(detail="A"), "swimming") != correlate.key(mk(detail="A"), "diving")
-    assert correlate.key(mk(warmup_for="x"), "swimming") is None
+    assert correlate.key(mk(detail="Harbor  Invitational!"), "swimming", "c") == \
+        correlate.key(mk(detail="harbor invitational", opponent=""), "swimming", "c")
+    assert correlate.key(mk(detail="A"), "swimming", "c") != correlate.key(mk(detail="A"), "diving", "c")
+    assert correlate.key(mk(detail="A"), "swimming", "c") != correlate.key(mk(detail="A"), "swimming", "d")
+    assert correlate.key(mk(warmup_for="x"), "swimming", "c") is None
 
 
 def test_a_held_poll_does_not_reshape_the_group(env):
@@ -314,3 +316,14 @@ def test_a_held_poll_does_not_reshape_the_group(env):
     conn.close()
     (event,) = calendar(env)
     assert "J+N" in event["title"]
+
+
+@pytest.mark.parametrize("template", ["{child}-{type}", "{activity}-{type}"])
+def test_copies_bound_for_different_calendars_are_not_merged(env, template):
+    conn = db.connect(env["path"])
+    set_setting(conn, "collection_template", template)
+    conn.close()
+    two_teams(env)
+    events = calendar(env)
+    assert len(events) == 2
+    assert all("J+N" not in e["title"] for e in events)

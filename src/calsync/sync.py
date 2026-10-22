@@ -416,12 +416,13 @@ def sync_source(
     mine: dict[str, dict] = {}
     if source.enabled and not source.staging_collection:
         for event in events:
-            k = None
-            if not event.needs_enrichment and not withheld.is_withheld(event.uid, off):
-                k = correlate.key(event, activity.sport)
-            if k is None:
+            if event.needs_enrichment or withheld.is_withheld(event.uid, off):
                 continue
             own = kids_for(event.uid)
+            k = correlate.key(event, activity.sport,
+                              collection_for(event, activity, own[0], settings))
+            if k is None:
+                continue
             named = event.venue is not None and event.uid in placed
             mine[event.uid] = {
                 "uid": event.uid, "source_id": source.id, "key": k,
