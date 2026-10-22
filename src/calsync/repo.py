@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from . import overlay as overlay_mod
+from .correlate import carrier, usable
 from .models import Activity, Child, Event, Venue
 
 
@@ -192,6 +193,8 @@ class EventState:
     applied_overlay: dict | None = None
     #: The kids that write was for, or None for a team's only kid.
     kids: tuple[str, ...] | None = None
+    #: Fingerprint of the merge of several teams' copies this write carried.
+    merged: str | None = None
 
 
 def event_states(conn: sqlite3.Connection, source_id: str) -> dict[str, EventState]:
@@ -220,6 +223,7 @@ def _event_state(row: sqlite3.Row) -> EventState:
         shown_starts_at=row["shown_starts_at"] or row["starts_at"],
         applied_overlay=_overlay(row["applied_overlay"]),
         kids=tuple(row["kids"].split(",")) if row["kids"] else None,
+        merged=row["merged"],
     )
 
 
@@ -254,6 +258,7 @@ def record_event_state(
     shown_starts_at: str | None = None,
     applied_overlay: dict | None = None,
     kids: tuple[str, ...] | None = None,
+    merged: str | None = None,
 ) -> None:
     """Record a successful write. Call this only *after* the target accepted it.
 
@@ -278,8 +283,8 @@ def record_event_state(
         """
         INSERT INTO event_state
             (uid, source_id, collection, remote_id, content_hash, remote_etag,
-             starts_at, shown_starts_at, applied_overlay, kids, cancelled, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'))
+             starts_at, shown_starts_at, applied_overlay, kids, merged, cancelled, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'))
         ON CONFLICT(uid) DO UPDATE SET
             source_id    = excluded.source_id,
             collection   = excluded.collection,
@@ -290,6 +295,7 @@ def record_event_state(
             shown_starts_at = excluded.shown_starts_at,
             applied_overlay = excluded.applied_overlay,
             kids         = excluded.kids,
+            merged       = excluded.merged,
             cancelled    = 0,
             updated_at   = excluded.updated_at,
             removal_approved_at  = NULL,
@@ -297,7 +303,7 @@ def record_event_state(
         """,
         (uid, source_id, collection, remote_id, content_hash, remote_etag,
          starts_at, shown_starts_at or starts_at, _dumps(applied_overlay),
-         ",".join(kids) if kids else None),
+         ",".join(kids) if kids else None, merged),
     )
 
 
@@ -365,8 +371,11 @@ def placements(conn: sqlite3.Connection, *, since: str) -> list[dict]:
     off), ``cancelled`` (calsync deleted it, or the feed marked it cancelled
     and the delete may not have landed yet), or ``approved`` (a person
     confirmed its removal and the delete may not have landed yet). Withheld
-    outranks cancelled because it is the reason, not the result.
+    outranks cancelled because it is the reason, not the result. ``merged`` is
+    a copy another team's source writes for both: accounted for, so the Mac
+    mirror does not hold its absence.
     """
+    away = merged_away(conn)
     rows = conn.execute(
         "SELECT uid, source_id, collection, shown_starts_at, cancelled, "
         "withheld, removal_approved_at, cancelled_upstream_at FROM event_state "
@@ -378,6 +387,8 @@ def placements(conn: sqlite3.Connection, *, since: str) -> list[dict]:
     for r in rows:
         if r["withheld"]:
             state = "withheld"
+        elif r["uid"] in away:
+            state = "merged"
         elif r["cancelled"] or r["cancelled_upstream_at"]:
             state = "cancelled"
         elif r["removal_approved_at"]:
@@ -2301,6 +2312,61 @@ def revoked_key(conn: sqlite3.Connection, digest: str) -> ApiKey | None:
 def keys_revoked_together(conn: sqlite3.Connection, at: str) -> list[ApiKey]:
     return [_key(r) for r in conn.execute(
         "SELECT * FROM api_keys WHERE revoked_at = ? ORDER BY scope, label", (at,))]
+
+
+# --- shared meets ---------------------------------------------------------------
+#
+# Several teams' copies of one meet (`correlate.py`). The lowest source id
+# writes it; the rest are candidates only.
+
+CANDIDATE_COLUMNS = ("uid", "source_id", "key", "kids", "kid_order", "body", "url",
+                     "kit", "arrive_at", "venue", "field")
+
+
+def _candidates(conn: sqlite3.Connection, where: str, params: tuple) -> list[dict]:
+    # Enabled and not staged: a source off or still being onboarded must never
+    # be the one that writes (or silences) somebody else's event.
+    return [dict(r) for r in conn.execute(
+        f"SELECT {', '.join('c.' + col for col in CANDIDATE_COLUMNS)} "
+        "FROM shared_candidates c JOIN sources s ON s.id = c.source_id "
+        f"WHERE s.enabled = 1 AND s.staging_collection IS NULL AND {where} "
+        "ORDER BY c.kid_order, c.source_id", params)]
+
+
+def source_candidates(conn: sqlite3.Connection, source_id: str) -> list[dict]:
+    """What this source last stored, enabled or not — for comparing before and after."""
+    return [dict(r) for r in conn.execute(
+        f"SELECT {', '.join(CANDIDATE_COLUMNS)} FROM shared_candidates "
+        "WHERE source_id = ? ORDER BY uid", (source_id,))]
+
+
+def replace_candidates(conn: sqlite3.Connection, source_id: str, rows: list[dict]) -> None:
+    """Swap in this source's candidates. Not committed."""
+    conn.execute("DELETE FROM shared_candidates WHERE source_id = ?", (source_id,))
+    conn.executemany(
+        f"INSERT INTO shared_candidates ({', '.join(CANDIDATE_COLUMNS)}) "
+        f"VALUES ({', '.join('?' * len(CANDIDATE_COLUMNS))})",
+        [tuple(r[col] for col in CANDIDATE_COLUMNS) for r in rows])
+
+
+def candidate_groups(conn: sqlite3.Connection, keys) -> dict[str, list[dict]]:
+    """Members of each key, from enabled, non-staged sources only."""
+    keys = sorted(set(keys))
+    out: dict[str, list[dict]] = {}
+    for i in range(0, len(keys), 500):
+        chunk = keys[i:i + 500]
+        for r in _candidates(conn, f"c.key IN ({', '.join('?' * len(chunk))})", tuple(chunk)):
+            out.setdefault(r["key"], []).append(r)
+    return out
+
+
+def merged_away(conn: sqlite3.Connection) -> set[str]:
+    """Uids that another team's source writes for them: non-carriers of a live group."""
+    groups: dict[str, list[dict]] = {}
+    for r in _candidates(conn, "1 = 1", ()):
+        groups.setdefault(r["key"], []).append(r)
+    return {r["uid"] for rows in groups.values() if usable(rows)
+            for r in rows if r["source_id"] != carrier(x["source_id"] for x in rows)}
 
 
 # --- shared teams ---------------------------------------------------------------

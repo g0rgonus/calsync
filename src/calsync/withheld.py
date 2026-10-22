@@ -90,7 +90,8 @@ def is_withheld(uid: str, withheld: set[str]) -> bool:
     return parent is not None and parent in withheld
 
 
-def enforce(conn, source_id: str, target) -> WithholdReport:
+def enforce(conn, source_id: str, target, *, also: frozenset[str] | set[str] = frozenset()
+            ) -> WithholdReport:
     """Take every withheld event of this source off the calendar.
 
     Idempotent, and deliberately so: it is called both from the console the
@@ -101,10 +102,13 @@ def enforce(conn, source_id: str, target) -> WithholdReport:
     Borrows the sync loop's ordering rule without exception — **cancel at the
     target first, then record it**. The other order marks an event gone while it
     is still on somebody's phone, and nothing ever retries it.
+
+    ``also`` is a sync's copies another team writes for them (`correlate.py`):
+    taken off like a withheld event, but never stored as one.
     """
     report = WithholdReport()
     states = repo.event_states(conn, source_id)
-    withheld = off_uids(conn, source_id, states)
+    withheld = off_uids(conn, source_id, states) | also
 
     for uid, state in states.items():
         if not is_withheld(uid, withheld):

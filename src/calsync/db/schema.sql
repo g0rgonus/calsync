@@ -408,3 +408,22 @@ CREATE TABLE IF NOT EXISTS event_absences (
     set_at    TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (uid, child_id)
 );
+
+-- One row per game a source has on, keyed so teams going to the same meet land
+-- together (`correlate.py`). Replaced whole at every sync of the source, and
+-- committed before it writes, so a partner reading it sees the same picture
+-- the deletes are about to act on.
+CREATE TABLE IF NOT EXISTS shared_candidates (
+    uid        TEXT PRIMARY KEY,
+    source_id  TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+    key        TEXT NOT NULL,
+    kids       TEXT NOT NULL,
+    kid_order  INTEGER NOT NULL,
+    body       TEXT,
+    url        TEXT,
+    kit        TEXT,
+    arrive_at  TEXT,
+    venue      TEXT,
+    field      TEXT
+);
+CREATE INDEX IF NOT EXISTS shared_candidates_key ON shared_candidates(key);

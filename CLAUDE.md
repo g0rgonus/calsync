@@ -423,6 +423,12 @@ Decisions that span several files and are easy to undo by accident:
   copy; splitting a pushed team clones its source and pushed events for the kid
   (`repo.clone_team`), while a feed stays with its team because feed uids are
   global.
+- **Teams at one meet write it once** (`correlate.py`, `docs/MATCHING.md`). The
+  lowest source id carries; every other team's copy is dropped like a withheld
+  event — kept in the diff, never stored in `event_state.withheld` — and the
+  carrier renders the union of kids and notes from a copy, while `event_content`
+  keeps what its own source said. A sync that changes a source's
+  `shared_candidates` syncs its partners once (`follow`).
 - **The title is a render, not data.** `Event` deliberately has no `summary`
   field; the display title is composed at write time from a configurable template
   (`normalize/title.py`). Nothing downstream parses it back, so conventions can

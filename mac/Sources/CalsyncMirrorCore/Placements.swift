@@ -14,7 +14,7 @@ import Foundation
 public struct Placement: Equatable, Decodable {
     public var uid: String
     public var collection: String
-    /// `live`, or why it is not: `withheld`, `cancelled`, `approved`.
+    /// `live`, or why it is not: `withheld`, `cancelled`, `approved`, `merged`.
     public var state: String
 
     public init(uid: String, collection: String, state: String) {

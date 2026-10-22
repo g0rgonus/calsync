@@ -18,7 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 
-from . import overlay, repo, retire, sources, warmup, withheld
+from . import correlate, overlay, repo, retire, sources, warmup, withheld
 from .diff import diff_poll, fingerprint
 from .fetch import FetchError, http_fetch, render_url
 from .models import Activity, Event, Venue
@@ -93,6 +93,9 @@ class SyncReport:
     #: Cancellations applied because a person confirmed a held set.
     confirmed: int = 0
     errors: list[str] = field(default_factory=list)
+    #: Other sources synced because this one's games changed what they share
+    #: with it (`correlate.py`); their errors are in `errors`.
+    partners_synced: list[str] = field(default_factory=list)
 
     #: Which collection the events actually went to, so a staged run says so.
     staged_to: str | None = None
@@ -157,6 +160,8 @@ class SyncReport:
             parts.append(f"staged to {self.staged_to!r}")
         if self.confirmed:
             parts.append(f"{self.confirmed} held cancellation(s) confirmed")
+        if self.partners_synced:
+            parts.append(f"also synced {', '.join(self.partners_synced)}")
         if self.held:
             parts.append(f"HELD ({self.held_kind}): {self.held}")
         parts.extend(f"ERROR: {e}" for e in self.errors)
@@ -263,6 +268,7 @@ def sync_source(
     raw: bytes | str | None = None,
     dry_run: bool = False,
     confirm_held: str | None = None,
+    follow: bool = True,
 ) -> SyncReport:
     """Poll one source and reconcile it into ``target``.
 
@@ -274,6 +280,9 @@ def sync_source(
     that set, those cancellations go through like any other; if the feed has
     moved since, the poll stays held and nothing is cancelled. Only a person
     reaches this — the console's confirm button — never the poller.
+
+    ``follow`` syncs the other sources that share a meet with this one once its
+    games change; those runs pass False, so it goes one hop and stops.
     """
     report = SyncReport(
         source_id=source.id, staged_to=source.staging_collection,
@@ -286,8 +295,13 @@ def sync_source(
     children = repo.team_children(conn, activity)
     away = repo.absences(conn, source.id)
 
+    merged_kids: dict[str, list] = {}   # carrier uid -> every team's kids going
+
     def kids_for(uid: str) -> list:
-        gone = away.get(warmup.parent_of(uid) or uid, set())
+        base = warmup.parent_of(uid) or uid
+        if base in merged_kids:
+            return merged_kids[base]
+        gone = away.get(base, set())
         return [c for c in children if c.id not in gone] or children
 
     # --- fetch + parse: any failure aborts before the diff ------------------
@@ -336,6 +350,7 @@ def sync_source(
     events = []
     called_off: set[str] = set()
     unresolved_venues: set[str] = set()
+    placed: set[str] = set()   # uids whose venue is one we know
     for event in result.events:
         if not _in_window(event, now=now, settings=settings):
             report.skipped_window += 1
@@ -350,7 +365,9 @@ def sync_source(
         # may well supply an address inline, so "has an address" proves nothing —
         # what matters is whether we know the place, which is what carries a
         # confirmed pin and survives the venue being spelled differently later.
-        if (not _enrich_venue(conn, event) and not withheld.is_withheld(event.uid, off)
+        if _enrich_venue(conn, event):
+            placed.add(event.uid)
+        elif (not withheld.is_withheld(event.uid, off)
                 and "location" not in overrides.get(event.uid, {})):
             unresolved_venues.add(event.venue.name or event.venue.raw)
         report.events_seen += 1
@@ -392,6 +409,57 @@ def sync_source(
         original = sourced.get(event.uid)
         if original is not None and original is not event:
             original.arrive_at = event.arrive_at
+
+    # --- other teams at the same meet (`correlate.py`) ---------------------
+    # Stored and committed before any write or delete, for `approve_removals`'
+    # reason: a partner reading it must see what the deletes below act on.
+    mine: dict[str, dict] = {}
+    if source.enabled and not source.staging_collection:
+        for event in events:
+            k = None
+            if not event.needs_enrichment and not withheld.is_withheld(event.uid, off):
+                k = correlate.key(event, activity.sport)
+            if k is None:
+                continue
+            own = kids_for(event.uid)
+            named = event.venue is not None and event.uid in placed
+            mine[event.uid] = {
+                "uid": event.uid, "source_id": source.id, "key": k,
+                "kids": ",".join(c.id for c in own),
+                "kid_order": min(c.birth_order for c in own),
+                "body": event.body, "url": event.url, "kit": event.kit,
+                "arrive_at": event.arrive_at.isoformat() if event.arrive_at else None,
+                "venue": event.venue.name if named else None,
+                "field": event.venue.field if event.venue else None,
+            }
+    before = repo.source_candidates(conn, source.id)
+    candidates = sorted(mine.values(), key=lambda r: r["uid"])
+    if not dry_run:
+        repo.replace_candidates(conn, source.id, candidates)
+        conn.commit()
+    # A dry run has not stored its own rows, so they are laid over the others'.
+    groups = repo.candidate_groups(conn, {r["key"] for r in candidates})
+    merges: dict[str, correlate.Merged] = {}
+    dropped: set[str] = set()
+    for k in {r["key"] for r in candidates}:
+        members = [r for r in groups.get(k, []) if r["source_id"] != source.id]
+        members += [r for r in candidates if r["key"] == k]
+        if not correlate.usable(members):
+            continue
+        lead = correlate.carrier(r["source_id"] for r in members)
+        for r in members:
+            if r["source_id"] != source.id:
+                continue
+            if lead != source.id:
+                dropped.add(r["uid"])
+            else:
+                merges[r["uid"]] = merged = correlate.merge(members)
+                merged_kids[r["uid"]] = sorted(
+                    (repo.get_child(conn, i) for i in merged.kids),
+                    key=lambda c: (c.birth_order, c.name))
+    # Dropped like a withheld event, and never stored as one: only a person sets
+    # `event_state.withheld`, and this copy returns the moment the group ends.
+    off = off | dropped
 
     # --- diff --------------------------------------------------------------
     max_pct, max_count = _guard_thresholds(source, settings)
@@ -513,6 +581,10 @@ def sync_source(
             # and the title says who.
             pending.append(event)
             refreshed_uids.add(event.uid)
+        elif state.merged != (merges[event.uid].fingerprint if event.uid in merges else None):
+            # Another team's copy of this meet changed what is merged into it.
+            pending.append(event)
+            refreshed_uids.add(event.uid)
         elif stored is None:
             pending.append(event)
             refreshed_uids.add(event.uid)
@@ -548,9 +620,12 @@ def sync_source(
                 remote_id=previous_state.remote_id or event.uid,
                 etag=previous_state.remote_etag,
             )
+        merge = merges.get(event.uid)
+        shown = event if merge is None else replace(
+            event, body=merge.body, kit=merge.kit, arrive_at=merge.arrive_at)
         try:
             rendered = render(
-                event, activity, kids_for(event.uid), settings,
+                shown, activity, kids_for(event.uid), settings,
                 alarm_minutes=activity.alarm_minutes(is_game=event.alarms_as_game),
 
                 collection_override=source.staging_collection,
@@ -579,6 +654,7 @@ def sync_source(
             shown_starts_at=event.starts_at.isoformat(),
             applied_overlay=overrides.get(event.uid),
             kids=tuple(c.id for c in kids_for(event.uid)),
+            merged=merge.fingerprint if merge else None,
         )
         # Placement and content are recorded together, behind the same barrier:
         # both describe a write the target has just accepted, and a copy of the
@@ -647,7 +723,7 @@ def sync_source(
     # Its own read of `event_state`, not the `states` above: the loop just
     # above marked rows cancelled, and a stale copy would ask the target to
     # delete an event it has already deleted.
-    removal = withheld.enforce(conn, source.id, target)
+    removal = withheld.enforce(conn, source.id, target, also=dropped)
     report.cancelled += removal.removed
     if not removal.ok:
         report.status = "error"
@@ -683,6 +759,19 @@ def sync_source(
         repo.record_source_success(conn, source.id)
 
     conn.commit()
+
+    # Whoever shares a meet with this source, old key or new, now sees a
+    # different group; one run each is enough for them to converge.
+    if follow and not dry_run and before != candidates:
+        keys = {r["key"] for r in before} | {r["key"] for r in candidates}
+        partners = sorted({r["source_id"] for rows in repo.candidate_groups(conn, keys).values()
+                           for r in rows} - {source.id})
+        for partner_id in partners:
+            partner = repo.get_source(conn, partner_id)
+            sub = sync_source(conn, partner, target, now=now, secrets=secrets,
+                              fetcher=fetcher, follow=False)
+            report.partners_synced.append(partner_id)
+            report.errors.extend(f"{partner_id}: {e}" for e in sub.errors)
     return report
 
 

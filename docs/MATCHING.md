@@ -198,6 +198,28 @@ approval, so a false negative in the list costs nothing. That's the right
 asymmetry: the list is a cheap extra floor under a human decision, not a
 classifier anyone depends on.
 
+## 3b. One meet, two teams
+
+Built (`correlate.py`). Kids on different teams who go to the same meet get one
+event. Two events from different enabled, non-staged sources are one occurrence
+when all of these hold:
+
+- same sport, and the same local start and end date in the event's zone;
+- both all-day, or both timed with equal start and end (timed never matches
+  all-day);
+- same `detail` and `opponent` after casefolding, dropping punctuation and
+  collapsing whitespace (none equals empty);
+- a game: practices and warm-ups never correlate, nor does anything cancelled,
+  outside the sync window, held for review or off (withheld, every kid absent);
+- venue: if the group names more than one resolved venue, or more than one
+  non-empty field, nobody merges. An unresolved venue has no opinion.
+
+The lowest source id writes the event; the others drop their copy the way a
+withheld event is dropped, without ever setting the flag. The carrier shows the
+union of kids in birth order, each team's notes with duplicate lines said once,
+every distinct kit, and the earliest arrival. A source with two events under one
+key, or a group the rules split, writes everyone's own.
+
 ## 4. After setup: flag duplicates, never block or delete
 
 Once setup is done, everything without a `sync_state` row is human and stays
