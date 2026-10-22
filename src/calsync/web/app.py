@@ -48,7 +48,7 @@ from ..routing import slugify
 from ..secrets import SecretError, SecretStore
 from ..settings import Settings, check_setting, set_setting
 from ..targets import TargetError
-from ..sync import NoTarget as _NoTarget, sync_source
+from ..sync import NoTarget as _NoTarget, sync_partners, sync_source
 from . import fix as fix_mod
 from . import gate
 
@@ -580,6 +580,8 @@ def create_app(
                                   f"retired: {exc}") from exc
                 # A partial retire leaves events only that team's sync can remove.
                 if report.ok:
+                    sync_partners(conn, other.id, report.freed_keys, target, now=clock(),
+                                  secrets=secrets)
                     repo.revoke_team_key(conn, other.id, actor="console")
                     repo.log_admin(conn, "console", "team_retired", f"team:{other.id}",
                                    {"merged_into": source_id})
@@ -680,6 +682,9 @@ def create_app(
                     conn, secrets=secrets
                 )
                 report = retire.retire_source(conn, source, target, now=clock())
+                # Its teams at the same meets take the events over.
+                sync_partners(conn, source.id, report.freed_keys, target, now=clock(),
+                              secrets=secrets)
             except (SecretError, TargetError) as exc:
                 raise Refused(f"could not reach the calendar: {exc}") from exc
 

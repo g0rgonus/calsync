@@ -31,7 +31,7 @@ from .settings import Settings, set_setting
 from . import (
     digest, enrichment, matrix, polling, retire, seasonend, targeting,
 )
-from .sync import sync_source
+from .sync import sync_partners, sync_source
 from .targets import build
 from .targets.http import HttpTransport
 
@@ -396,8 +396,15 @@ def cmd_retire(args) -> int:
 
     secrets = _secrets(args)
     now = _now(getattr(args, "now", None))
-    report = retire.retire_source(conn, source, _target(conn, args, secrets), now=now)
+    target = _target(conn, args, secrets)
+    report = retire.retire_source(conn, source, target, now=now)
     print(report.line())
+    if report.freed_keys:
+        # Its teams at the same meets take the events over.
+        _, errors = sync_partners(conn, source.id, report.freed_keys, target, now=now,
+                                  secrets=secrets)
+        for error in errors:
+            print(f"warning: {error}", file=sys.stderr)
     if not report.ok:
         print("\nnothing was disabled: some events could not be removed, so the",
               file=sys.stderr)

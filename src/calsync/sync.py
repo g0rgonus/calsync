@@ -766,15 +766,11 @@ def sync_source(
     # Whoever shares a meet with this source, old key or new, now sees a
     # different group; one run each is enough for them to converge.
     if follow and not dry_run and before != candidates:
-        keys = {r["key"] for r in before} | {r["key"] for r in candidates}
-        partners = sorted({r["source_id"] for rows in repo.candidate_groups(conn, keys).values()
-                           for r in rows} - {source.id})
-        for partner_id in partners:
-            partner = repo.get_source(conn, partner_id)
-            sub = sync_source(conn, partner, target, now=now, secrets=secrets,
-                              fetcher=fetcher, follow=False)
-            report.partners_synced.append(partner_id)
-            report.errors.extend(f"{partner_id}: {e}" for e in sub.errors)
+        synced, errors = sync_partners(
+            conn, source.id, {r["key"] for r in before} | {r["key"] for r in candidates},
+            target, now=now, secrets=secrets, fetcher=fetcher)
+        report.partners_synced.extend(synced)
+        report.errors.extend(errors)
     return report
 
 
@@ -868,3 +864,24 @@ class NoTarget:
             )
 
         return refuse
+
+
+def sync_partners(conn, source_id: str, keys, target, *, now: datetime,
+                  secrets: SecretStore | None = None, fetcher=http_fetch
+                  ) -> tuple[list[str], list[str]]:
+    """Sync every other source in the groups under ``keys``, once each.
+
+    Returns the ids synced and their errors. They run with ``follow=False``, so
+    it goes one hop and stops.
+    """
+    # A paused partner keeps its candidates but is never synced: that would
+    # put a stopped team back on the calendar.
+    partners = sorted({r["source_id"] for rows in repo.candidate_groups(conn, keys).values()
+                       for r in rows if repo.get_source(conn, r["source_id"]).enabled}
+                      - {source_id})
+    errors: list[str] = []
+    for partner_id in partners:
+        sub = sync_source(conn, repo.get_source(conn, partner_id), target, now=now,
+                          secrets=secrets, fetcher=fetcher, follow=False)
+        errors.extend(f"{partner_id}: {e}" for e in sub.errors)
+    return partners, errors

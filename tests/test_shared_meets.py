@@ -20,7 +20,10 @@ from calsync.secrets import SecretStore
 from calsync.sync import NoTarget, sync_source
 from calsync.targets import build
 
+from calsync.web import app as web_app
+
 from test_inbound import Client as ApiClient
+from test_web import Client as ConsoleClient
 
 NOW = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc)
 ADMIN_KEY = "csk_test-admin-key-for-a-tool-000000000000"
@@ -54,8 +57,10 @@ def env(tmp_path):
         path, secrets=secrets, clock=lambda: NOW, log=lambda line: None,
         write_target=target, notify_sender=lambda c, s, message, **kw: None),
         key=ADMIN_KEY)
-    return {"path": path, "api": api, "out": tmp_path / "out", "target": target,
-            "secrets": secrets}
+    console = ConsoleClient(web_app.create_app(path, secrets=secrets, clock=lambda: NOW,
+                                               write_target=target))
+    return {"path": path, "api": api, "console": console, "out": tmp_path / "out",
+            "target": target, "secrets": secrets}
 
 
 def team(env, name, child):
@@ -222,14 +227,29 @@ def test_a_staged_source_never_joins_a_group(env):
     assert sources[0].staging_collection
 
 
-def test_a_disabled_source_is_never_the_carrier(env):
+def test_a_paused_carrier_keeps_carrying(env):
     (herons, hk), (otters, ok) = two_teams(env)
     conn = db.connect(env["path"])
     conn.execute("UPDATE sources SET enabled = 0 WHERE id = ?", (herons,))
     conn.commit()
-    assert repo.merged_away(conn) == set()
-    groups = repo.candidate_groups(conn, {r["key"] for r in repo.source_candidates(conn, otters)})
-    assert {r["source_id"] for rows in groups.values() for r in rows} == {otters}
+    assert repo.merged_away(conn) == {r["uid"] for r in repo.source_candidates(conn, otters)}
+    # The partner syncs while the carrier is paused: its event stays dropped.
+    sync_source(conn, repo.get_source(conn, otters), env["target"], now=NOW,
+                secrets=env["secrets"])
+    conn.close()
+    (event,) = calendar(env)
+    assert "J+N" in event["title"] and event["uid"].startswith("in-herons.")
+
+
+def test_retiring_the_carrier_hands_the_meet_to_the_other_team(env):
+    (herons, hk), (otters, ok) = two_teams(env)
+    r = env["console"].post(f"/sources/{herons}/retire", {})
+    assert r["status"] in (302, 303), r
+    (event,) = calendar(env)
+    assert event["uid"].startswith("in-otters.")
+    assert "Nadia" in event["title"] and "Jesse" not in event["title"]
+    conn = db.connect(env["path"])
+    assert repo.source_candidates(conn, herons) == []
     conn.close()
 
 

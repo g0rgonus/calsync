@@ -2324,12 +2324,13 @@ CANDIDATE_COLUMNS = ("uid", "source_id", "key", "kids", "kid_order", "body", "ur
 
 
 def _candidates(conn: sqlite3.Connection, where: str, params: tuple) -> list[dict]:
-    # Enabled and not staged: a source off or still being onboarded must never
-    # be the one that writes (or silences) somebody else's event.
+    # Not staged: a source still being onboarded must never write (or silence)
+    # somebody else's event. A paused one still counts, because its event is
+    # still on the calendar; retiring clears its rows instead (`clear_candidates`).
     return [dict(r) for r in conn.execute(
         f"SELECT {', '.join('c.' + col for col in CANDIDATE_COLUMNS)} "
         "FROM shared_candidates c JOIN sources s ON s.id = c.source_id "
-        f"WHERE s.enabled = 1 AND s.staging_collection IS NULL AND {where} "
+        f"WHERE s.staging_collection IS NULL AND {where} "
         "ORDER BY c.kid_order, c.source_id", params)]
 
 
@@ -2349,8 +2350,16 @@ def replace_candidates(conn: sqlite3.Connection, source_id: str, rows: list[dict
         [tuple(r[col] for col in CANDIDATE_COLUMNS) for r in rows])
 
 
+def clear_candidates(conn: sqlite3.Connection, source_id: str) -> set[str]:
+    """Drop this source's candidates and return their keys. Not committed."""
+    keys = {r["key"] for r in conn.execute(
+        "SELECT key FROM shared_candidates WHERE source_id = ?", (source_id,))}
+    conn.execute("DELETE FROM shared_candidates WHERE source_id = ?", (source_id,))
+    return keys
+
+
 def candidate_groups(conn: sqlite3.Connection, keys) -> dict[str, list[dict]]:
-    """Members of each key, from enabled, non-staged sources only."""
+    """Members of each key, from non-staged sources only."""
     keys = sorted(set(keys))
     out: dict[str, list[dict]] = {}
     for i in range(0, len(keys), 500):
