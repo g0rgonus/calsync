@@ -195,10 +195,11 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
         forwarded = (request.get_header("X-Forwarded-For") or "").split(",")[0].strip()
         return f"{forwarded} via {peer}" if forwarded else peer
 
-    def refuse(conn, presented: str, whose: str = "this source's key") -> Problem:
-        """A 401, saying so when the key is one that was revoked."""
+    def refuse(conn, presented: str, whose: str = "this source's key", *,
+               opens=lambda key: True) -> Problem:
+        """A 401, saying "revoked" only for a revoked key that once opened this route."""
         old = repo.revoked_key(conn, inbound.hash_key(presented)) if presented else None
-        if old:
+        if old and opens(old):
             return Problem(401, "revoked", f"this key was revoked at {old.revoked_at}; "
                                            "ask for a new one",
                            headers={"WWW-Authenticate": 'CalsyncKey realm="calsync-inbound"'})
@@ -216,7 +217,8 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
             # after a rotation — shows up somewhere. The presented value is not.
             log(f"inbound {source_id} refused: "
                 f"{'no key' if not presented else 'wrong key'} from {client()}")
-            raise refuse(conn, presented)
+            raise refuse(conn, presented,
+                         opens=lambda k: k.scope == "team" and k.source_id == source_id)
         touch(conn, lambda: repo.inbound_key_used_at(conn, source_id),
               lambda at: repo.touch_inbound_key(conn, source_id, at))
         return source
@@ -243,7 +245,8 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
         if not (stored and matched):
             log(f"inbound calendar refused: "
                 f"{'no key' if not presented else 'wrong key'} from {client()}")
-            raise refuse(conn, presented, "the household read key or an admin key")
+            raise refuse(conn, presented, "the household read key or an admin key",
+                         opens=lambda k: k.scope in ("household_read", "admin"))
         touch(conn, lambda: repo.read_key_used_at(conn),
               lambda at: repo.touch_read_key(conn, at))
 
@@ -697,7 +700,7 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
         if key is None:
             log(f"inbound admin refused: {'no key' if not presented else 'wrong key'} "
                 f"from {client()}")
-            raise refuse(conn, presented, "an admin key")
+            raise refuse(conn, presented, "an admin key", opens=lambda k: k.scope == "admin")
         touch(conn, lambda: repo.key_used_at(conn, key.id),
               lambda at: repo.touch_key(conn, key.id, at))
         return key

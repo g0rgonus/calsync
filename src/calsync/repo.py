@@ -2251,6 +2251,10 @@ def set_home_venue(conn: sqlite3.Connection, activity_id: str, venue_id: int | N
 
 KEYS_REVOKED_AT = "keys_revoked_at"
 READ_API_REVOKED = "read_api_revoked_sha256"
+#: What the last firing could not finish: feed teams it paused, as JSON, and
+#: "1" when the read API's token could not be read and so was not blocked.
+FEEDS_PAUSED = "kill_switch_paused_feeds"
+READ_API_UNBLOCKED = "kill_switch_read_api_unblocked"
 
 
 def setting_row(conn: sqlite3.Connection, key: str) -> str | None:

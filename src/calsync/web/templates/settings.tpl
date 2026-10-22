@@ -30,9 +30,27 @@
     <li>Household read key: <a href="#read-key">make a new one</a></li>
 % end
 % end
+% if read_api_unblocked:
+    <li><strong>The read API token could not be read, so it was not blocked.</strong>
+      Change <span class="raw">CALSYNC_SECRET_API_TOKEN</span> in <span class="raw">.env</span>
+      and restart, then put the new one in the mirror's config</li>
+% else:
     <li>Read API token (the Mac mirror): set a new <span class="raw">CALSYNC_SECRET_API_TOKEN</span>
       in <span class="raw">.env</span>, restart, and put it in the mirror's config</li>
+% end
   </ul>
+% if paused_feeds:
+  <p class="note">Feed teams paused when the keys were revoked:</p>
+% for s_ in paused_feeds:
+  <form method="post" action="/sources/{{ s_.id }}/enabled" class="btn-row">
+    <input type="hidden" name="enabled" value="1">
+    <span>{{ s_.id }}{{ '' if not s_.enabled else ' (running again)' }}</span>
+% if not s_.enabled:
+    <button class="btn btn-quiet" type="submit">Resume</button>
+% end
+  </form>
+% end
+% end
   <form method="post" action="/settings/recovery/dismiss">
     <button class="btn btn-quiet" type="submit">Done, hide this</button>
   </form>

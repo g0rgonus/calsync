@@ -123,3 +123,49 @@ def test_feed_teams_keep_syncing_unless_asked(env):
     enabled = {s.id: s.enabled for s in repo.list_sources(conn, enabled_only=False)}
     conn.close()
     assert enabled == {"in-herons": True, "tr-wrens": False}
+
+
+def test_paused_feed_teams_are_listed_with_a_resume_button(env):
+    revoke(env, pause_feeds="1")
+    settings = env["console"].get("/settings")["body"]
+    assert 'action="/sources/tr-wrens/enabled"' in settings and "Resume" in settings
+    env["console"].post("/sources/tr-wrens/enabled", {"enabled": "1"})
+    assert "tr-wrens (running again)" in env["console"].get("/settings")["body"]
+
+
+def test_firing_again_with_nothing_working_is_refused_and_keeps_the_list(env):
+    revoke(env)
+    again = revoke(env)
+    assert again["status"] >= 400 and "nothing to revoke" in again["body"]
+    assert "Grok Bot" in env["console"].get("/settings")["body"]
+    assert len(env["sent"]) == 1
+
+
+def test_a_read_token_that_cannot_be_read_is_reported_not_blocked(env, tmp_path):
+    no_token = tmp_path / "no-token.json"
+    no_token.write_text(json.dumps({"pushover_token": "t", "pushover_user": "u"}))
+    no_token.chmod(0o600)
+    sent = []
+
+    class Push:
+        def __call__(self, request, timeout=None):
+            sent.append(request.data.decode())
+            return _PushReply()
+
+    console = ConsoleClient(web_app.create_app(
+        env["path"], secrets=SecretStore(path=no_token, environ={}),
+        clock=lambda: NOW, push_opener=Push()))
+    console.post("/settings/kill-switch", {"confirm": "yes"})
+    assert "could not be read, so it was not blocked" in console.get("/settings")["body"]
+    assert "NOT+blocked" in sent[0]              # the push body is form-encoded
+
+
+def test_revoked_is_said_only_where_the_key_once_worked(env):
+    revoke(env)
+    own = env["inbound"].get("/inbound/v1/sources/in-herons", key=TEAM_KEY)
+    assert own["json"]["error"]["code"] == "revoked"
+    elsewhere = env["inbound"].get("/inbound/v1/calendar", key=TEAM_KEY)
+    assert elsewhere["status"] == 401
+    assert elsewhere["json"]["error"]["code"] == "bad_credential"
+    admin_route = env["inbound"].get("/inbound/v1/admin/teams", key=READ_KEY)
+    assert admin_route["json"]["error"]["code"] == "bad_credential"

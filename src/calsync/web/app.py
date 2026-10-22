@@ -839,6 +839,10 @@ def create_app(
             keys_revoked_at=repo.setting_row(conn, repo.KEYS_REVOKED_AT),
             revoked_together=repo.keys_revoked_together(
                 conn, repo.setting_row(conn, repo.KEYS_REVOKED_AT) or ""),
+            paused_feeds=[s_ for s_ in repo.list_sources(conn, enabled_only=False)
+                          if s_.id in json.loads(repo.setting_row(conn, repo.FEEDS_PAUSED)
+                                                 or "[]")],
+            read_api_unblocked=repo.setting_row(conn, repo.READ_API_UNBLOCKED) is not None,
             api_token_ref=Settings.load(conn).api_token_ref,
             api_has_token=secrets.has(Settings.load(conn).api_token_ref),
             pushed=pushed,
@@ -1647,6 +1651,9 @@ def create_app(
         """Revoke every key, once "yes" is typed beside the button."""
         if _field("confirm").strip().lower() != "yes":
             raise Refused('type "yes" to revoke every key; nothing was revoked')
+        with connect() as conn:
+            if not repo.api_keys(conn):
+                raise Refused("no key is working, so there is nothing to revoke")
         _revoke_everything(clock(), pause_feeds=bool(_field("pause_feeds")))
         redirect("/settings#recovery")
 
@@ -1658,8 +1665,10 @@ def create_app(
                 token = secrets.get(Settings.load(conn).api_token_ref)
                 repo.put_setting_row(conn, repo.READ_API_REVOKED,
                                      hashlib.sha256(token.encode()).hexdigest())
+                unblocked = False
             except SecretError:
-                pass
+                unblocked = True
+            repo.put_setting_row(conn, repo.READ_API_UNBLOCKED, "1" if unblocked else None)
             paused = []
             if pause_feeds:
                 for source in repo.list_sources(conn):
@@ -1669,6 +1678,7 @@ def create_app(
                         paused.append(source.id)
                 if paused:
                     repo.log_admin(conn, "console", "feeds_paused", None, {"teams": paused})
+            repo.put_setting_row(conn, repo.FEEDS_PAUSED, json.dumps(paused) if paused else None)
             repo.put_setting_row(conn, repo.KEYS_REVOKED_AT, at)
             conn.commit()
             try:
@@ -1676,14 +1686,17 @@ def create_app(
                             f"Every calsync key was revoked from the console "
                             f"({len(revoked)} keys"
                             + (f", {len(paused)} feed teams paused" if paused else "")
-                            + ").", title="calsync: all keys revoked", opener=push_opener)
+                            + ")." + (" The read API's token could not be read, so it is "
+                                      "NOT blocked." if unblocked else ""),
+                            title="calsync: all keys revoked", opener=push_opener)
             except notify.NotifyError:
                 pass
 
     @app.post("/settings/recovery/dismiss")
     def dismiss_recovery():
         with connect() as conn:
-            repo.put_setting_row(conn, repo.KEYS_REVOKED_AT, None)
+            for key in (repo.KEYS_REVOKED_AT, repo.FEEDS_PAUSED, repo.READ_API_UNBLOCKED):
+                repo.put_setting_row(conn, key, None)
             conn.commit()
         _saved("kill-switch", "Recovery notes dismissed.")
 
