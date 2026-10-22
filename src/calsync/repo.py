@@ -2369,13 +2369,24 @@ def candidate_groups(conn: sqlite3.Connection, keys) -> dict[str, list[dict]]:
     return out
 
 
-def merged_away(conn: sqlite3.Connection) -> set[str]:
-    """Uids that another team's source writes for them: non-carriers of a live group."""
+def merged_into(conn: sqlite3.Connection) -> dict[str, str]:
+    """Each non-carrier uid of a live group, mapped to the uid that writes it."""
     groups: dict[str, list[dict]] = {}
     for r in _candidates(conn, "1 = 1", ()):
         groups.setdefault(r["key"], []).append(r)
-    return {r["uid"] for rows in groups.values() if usable(rows)
-            for r in rows if r["source_id"] != carrier(x["source_id"] for x in rows)}
+    out: dict[str, str] = {}
+    for rows in groups.values():
+        if not usable(rows):
+            continue
+        lead = carrier(x["source_id"] for x in rows)
+        head = next(r["uid"] for r in rows if r["source_id"] == lead)
+        out.update({r["uid"]: head for r in rows if r["source_id"] != lead})
+    return out
+
+
+def merged_away(conn: sqlite3.Connection) -> set[str]:
+    """Uids that another team's source writes for them: non-carriers of a live group."""
+    return set(merged_into(conn))
 
 
 # --- shared teams ---------------------------------------------------------------

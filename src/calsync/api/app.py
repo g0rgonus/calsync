@@ -12,7 +12,7 @@ from wsgiref.simple_server import WSGIRequestHandler, WSGIServer, make_server
 
 from bottle import Bottle, HTTPResponse, request, response
 
-from .. import db, enrichment, repo
+from .. import db, enrichment, repo, warmup
 from ..normalize import title as title_norm
 from ..routing import slugify
 from ..secrets import SecretError, SecretStore
@@ -156,9 +156,15 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None) -> Bo
                     "before content was recorded, or aged out of the window",
                     got=uid,
                 )
+            event = _event_json(conn, item, settings)
+            # A copy another team's source writes is not cancelled, only
+            # carried by the merged event.
+            carrier_uid = _dropped(conn, [item]).get(item.event.uid)
+            if carrier_uid:
+                event["cancelled"], event["merged_into"] = False, carrier_uid
             return _dump(
                 {
-                    "event": _event_json(conn, item, settings),
+                    "event": event,
                     "sources": _sources_json(conn, [item], now=clock()),
                 }
             )
@@ -398,6 +404,9 @@ def events_body(conn, query, *, now: datetime) -> dict:
         child_id=query.getunicode("child") or None,
         activity_id=query.getunicode("activity") or None,
     )
+    # Dropped copies are left out: the merged event already lists every kid.
+    dropped = _dropped(conn, stored)
+    stored = [item for item in stored if item.event.uid not in dropped]
     body = {
         "from": window["start"].isoformat(),
         "to": window["end"].isoformat(),
@@ -415,6 +424,19 @@ def events_body(conn, query, *, now: datetime) -> dict:
             f"nothing is retained before {window['start'].isoformat()}"
         )
     return body
+
+
+def _dropped(conn, items: list[repo.StoredEvent]) -> dict[str, str]:
+    """Of these, the copies another team's source has taken off, and who carries them."""
+    carriers = repo.merged_into(conn)
+    out = {}
+    for item in items:
+        uid = item.event.uid
+        parent = warmup.parent_of(uid)
+        carrier_uid = carriers.get(parent or uid)
+        if carrier_uid and item.cancelled:
+            out[uid] = warmup.uid_for(carrier_uid) if parent else carrier_uid
+    return out
 
 
 def _dump(body: dict) -> str:
@@ -524,6 +546,8 @@ def _event_json(conn, item: repo.StoredEvent, settings: Settings) -> dict:
         "venue": venue,
         "collection": item.collection,
         "cancelled": item.cancelled,
+        # The uid that writes this copy for everybody, when it is a dropped one.
+        "merged_into": None,
         # Composed now, from the fields above, through the same code the
         # calendar goes through. Never parse it: it is a render, and it changes
         # whenever the naming convention does (docs/NAMING.md).

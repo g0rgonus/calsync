@@ -20,8 +20,10 @@ from calsync.secrets import SecretStore
 from calsync.sync import NoTarget, sync_source
 from calsync.targets import build
 
+from calsync.api import app as api_app
 from calsync.web import app as web_app
 
+from test_api import Client as ReadClient
 from test_inbound import Client as ApiClient
 from test_web import Client as ConsoleClient
 
@@ -347,3 +349,25 @@ def test_copies_bound_for_different_calendars_are_not_merged(env, template):
     events = calendar(env)
     assert len(events) == 2
     assert all("J+N" not in e["title"] for e in events)
+
+
+def test_the_read_api_does_not_call_a_dropped_copy_cancelled(env, tmp_path):
+    two_teams(env)
+    token = tmp_path / "read.json"
+    token.write_text(json.dumps({"api_token": "tok"}))
+    token.chmod(0o600)
+    read = ReadClient(api_app.create_app(env["path"], secrets=SecretStore(
+        path=token, environ={}), clock=lambda: NOW), token="tok")
+    herons_uid = calendar(env)[0]["uid"]
+    otters_uid = herons_uid.replace("in-herons.", "in-otters.")
+
+    listed = read.get("/v1/events?from=2026-11-01&to=2026-11-30")["json"]
+    assert [e["uid"] for e in listed["events"]] == [herons_uid]
+    assert [c["id"] for c in listed["events"][0]["children"]] == ["jesse", "nadia"]
+    household = env["api"].get("/inbound/v1/calendar?from=2026-11-01&to=2026-11-30")["json"]
+    assert [e["uid"] for e in household["events"]] == [herons_uid]
+
+    dropped = read.get(f"/v1/events/{otters_uid}")["json"]["event"]
+    assert dropped["cancelled"] is False and dropped["merged_into"] == herons_uid
+    carrier = read.get(f"/v1/events/{herons_uid}")["json"]["event"]
+    assert carrier["merged_into"] is None
