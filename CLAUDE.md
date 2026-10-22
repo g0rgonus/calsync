@@ -884,8 +884,8 @@ assertion.
   is a single pure-Python module with no dependencies of its own, where Flask is
   five packages and the stdlib would leave HTML escaping to be hand-rolled.
 - **The kill switch** (`/settings/kill-switch`) revokes every key in `api_keys`
-  and blocks the read API's `.env` token by hash, after the admin password
-  (scrypt hash in `settings`). Revoked keys get 401 `revoked`. Pangolin's
+  and blocks the read API's `.env` token by hash, once "yes" is typed beside
+  the button in Settings. Revoked keys get 401 `revoked`. Pangolin's
   credential is out of scope.
 - The console has no login. It is loopback-only with one operator, reached
   through whatever VPN or proxy already fronts the homelab — a password form in

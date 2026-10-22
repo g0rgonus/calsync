@@ -19,7 +19,6 @@ from test_inbound import Client as ApiClient
 from test_web import Client as ConsoleClient, _PushReply
 
 NOW = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc)
-PASSWORD = "correct horse battery staple"
 TEAM_KEY = "csk_test-key-for-the-herons-team-00000000"
 READ_KEY = "csk_test-household-read-key-0000000000000"
 ADMIN_KEY = "csk_test-admin-key-for-a-tool-000000000000"
@@ -69,15 +68,8 @@ def env(tmp_path):
             "clock": clock, "sent": sent}
 
 
-def set_password(console, new=PASSWORD, current=None):
-    data = {"new": new, "confirm": new}
-    if current is not None:
-        data["current"] = current
-    return console.post("/settings/admin-password", data)
-
-
-def revoke(env, password=PASSWORD, **extra):
-    return env["console"].post("/settings/kill-switch", {"password": password, **extra})
+def revoke(env, confirm="yes", **extra):
+    return env["console"].post("/settings/kill-switch", {"confirm": confirm, **extra})
 
 
 def working_keys(env) -> int:
@@ -88,10 +80,8 @@ def working_keys(env) -> int:
 
 
 def test_revoking_every_key_and_each_service_says_so(env):
-    assert set_password(env["console"])["status"] == 303
-    page = env["console"].get("/settings/kill-switch")
-    assert page["status"] == 200 and "Grok Bot" in page["body"]
-    assert revoke(env)["status"] == 303
+    assert "Revoke every key" in env["console"].get("/settings")["body"]
+    assert revoke(env, " Yes ")["status"] == 303
     assert working_keys(env) == 0
 
     team = env["inbound"].get("/inbound/v1/sources/in-herons", key=TEAM_KEY)
@@ -115,45 +105,21 @@ def test_revoking_every_key_and_each_service_says_so(env):
 
 
 def test_a_new_key_works_after_the_revoke(env):
-    set_password(env["console"])
     revoke(env)
     page = env["console"].post("/sources/in-herons/inbound-key")["body"]
     fresh = re.search(r"csk_[A-Za-z0-9_-]{20,}", page).group(0)
     assert env["inbound"].get("/inbound/v1/sources/in-herons", key=fresh)["status"] == 200
 
 
-def test_a_wrong_password_revokes_nothing(env):
-    set_password(env["console"])
-    r = revoke(env, "wrong password")
-    assert r["status"] == 403 and "Nothing was revoked" in r["body"]
+@pytest.mark.parametrize("confirm", ["", "no", "y"])
+def test_anything_but_yes_revokes_nothing(env, confirm):
+    assert revoke(env, confirm)["status"] >= 400
     assert working_keys(env) == 3 and env["sent"] == []
 
 
-def test_no_password_no_kill_switch(env):
-    assert "Set an admin password" in env["console"].get("/settings/kill-switch")["body"]
-    assert revoke(env)["status"] == 409
-    assert working_keys(env) == 3
-
-
 def test_feed_teams_keep_syncing_unless_asked(env):
-    set_password(env["console"])
     revoke(env, pause_feeds="1")
     conn = db.connect(env["path"])
     enabled = {s.id: s.enabled for s in repo.list_sources(conn, enabled_only=False)}
     conn.close()
     assert enabled == {"in-herons": True, "tr-wrens": False}
-
-
-def test_changing_the_password_needs_the_current_one(env):
-    assert set_password(env["console"])["status"] == 303
-    assert set_password(env["console"], "a new long password")["status"] >= 400
-    assert set_password(env["console"], "a new long password",
-                        current="wrong")["status"] >= 400
-    assert set_password(env["console"], "a new long password",
-                        current=PASSWORD)["status"] == 303
-    assert set_password(env["console"], "short", current="a new long password")[
-        "status"] >= 400
-    conn = db.connect(env["path"])
-    stored = repo.setting_row(conn, repo.ADMIN_PASSWORD)
-    conn.close()
-    assert "a new long password" not in stored

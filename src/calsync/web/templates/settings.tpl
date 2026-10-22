@@ -462,30 +462,22 @@
   </form>
 </div>
 
-<h2 id="admin-password">Admin password</h2>
-% include('_saved.tpl', flash=flash, at=at, section='admin-password')
-<div class="card">
-  <p class="note" style="margin-top:0">
-    Asked for before every key is revoked at once. calsync keeps only a hash.
-  </p>
-  <form method="post" action="/settings/admin-password">
-% if password_set:
-    <input name="current" type="password" placeholder="Current password" autocomplete="current-password" required>
-% end
-    <input name="new" type="password" placeholder="New password, 12+ characters" autocomplete="new-password" required>
-    <input name="confirm" type="password" placeholder="New password again" autocomplete="new-password" required>
-    <button class="btn" type="submit">{{ 'Change password' if password_set else 'Set password' }}</button>
-  </form>
-</div>
-
 <h2 id="kill-switch">Emergency: revoke every key</h2>
 % include('_saved.tpl', flash=flash, at=at, section='kill-switch')
 <div class="card">
   <p class="note" style="margin-top:0">
-    For a suspected leak. Every key stops working at once, after the admin password.
-    Calendars and teams are not touched.
+    For a suspected leak. All {{ revocable }} keys stop working at once, and the read
+    API's <span class="raw">.env</span> token is blocked; each tool then needs a new
+    one. Calendars, teams and events are not touched.
   </p>
-  <a class="btn btn-quiet" href="/settings/kill-switch">Start</a>
+  <form method="post" action="/settings/kill-switch">
+% if feed_teams:
+    <p><label><input type="checkbox" name="pause_feeds" value="1"> Also pause the
+      {{ feed_teams }} feed {{ 'team' if feed_teams == 1 else 'teams' }}</label></p>
+% end
+    <input name="confirm" placeholder='Type "yes"' autocomplete="off" required>
+    <button class="btn" type="submit">Revoke every key</button>
+  </form>
 </div>
 
 <h2 id="matrix">Matrix</h2>

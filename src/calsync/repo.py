@@ -2249,7 +2249,6 @@ def set_home_venue(conn: sqlite3.Connection, activity_id: str, venue_id: int | N
 
 # --- the kill switch ------------------------------------------------------------
 
-ADMIN_PASSWORD = "admin_password_scrypt"
 KEYS_REVOKED_AT = "keys_revoked_at"
 READ_API_REVOKED = "read_api_revoked_sha256"
 

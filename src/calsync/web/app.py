@@ -25,7 +25,7 @@ from bottle import Bottle, redirect, request, response, static_file, template
 from .. import __version__
 from .. import config as config_mod
 from .. import (
-    db, dormancy, enrichment, matrix, notify, overlay as overlay_mod, password as password_mod,
+    db, dormancy, enrichment, matrix, notify, overlay as overlay_mod,
     repo, retire,
     sources, targeting,
     warmup, withheld as withheld_mod, zones,
@@ -833,7 +833,9 @@ def create_app(
             read_key_set=repo.read_key_hash(conn) is not None,
             read_key_used=repo.read_key_used_at(conn),
             admin_keys=[k for k in repo.api_keys(conn) if k.scope == "admin"],
-            password_set=repo.setting_row(conn, repo.ADMIN_PASSWORD) is not None,
+            revocable=len(repo.api_keys(conn)),
+            feed_teams=sum(1 for s_ in repo.list_sources(conn)
+                           if s_.kind not in sources.PUSHED),
             keys_revoked_at=repo.setting_row(conn, repo.KEYS_REVOKED_AT),
             revoked_together=repo.keys_revoked_together(
                 conn, repo.setting_row(conn, repo.KEYS_REVOKED_AT) or ""),
@@ -1640,46 +1642,11 @@ def create_app(
 
     # --- the kill switch ------------------------------------------------------
 
-    @app.post("/settings/admin-password")
-    def set_admin_password():
-        new, confirm = _field("new"), _field("confirm")
-        with connect() as conn:
-            stored = repo.setting_row(conn, repo.ADMIN_PASSWORD)
-            if stored and not password_mod.check_password(_field("current"), stored):
-                raise Refused("the current password is not right")
-            if len(new) < password_mod.MIN_LENGTH:
-                raise Refused(f"use at least {password_mod.MIN_LENGTH} characters")
-            if new != confirm:
-                raise Refused("the two new passwords differ")
-            repo.put_setting_row(conn, repo.ADMIN_PASSWORD, password_mod.hash_password(new))
-            repo.log_admin(conn, "console", "admin_password_set")
-            conn.commit()
-        _saved("admin-password", "Admin password saved.")
-
-    def _kill_page(error: str | None = None, *, status: int = 200):
-        response.status = status
-        response.set_header("Cache-Control", "no-store")
-        with connect() as conn:
-            keys = repo.api_keys(conn)
-            feeds = [s_ for s_ in repo.list_sources(conn) if s_.kind not in sources.PUSHED]
-            password_set = repo.setting_row(conn, repo.ADMIN_PASSWORD) is not None
-        return render("kill_switch.tpl", error=error, keys=keys, feeds=feeds,
-                      password_set=password_set, flash=None)
-
-    @app.get("/settings/kill-switch")
-    def kill_switch_page():
-        return _kill_page()
-
     @app.post("/settings/kill-switch")
     def kill_switch():
-        """Revoke every key, once the admin password checks out."""
-        with connect() as conn:
-            stored = repo.setting_row(conn, repo.ADMIN_PASSWORD)
-        if stored is None:
-            return _kill_page("Set an admin password first, under Settings.", status=409)
-        if not password_mod.check_password(_field("password"), stored):
-            return _kill_page("That is not the admin password. Nothing was revoked.",
-                              status=403)
+        """Revoke every key, once "yes" is typed beside the button."""
+        if _field("confirm").strip().lower() != "yes":
+            raise Refused('type "yes" to revoke every key; nothing was revoked')
         _revoke_everything(clock(), pause_feeds=bool(_field("pause_feeds")))
         redirect("/settings#recovery")
 
@@ -2172,7 +2139,7 @@ def _q(value: str) -> str:
 #: the top of the page — which is the behaviour this exists to remove.
 SETTINGS_SECTIONS = (
     "calendar", "titles", "safety", "seasons", "notifications", "api", "read-key",
-    "admin-keys", "admin-password", "kill-switch", "matrix",
+    "admin-keys", "kill-switch", "matrix",
 )
 
 
