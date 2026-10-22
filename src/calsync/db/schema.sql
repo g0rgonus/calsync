@@ -390,3 +390,21 @@ CREATE TABLE IF NOT EXISTS idempotency_keys (
     created_at      TEXT NOT NULL,
     PRIMARY KEY (key_id, idem)
 );
+
+-- More kids on one team. `activities.child_id` stays the team's first kid;
+-- these are the rest, so one shared team writes one event for all of them.
+CREATE TABLE IF NOT EXISTS activity_children (
+    activity_id  TEXT NOT NULL REFERENCES activities(id) ON DELETE CASCADE,
+    child_id     TEXT NOT NULL REFERENCES children(id) ON DELETE CASCADE,
+    PRIMARY KEY (activity_id, child_id)
+);
+
+-- One kid not going to one event of a shared team. The event comes off the
+-- calendar only when every kid on it is absent.
+CREATE TABLE IF NOT EXISTS event_absences (
+    uid       TEXT NOT NULL REFERENCES event_state(uid) ON DELETE CASCADE,
+    child_id  TEXT NOT NULL REFERENCES children(id) ON DELETE CASCADE,
+    actor     TEXT,
+    set_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (uid, child_id)
+);

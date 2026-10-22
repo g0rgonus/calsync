@@ -152,11 +152,6 @@ def test_every_problem_is_listed_with_the_choices(client):
     assert errors["calendar"]["code"] == "unknown_field"
 
 
-def test_one_kid_per_team_for_now(client):
-    r = create(client, {**contract.NEW_TEAM, "children": ["nadia", "jesse"]})
-    assert r["json"]["error"]["errors"][0]["code"] == "one_child_only"
-
-
 def test_a_new_team_takes_the_kids_last_season_in_that_sport(client):
     r = create(client, {"name": "Otters", "children": ["jesse"], "sport": "swimming"})
     assert r["json"]["tz"] == "America/Chicago"

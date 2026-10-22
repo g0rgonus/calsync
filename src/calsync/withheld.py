@@ -65,6 +65,17 @@ class WithholdReport:
         return not self.errors
 
 
+def off_uids(conn, source_id: str, states: dict) -> set[str]:
+    """Events nobody is going to: withheld, or every kid on a shared team absent."""
+    off = {uid for uid, state in states.items() if state.withheld}
+    away = repo.absences(conn, source_id)
+    if away:
+        activity = repo.get_activity(conn, repo.get_source(conn, source_id).activity_id)
+        kids = {c.id for c in repo.team_children(conn, activity)}
+        off |= {uid for uid, gone in away.items() if kids <= gone}
+    return off
+
+
 def is_withheld(uid: str, withheld: set[str]) -> bool:
     """Is this uid off the calendar by somebody's decision?
 
@@ -93,7 +104,7 @@ def enforce(conn, source_id: str, target) -> WithholdReport:
     """
     report = WithholdReport()
     states = repo.event_states(conn, source_id)
-    withheld = {uid for uid, state in states.items() if state.withheld}
+    withheld = off_uids(conn, source_id, states)
 
     for uid, state in states.items():
         if not is_withheld(uid, withheld):

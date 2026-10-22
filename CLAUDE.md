@@ -416,6 +416,13 @@ fixtures on disk — preserve that separation.
 
 Decisions that span several files and are easy to undo by accident:
 
+- **Kids can share a team** (`activity_children`), and `event_state.kids` records
+  who each write was for. A different set now (one kid absent from one event in
+  `event_absences`, or a kid added) is a rewrite; nobody left is the same as
+  withheld (`withheld.off_uids`). Merging adds a kid and can retire their own
+  copy; splitting a pushed team clones its source and pushed events for the kid
+  (`repo.clone_team`), while a feed stays with its team because feed uids are
+  global.
 - **The title is a render, not data.** `Event` deliberately has no `summary`
   field; the display title is composed at write time from a configurable template
   (`normalize/title.py`). Nothing downstream parses it back, so conventions can

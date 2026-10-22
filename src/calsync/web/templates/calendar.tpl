@@ -91,8 +91,20 @@
         no venue given
 % end
         · <a href="/sources/{{ entry['source_id'] }}">{{ entry['activity'].name }}</a>
-        · {{ entry['child'].name }}
+        · {{ '+'.join(k.name for k in entry['kids']) }}
       </p>
+% for kid in entry['away']:
+      <p class="note"><span class="tag tag-off">{{ kid.name }} not going</span>
+% if entry['upcoming']:
+      <form method="post" action="/events/restore" class="inline">
+        <input type="hidden" name="uid" value="{{ entry['uid'] }}">
+        <input type="hidden" name="child" value="{{ kid.id }}">
+        <input type="hidden" name="back" value="{{ back }}">
+        <button class="btn btn-quiet" type="submit">{{ kid.name }} is going</button>
+      </form>
+% end
+      </p>
+% end
 % if entry['withheld']:
       <p class="note"><span class="tag tag-off">{{ reasons[entry['withheld']] }}</span>
          Off the calendar for everyone, and it stays off — the feed still
@@ -129,6 +141,17 @@
       <div class="row-actions">
 % if entry.get('fix_url'):
         <a class="btn btn-quiet" href="{{ entry['fix_url'] }}">Fix details</a>
+% end
+% if len(entry['team_kids']) > 1:
+% for kid in entry['kids']:
+        <form method="post" action="/events/withhold" class="inline">
+          <input type="hidden" name="uid" value="{{ entry['uid'] }}">
+          <input type="hidden" name="reason" value="not_attending">
+          <input type="hidden" name="child" value="{{ kid.id }}">
+          <input type="hidden" name="back" value="{{ back }}">
+          <button class="btn btn-quiet" type="submit">{{ kid.name }} not attending</button>
+        </form>
+% end
 % end
 % for reason, label in reasons.items():
         <form method="post" action="/events/withhold" class="inline">

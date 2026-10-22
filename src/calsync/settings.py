@@ -75,7 +75,17 @@ class Settings:
         )
 
 
+def check_setting(conn: sqlite3.Connection, key: str, value: str) -> None:
+    """Raise ValueError for a value the current configuration cannot take."""
+    # A shared event is written once, so it cannot go on a calendar per kid.
+    if key == "collection_template" and "{child}" in str(value) and conn.execute(
+            "SELECT 1 FROM activity_children LIMIT 1").fetchone():
+        raise ValueError("a team is shared by more than one kid, and a shared event "
+                         "cannot go on a calendar per kid; split it first")
+
+
 def set_setting(conn: sqlite3.Connection, key: str, value: str) -> None:
+    check_setting(conn, key, value)
     conn.execute(
         "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now')) "
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",

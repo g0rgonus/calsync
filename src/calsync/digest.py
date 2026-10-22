@@ -157,11 +157,9 @@ def collect(conn, *, now: datetime, hours: int = 24) -> Digest:
             continue
         if item.activity_id not in activities:
             activity = repo.get_activity(conn, item.activity_id)
-            activities[item.activity_id] = (
-                activity,
-                [repo.get_child(conn, activity.child_id)],
-            )
-        activity, children = activities[item.activity_id]
+            activities[item.activity_id] = activity
+        activity = activities[item.activity_id]
+        children = [repo.get_child(conn, k) for k in item.kids]
         entries.append(
             Entry(
                 starts_at=item.event.starts_at,

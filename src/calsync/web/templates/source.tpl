@@ -296,6 +296,46 @@
   </form>
 </div>
 
+<h2 id="kids">Kids on this team</h2>
+<div class="card">
+  <p class="note" style="margin-top:0">
+% if len(team_kids) > 1:
+    Shared by {{ ', '.join(k.name for k in team_kids) }}: each event is written once,
+    titled for every kid going.
+% else:
+    {{ team_kids[0].name }}. Add a kid who is on the same team, so its events are
+    written once for both.
+% end
+  </p>
+% if len(team_kids) > 1:
+% for k in team_kids:
+  <form method="post" action="/sources/{{ source.id }}/kids/split" class="btn-row">
+    <input type="hidden" name="child" value="{{ k.id }}">
+    <button class="btn btn-quiet" type="submit">Take {{ k.name }} off this team</button>
+  </form>
+% end
+% end
+% others = [c for c in all_kids if c.id not in {k.id for k in team_kids}]
+% if others:
+  <form method="post" action="/sources/{{ source.id }}/kids">
+    <select name="child">
+% for c in others:
+      <option value="{{ c.id }}">{{ c.name }}</option>
+% end
+    </select>
+    <select name="retire">
+      <option value="">and keep their other teams</option>
+% for sid, act, kid in own_copies:
+% if kid.id in {c.id for c in others}:
+      <option value="{{ sid }}">and retire {{ kid.name }}'s {{ act.name }} ({{ sid }})</option>
+% end
+% end
+    </select>
+    <button class="btn" type="submit">Add to this team</button>
+  </form>
+% end
+</div>
+
 <h2>The source</h2>
 <div class="card">
   <table class="derived">

@@ -190,6 +190,8 @@ class EventState:
     shown_starts_at: str = ""
     #: The overrides the last accepted write carried (`overlay.Overlay`).
     applied_overlay: dict | None = None
+    #: The kids that write was for, or None for a team's only kid.
+    kids: tuple[str, ...] | None = None
 
 
 def event_states(conn: sqlite3.Connection, source_id: str) -> dict[str, EventState]:
@@ -217,6 +219,7 @@ def _event_state(row: sqlite3.Row) -> EventState:
         withheld=row["withheld"],
         shown_starts_at=row["shown_starts_at"] or row["starts_at"],
         applied_overlay=_overlay(row["applied_overlay"]),
+        kids=tuple(row["kids"].split(",")) if row["kids"] else None,
     )
 
 
@@ -250,6 +253,7 @@ def record_event_state(
     starts_at: str,
     shown_starts_at: str | None = None,
     applied_overlay: dict | None = None,
+    kids: tuple[str, ...] | None = None,
 ) -> None:
     """Record a successful write. Call this only *after* the target accepted it.
 
@@ -274,8 +278,8 @@ def record_event_state(
         """
         INSERT INTO event_state
             (uid, source_id, collection, remote_id, content_hash, remote_etag,
-             starts_at, shown_starts_at, applied_overlay, cancelled, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'))
+             starts_at, shown_starts_at, applied_overlay, kids, cancelled, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'))
         ON CONFLICT(uid) DO UPDATE SET
             source_id    = excluded.source_id,
             collection   = excluded.collection,
@@ -285,13 +289,15 @@ def record_event_state(
             starts_at    = excluded.starts_at,
             shown_starts_at = excluded.shown_starts_at,
             applied_overlay = excluded.applied_overlay,
+            kids         = excluded.kids,
             cancelled    = 0,
             updated_at   = excluded.updated_at,
             removal_approved_at  = NULL,
             cancelled_upstream_at = NULL
         """,
         (uid, source_id, collection, remote_id, content_hash, remote_etag,
-         starts_at, shown_starts_at or starts_at, _dumps(applied_overlay)),
+         starts_at, shown_starts_at or starts_at, _dumps(applied_overlay),
+         ",".join(kids) if kids else None),
     )
 
 
@@ -1019,13 +1025,15 @@ class StoredEvent:
     #: The same event as its source alone said it, before any override — what
     #: a page offering to correct it has to show beside the correction.
     source_event: Event | None = None
+    #: The kids this write was for, in birth order.
+    kids: tuple[str, ...] = ()
 
 
 _STORED_SQL = f"""
     SELECT s.uid, s.source_id, s.collection, s.cancelled, s.withheld, s.starts_at,
            s.shown_starts_at, s.applied_overlay, s.content_hash, c.observed_at,
            {', '.join('c.' + col for col in CONTENT_COLUMNS)},
-           src.activity_id, a.child_id
+           src.activity_id, a.child_id, s.kids
       FROM event_state s
       JOIN event_content c ON c.uid = s.uid
       JOIN sources src ON src.id = s.source_id
@@ -1082,6 +1090,7 @@ def _stored_event(row: sqlite3.Row) -> StoredEvent:
         observed_at=row["observed_at"],
         overrides=applied,
         source_event=source,
+        kids=tuple(row["kids"].split(",")) if row["kids"] else (row["child_id"],),
     )
 
 
@@ -1109,8 +1118,10 @@ def stored_events(
     sql = _STORED_SQL + " WHERE s.shown_starts_at >= ? AND s.shown_starts_at <= ?"
     params: list = [start, end]
     if child_id:
-        sql += " AND a.child_id = ?"
-        params.append(child_id)
+        # Any kid the event is for, on a shared team too.
+        sql += (" AND (CASE WHEN s.kids IS NULL THEN a.child_id = ? "
+                "ELSE instr(',' || s.kids || ',', ',' || ? || ',') > 0 END)")
+        params += [child_id, child_id]
     if activity_id:
         sql += " AND src.activity_id = ?"
         params.append(activity_id)
@@ -2221,8 +2232,9 @@ def team_named(conn: sqlite3.Connection, child_id: str, name: str) -> str | None
     """The source of this kid's team with this name, ignoring case, if any."""
     row = conn.execute(
         "SELECT s.id FROM activities a JOIN sources s ON s.activity_id = a.id "
-        "WHERE a.child_id = ? AND lower(a.name) = lower(?) ORDER BY s.id LIMIT 1",
-        (child_id, name.strip())).fetchone()
+        "WHERE (a.child_id = ? OR a.id IN (SELECT activity_id FROM activity_children "
+        "WHERE child_id = ?)) AND lower(a.name) = lower(?) ORDER BY s.id LIMIT 1",
+        (child_id, child_id, name.strip())).fetchone()
     return row["id"] if row else None
 
 
@@ -2289,3 +2301,95 @@ def revoked_key(conn: sqlite3.Connection, digest: str) -> ApiKey | None:
 def keys_revoked_together(conn: sqlite3.Connection, at: str) -> list[ApiKey]:
     return [_key(r) for r in conn.execute(
         "SELECT * FROM api_keys WHERE revoked_at = ? ORDER BY scope, label", (at,))]
+
+
+# --- shared teams ---------------------------------------------------------------
+
+
+def team_children(conn: sqlite3.Connection, activity: Activity) -> list[Child]:
+    """Every kid on a team, in birth order: its first kid and any it shares with."""
+    ids = [activity.child_id] + [r["child_id"] for r in conn.execute(
+        "SELECT child_id FROM activity_children WHERE activity_id = ?", (activity.id,))]
+    return sorted((get_child(conn, i) for i in dict.fromkeys(ids)),
+                  key=lambda c: (c.birth_order, c.name))
+
+
+def add_team_child(conn: sqlite3.Connection, activity_id: str, child_id: str) -> None:
+    conn.execute("INSERT OR IGNORE INTO activity_children (activity_id, child_id) "
+                 "VALUES (?, ?)", (activity_id, child_id))
+
+
+def remove_team_child(conn: sqlite3.Connection, activity: Activity, child_id: str) -> None:
+    """Take a kid off a shared team. If it was the first kid, the next becomes first."""
+    conn.execute("DELETE FROM activity_children WHERE activity_id = ? AND child_id = ?",
+                 (activity.id, child_id))
+    if activity.child_id == child_id:
+        nxt = conn.execute("SELECT child_id FROM activity_children WHERE activity_id = ? "
+                           "ORDER BY child_id LIMIT 1", (activity.id,)).fetchone()
+        if nxt is None:
+            raise ValueError("a team needs at least one kid")
+        conn.execute("UPDATE activities SET child_id = ? WHERE id = ?",
+                     (nxt["child_id"], activity.id))
+        conn.execute("DELETE FROM activity_children WHERE activity_id = ? AND child_id = ?",
+                     (activity.id, nxt["child_id"]))
+    conn.execute("DELETE FROM event_absences WHERE child_id = ? AND uid IN "
+                 "(SELECT uid FROM event_state es JOIN sources s ON s.id = es.source_id "
+                 "WHERE s.activity_id = ?)", (child_id, activity.id))
+
+
+def absences(conn: sqlite3.Connection, source_id: str) -> dict[str, set[str]]:
+    """Which kids are not going to which of this team's events."""
+    out: dict[str, set[str]] = {}
+    for r in conn.execute(
+            "SELECT a.uid, a.child_id FROM event_absences a JOIN event_state es "
+            "ON es.uid = a.uid WHERE es.source_id = ?", (source_id,)):
+        out.setdefault(r["uid"], set()).add(r["child_id"])
+    return out
+
+
+def set_absence(conn: sqlite3.Connection, uid: str, child_id: str, absent: bool, *,
+                actor: str = "console") -> None:
+    if absent:
+        conn.execute("INSERT OR IGNORE INTO event_absences (uid, child_id, actor) "
+                     "VALUES (?, ?, ?)", (uid, child_id, actor))
+    else:
+        conn.execute("DELETE FROM event_absences WHERE uid = ? AND child_id = ?",
+                     (uid, child_id))
+
+
+def _copy_row(conn: sqlite3.Connection, table: str, key: str, value: str,
+              changes: dict) -> None:
+    cols = [r["name"] for r in conn.execute(f"PRAGMA table_info({table})")]
+    picks = ", ".join("?" if c in changes else c for c in cols)
+    conn.execute(f"INSERT INTO {table} ({', '.join(cols)}) SELECT {picks} FROM {table} "
+                 f"WHERE {key} = ?", [changes[c] for c in cols if c in changes] + [value])
+
+
+def clone_team(conn: sqlite3.Connection, *, activity_id: str, source_id: str,
+               child_id: str, new_activity_id: str, new_source_id: str) -> None:
+    """A copy of a pushed team for one kid: its settings and every event sent.
+
+    Inbound uids carry the source id, so the copy's events never collide with
+    the original's. Not committed.
+    """
+    _copy_row(conn, "activities", "id", activity_id,
+              {"id": new_activity_id, "child_id": child_id})
+    conn.execute("INSERT INTO activity_aliases (activity_id, alias, source) "
+                 "SELECT ?, alias, source FROM activity_aliases WHERE activity_id = ?",
+                 (new_activity_id, activity_id))
+    blank = {c: None for c in ("last_success_at", "last_error",
+                               "last_error_at", "inbound_key_sha256", "inbound_key_used_at")}
+    _copy_row(conn, "sources", "id", source_id,
+              {"id": new_source_id, "activity_id": new_activity_id, **blank})
+    conn.execute("INSERT INTO inbound_events (source_id, external_id, state, cancelled, etag, "
+                 "created_at, updated_at) SELECT ?, external_id, state, cancelled, etag, "
+                 "created_at, updated_at FROM inbound_events WHERE source_id = ?",
+                 (new_source_id, source_id))
+    # The copy's uids are the original's under the new source id. Withholding
+    # them before the first sync keeps this kid's absences off their calendar.
+    conn.execute("INSERT INTO event_state (uid, source_id, collection, content_hash, "
+                 "starts_at, cancelled, withheld) SELECT ? || substr(es.uid, ?), ?, "
+                 "es.collection, es.content_hash, es.starts_at, 1, 'not_attending' "
+                 "FROM event_state es JOIN event_absences a ON a.uid = es.uid "
+                 "WHERE es.source_id = ? AND a.child_id = ?",
+                 (new_source_id, len(source_id) + 1, new_source_id, source_id, child_id))

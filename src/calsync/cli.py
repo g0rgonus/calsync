@@ -613,7 +613,11 @@ def cmd_set(args) -> int:
         print(f"error: no setting called {args.key!r}", file=sys.stderr)
         print("known: " + ", ".join(sorted(db.DEFAULT_SETTINGS)), file=sys.stderr)
         return 2
-    set_setting(conn, args.key, args.value)
+    try:
+        set_setting(conn, args.key, args.value)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     print(f"{args.key} = {args.value}")
     return 0
 

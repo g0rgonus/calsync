@@ -718,7 +718,7 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
             "source_id": source.id,
             "activity_id": activity.id,
             "name": activity.name,
-            "children": [activity.child_id],
+            "children": [c.id for c in repo.team_children(conn, activity)],
             "sport": activity.sport,
             "tz": activity.tz,
             "kind": source.kind,
@@ -769,7 +769,12 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
                 raise Problem(422, "invalid", "the team was not created",
                               errors=exc.errors) from None
             child_id = fields["children"][0]
-            existing = repo.team_named(conn, child_id, fields["name"])
+            if len(fields["children"]) > 1 and \
+                    "{child}" in Settings.load(conn).collection_template:
+                raise Problem(422, "per_kid_calendars", "calendars are split by kid, so a "
+                              "shared team is not available here")
+            existing = next(filter(None, (repo.team_named(conn, c, fields["name"])
+                                          for c in fields["children"])), None)
             if existing:
                 raise Problem(409, "already_exists",
                               "this kid already has a team with that name",
@@ -790,6 +795,8 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
                     "alarm_practice_min", previous.alarm_practice_min if previous else 30),
             )
             created = onboarding.create(conn, draft, secrets=secrets, actor=caller.label)
+            for other in fields["children"][1:]:
+                repo.add_team_child(conn, created.activity_id, other)
             team = team_body(conn, repo.get_source(conn, created.source_id))
             repo.log_admin(conn, caller.label, "team_created", f"team:{created.source_id}")
             repo.save_idempotent(conn, caller.id, idem, request_sha256=digest,
@@ -999,6 +1006,10 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
             if state is None:
                 raise Problem(404, "no_such_event",
                               "calsync has not written an event with that uid")
+            child = change.get("child")
+            if child is not None:
+                return set_kid_absent(conn, caller, state, child, status is not None,
+                                      change.get("note"))
             if status is None and not state.withheld:
                 return _dump({"uid": uid, "status": None, "on_calendar": not state.cancelled,
                               "detail": "it was not marked"})
@@ -1035,6 +1046,53 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
                           "saved; removing it failed, so a later sync retries"}
         audit(state.source_id, "POST admin/events/status", uid, str(status))
         return _dump({"uid": uid, "status": status, "on_calendar": not off, **result})
+
+    def set_kid_absent(conn, caller, state, child_id: str, absent: bool, note):
+        """One kid of a shared team not going to one event, or going again.
+
+        The title drops or regains the kid at once; the event comes off only
+        when nobody is left, through the same `withheld.enforce`.
+        """
+        source = repo.get_source(conn, state.source_id)
+        activity = repo.get_activity(conn, source.activity_id)
+        kids = {c.id: c for c in repo.team_children(conn, activity)}
+        if child_id not in kids:
+            raise Problem(422, "invalid", "nothing was changed",
+                          errors=[{"field": "child", "code": "not_on_team",
+                                   "detail": "that kid is not on this event's team",
+                                   "candidates": sorted(kids)}])
+        if absent and not retire.upcoming(state.shown_starts_at, clock()):
+            raise Problem(409, "already_started",
+                          "that event has started; taking it off would remove the "
+                          "record of something that happened")
+        was = child_id in repo.absences(conn, source.id).get(state.uid, set())
+        if was != absent:
+            repo.set_absence(conn, state.uid, child_id, absent, actor=caller.label)
+            repo.log_admin(conn, caller.label, "kid_absent" if absent else "kid_back",
+                           f"event:{state.uid}", {"child": child_id, "note": note})
+            conn.commit()
+            try:
+                target = write_target or targeting.build_target(conn, secrets=secrets)
+                withheld_mod.enforce(conn, source.id, target)
+                conn.commit()
+            except (SecretError, TargetError):
+                pass
+            result = sync(source) if source.enabled else {"status": "deferred"}
+            when = (datetime.fromisoformat(state.shown_starts_at)
+                    .astimezone(ZoneInfo(activity.tz)).strftime("%a %-d %b %H:%M"))
+            name = kids[child_id].name
+            alert(conn, f"{caller.label} marked {name} "
+                        + ("not attending " if absent else "going to ")
+                        + f"{activity.name} on {when}" + (f": {note}" if note else "") + ".")
+        else:
+            result = None
+        away = repo.absences(conn, source.id).get(state.uid, set())
+        fresh = repo.event_state(conn, state.uid)
+        return _dump({"uid": state.uid, "child": child_id,
+                      "status": "not_attending" if absent else None,
+                      "going": [k for k in kids if k not in away],
+                      "on_calendar": not fresh.cancelled,
+                      **({"sync": result} if result else {"detail": "no change"})})
 
     def alert(conn, message: str) -> None:
         """Push an admin change that can affect a live calendar.

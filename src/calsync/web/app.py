@@ -42,10 +42,11 @@ from ..onboarding import (
     analyse_url,
     clone_forward,
     create as create_source,
+    propose_ids,
 )
 from ..routing import slugify
 from ..secrets import SecretError, SecretStore
-from ..settings import Settings, set_setting
+from ..settings import Settings, check_setting, set_setting
 from ..targets import TargetError
 from ..sync import NoTarget as _NoTarget, sync_source
 from . import fix as fix_mod
@@ -435,6 +436,13 @@ def create_app(
                 last_push=repo.last_push(conn, source_id),
                 key_used=repo.inbound_key_used_at(conn, source_id),
                 pushed_items=len(repo.inbound_items(conn, source_id)),
+                team_kids=repo.team_children(conn, activity),
+                all_kids=repo.list_children(conn),
+                # Only a kid's own copy can be retired by adding them here.
+                own_copies=[(s_.id, a_, repo.get_child(conn, a_.child_id))
+                            for s_ in repo.list_sources(conn) if s_.id != source_id
+                            for a_ in [repo.get_activity(conn, s_.activity_id)]
+                            if len(repo.team_children(conn, a_)) == 1],
                 held=_held_rows(
                     conn, source_id, report, zone=_zone(activity.tz), now=clock(),
                 ),
@@ -535,6 +543,88 @@ def create_app(
                 )
                 message = f"Added {name}."
         redirect(f"/sources/{source_id}?ok=" + _q(message))
+
+    # --- kids sharing a team ----------------------------------------------------
+
+    @app.post("/sources/<source_id>/kids")
+    def add_kid(source_id):
+        """Put another kid on this team, optionally retiring their own copy of it."""
+        child_id, retire_id = _field("child"), _field("retire").strip()
+        with connect() as conn:
+            source = _require_source(conn, source_id)
+            activity = repo.get_activity(conn, source.activity_id)
+            if "{child}" in Settings.load(conn).collection_template:
+                raise Refused("calendars are split by kid, so a shared event would need "
+                              "a copy on each kid's calendar, which is not built")
+            if child_id not in {c.id for c in repo.list_children(conn)}:
+                raise Refused("pick a kid")
+            if child_id in {c.id for c in repo.team_children(conn, activity)}:
+                raise Refused("that kid is already on this team")
+            other = _require_source(conn, retire_id) if retire_id else None
+            if other and other.id == source_id:
+                raise Refused("that is this team")
+            if other and [c.id for c in repo.team_children(
+                    conn, repo.get_activity(conn, other.activity_id))] != [child_id]:
+                raise Refused("only a team that kid is on alone can be retired here")
+            repo.add_team_child(conn, activity.id, child_id)
+            repo.log_admin(conn, "console", "team_kid_added", f"team:{source_id}",
+                           {"child": child_id})
+            conn.commit()
+            note = ""
+            if other:
+                try:
+                    target = write_target or targeting.build_target(conn, secrets=secrets)
+                    report = retire.retire_source(conn, other, target, now=clock())
+                except (SecretError, TargetError) as exc:
+                    raise Refused(f"the kid is added, but the other team could not be "
+                                  f"retired: {exc}") from exc
+                # A partial retire leaves events only that team's sync can remove.
+                if report.ok:
+                    repo.revoke_team_key(conn, other.id, actor="console")
+                    repo.log_admin(conn, "console", "team_retired", f"team:{other.id}",
+                                   {"merged_into": source_id})
+                conn.commit()
+                note = (f" {other.id} retired: {report.line()}." if report.ok else
+                        f" {other.id} is only partly retired and keeps its key: "
+                        f"{report.line()}.")
+        _, problems = _sync_now([source_id])
+        if other and not report.ok:
+            problems = [f"Added to the team.{note}"] + problems
+        redirect(f"/sources/{source_id}?" + ("err=" if problems else "ok=") + _q(
+            problems[0] if problems else f"Added to the team.{note}"))
+
+    @app.post("/sources/<source_id>/kids/split")
+    def split_kid(source_id):
+        """Take a kid off a shared team. A pushed team's events go with them."""
+        child_id = _field("child")
+        with connect() as conn:
+            source = _require_source(conn, source_id)
+            activity = repo.get_activity(conn, source.activity_id)
+            kids = {c.id for c in repo.team_children(conn, activity)}
+            if child_id not in kids or len(kids) < 2:
+                raise Refused("that kid is not sharing this team")
+            key = new_source_id = None
+            if source.kind in sources.PUSHED:
+                new_activity_id, new_source_id = propose_ids(
+                    conn, child_id=child_id, sport=activity.sport,
+                    team_name=activity.name, kind=source.kind)
+                repo.clone_team(conn, activity_id=activity.id, source_id=source_id,
+                                child_id=child_id, new_activity_id=new_activity_id,
+                                new_source_id=new_source_id)
+                key = inbound_events.new_key()
+                repo.set_inbound_key_hash(conn, new_source_id, inbound_events.hash_key(key))
+                repo.log_admin(conn, "console", "team_split", f"team:{source_id}",
+                               {"child": child_id, "new_team": new_source_id})
+            repo.remove_team_child(conn, activity, child_id)
+            repo.log_admin(conn, "console", "team_kid_removed", f"team:{source_id}",
+                           {"child": child_id})
+            conn.commit()
+        _sync_now([source_id] + ([new_source_id] if new_source_id else []))
+        if key:
+            with connect() as conn:
+                return _key_page(conn, new_source_id, key, fresh=True)
+        redirect(f"/sources/{source_id}?ok=" + _q(
+            "Taken off the team. A feed belongs to one team, so its events stay here."))
 
     @app.post("/sources/<source_id>/promote")
     def promote(source_id):
@@ -939,10 +1029,10 @@ def create_app(
                     continue
                 if item.activity_id not in seen:
                     activity = repo.get_activity(conn, item.activity_id)
-                    seen[item.activity_id] = (
-                        activity, [repo.get_child(conn, activity.child_id)]
-                    )
-                activity, kids = seen[item.activity_id]
+                    seen[item.activity_id] = activity
+                activity = seen[item.activity_id]
+                kids = [repo.get_child(conn, k) for k in item.kids]
+                team = repo.team_children(conn, activity)
                 if activity.child_id not in colours:
                     colours[activity.child_id] = len(colours) % _COLOURS
                 # In the venue's timezone, not the browser's and not the
@@ -956,6 +1046,9 @@ def create_app(
                     "title": title_norm.render(item.event, activity, kids, settings),
                     "activity": activity,
                     "child": kids[0],
+                    "kids": kids,
+                    "team_kids": team,
+                    "away": [c for c in team if c.id not in item.kids],
                     "colour": colours[activity.child_id],
                     "venue": item.event.venue,
                     "source_id": item.source_id,
@@ -1030,6 +1123,34 @@ def create_app(
             back = default
         return back + ("&" if "?" in back else "?")
 
+    def _kid_absence(uid: str, child_id: str, *, absent: bool):
+        """One kid of a shared team out of, or back in, one event, then sync it."""
+        with connect() as conn:
+            state = repo.event_state(conn, uid)
+            if state is None:
+                raise Refused("calsync has no record of writing that event")
+            source = _require_source(conn, state.source_id)
+            activity = repo.get_activity(conn, source.activity_id)
+            if child_id not in {c.id for c in repo.team_children(conn, activity)}:
+                raise Refused("that kid is not on this event's team")
+            if absent and not retire.upcoming(state.shown_starts_at, clock()):
+                raise Refused("that event has already started")
+            name = repo.get_child(conn, child_id).name
+            repo.set_absence(conn, uid, child_id, absent)
+            repo.log_admin(conn, "console", "kid_absent" if absent else "kid_back",
+                           f"event:{uid}", {"child": child_id})
+            conn.commit()
+            try:
+                target = write_target or targeting.build_target(conn, secrets=secrets)
+                withheld_mod.enforce(conn, source.id, target)
+                conn.commit()
+            except (SecretError, TargetError):
+                pass
+        _, problems = _sync_now([source.id]) if source.enabled else ([], [])
+        redirect(_back_to("/calendar") + ("err=" if problems else "ok=") + _q(
+            problems[0] if problems else
+            f"{name} {'is not going' if absent else 'is going again'}."))
+
     @app.post("/events/withhold")
     def withhold_event():
         """Take one event off the calendar and keep it off.
@@ -1054,6 +1175,10 @@ def create_app(
             raise Refused(
                 f"{reason!r} is not a reason to take an event off the calendar"
             )
+        if _field("child"):
+            if reason != "not_attending":
+                raise Refused("a cancellation is for everyone")
+            return _kid_absence(uid, _field("child"), absent=True)
 
         with connect() as conn:
             state = repo.event_state(conn, uid)
@@ -1104,6 +1229,8 @@ def create_app(
         never going to be (`withheld.py`).
         """
         uid = _field("uid")
+        if _field("child"):
+            return _kid_absence(uid, _field("child"), absent=False)
         with connect() as conn:
             state = repo.event_state(conn, uid)
             if state is None:
@@ -1517,6 +1644,11 @@ def create_app(
     @app.post("/settings/calendar")
     def save_calendar_settings():
         with connect() as conn:
+            # Checked before the loop, so a refusal saves nothing.
+            try:
+                check_setting(conn, "collection_template", _field("collection_template"))
+            except ValueError as exc:
+                raise Refused(str(exc)) from exc
             for key in ("target_kind",
                         "radicale_url", "radicale_user", "radicale_secret_ref",
                         "collection_template", "collection_game_label",
