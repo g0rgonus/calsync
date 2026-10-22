@@ -378,10 +378,17 @@ ROUTES: tuple[Route, ...] = (
           example={"alias": "Main pool"},
           responses={200: ("The venue", "Venue"), 404: ("No such venue", _E),
                      409: ("alias_taken", _E)}),
+    Route("DELETE", PREFIX + "/admin/venues/{venue_id}/aliases", "removeVenueAlias",
+          "Undo an alias.", "Admin key only. Removing one the venue does not have is "
+          "harmless; the venue's own name is 409 own_name (rename it in the console).",
+          params=("venue_id",), body="Alias", example={"alias": "Main pool"},
+          responses={200: ("The venue", "Venue"), 404: ("No such venue", _E),
+                     409: ("own_name", _E)}),
     Route("PUT", PREFIX + "/admin/teams/{source_id}/home-venue", "setHomeVenue",
           "Set or clear a team's home ground.",
           "Admin key only. calsync uses it to mark games home or away; it does not "
-          "fill in locations. Send venue_id null to clear it.", params=("team_id",),
+          "fill in locations. Takes effect at the team's next poll. Send venue_id "
+          "null to clear it.", params=("team_id",),
           body="HomeVenue", example={"venue_id": 7},
           responses={200: ("The team's home venue", None), 404: ("No such team or venue", _E)}),
     Route("DELETE", PREFIX + "/admin/teams/{source_id}/key", "revokeTeamKey",
@@ -777,7 +784,10 @@ child; cancelling is a <code>DELETE</code>.</p></div>
 <h2>Admin: creating teams</h2>
 <div class=card>
 <p>The <code>/admin</code> calls take an <strong>admin key</strong>, made on the
-console's settings page; team keys and the read key are refused. A new team starts
+console's settings page; team keys and the read key are refused. Any change that can
+reach a live calendar (pausing or resuming a live team, making one live, hiding or
+putting back an event, adding a venue or an alias, a live team's home venue) sends the
+household a push, and each can be undone through the API. A new team starts
 staged, and its key is in the create response only. Review it, then make it live or
 discard it. Send an <code>Idempotency-Key</code>
 with every create: a retry with the same one returns the team with

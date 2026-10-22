@@ -139,14 +139,19 @@ def validate_venue(body) -> dict:
                                                    "characters"))
     aliases = body.get("aliases", [])
     if not isinstance(aliases, list) or not all(
-            isinstance(a, str) and a.strip() and len(a) <= MAX_VENUE_TEXT for a in aliases):
+            isinstance(a, str) and a.strip() and len(a.strip()) <= MAX_VENUE_TEXT
+            for a in aliases):
         errors.append(_err("aliases", "bad_aliases", "a list of names the feeds use"))
     if errors:
         raise Invalid(errors)
-    return {"name": body["name"].strip(),
+    name = body["name"].strip()
+    unique: dict[str, str] = {name.casefold(): name}
+    for a in aliases:
+        unique.setdefault(a.strip().casefold(), a.strip())
+    return {"name": name,
             "short_name": (body.get("short_name") or "").strip() or None,
             "address": (body.get("address") or "").strip() or None,
-            "aliases": sorted({a.strip() for a in aliases})}
+            "aliases": sorted(v for k, v in unique.items() if k != name.casefold())}
 
 
 def validate_alias(body) -> str:
@@ -154,7 +159,7 @@ def validate_alias(body) -> str:
         raise Invalid([_err("body", "not_an_object", "send a JSON object")])
     errors = [_err(n, "unknown_field", "only alias") for n in sorted(set(body) - {"alias"})]
     alias = body.get("alias")
-    if not isinstance(alias, str) or not alias.strip() or len(alias) > MAX_VENUE_TEXT:
+    if not isinstance(alias, str) or not alias.strip() or len(alias.strip()) > MAX_VENUE_TEXT:
         errors.append(_err("alias", "required", "the place as a feed or person wrote it"))
     if errors:
         raise Invalid(errors)
@@ -165,7 +170,8 @@ def validate_home(body) -> int | None:
     if not isinstance(body, dict) or "venue_id" not in body or set(body) - {"venue_id"}:
         raise Invalid([_err("venue_id", "required", "a venue id, or null for none")])
     value = body["venue_id"]
-    if value is not None and (not isinstance(value, int) or isinstance(value, bool)):
+    if value is not None and (not isinstance(value, int) or isinstance(value, bool)
+                              or not 0 < value < 2 ** 63):
         raise Invalid([_err("venue_id", "bad_id", "a venue id, or null for none")])
     return value
 

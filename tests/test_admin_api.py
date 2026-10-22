@@ -507,21 +507,28 @@ def test_the_calendar_refusal_names_both_keys_that_open_it(client):
     assert detail.startswith("send the household read key or an admin key")
 
 
-def test_hiding_an_event_through_the_api_sends_a_push(db_path, tmp_path):
+@pytest.fixture
+def pushing(db_path, tmp_path):
+    """A client whose household has Pushover set up, and the pushes it sent."""
     secrets_file = tmp_path / "push-secrets.json"
     secrets_file.write_text(json.dumps({"pushover_token": "t", "pushover_user": "u"}))
     secrets_file.chmod(0o600)
     sent = []
-    pushing = Client(inbound_app.create_app(
+    client = Client(inbound_app.create_app(
         db_path, secrets=SecretStore(path=secrets_file), clock=lambda: NOW,
         log=lambda line: None, write_target=build("ics_file", directory=tmp_path / "out"),
         notify_sender=lambda config, secrets, message, **kw: sent.append(message)),
         key=ADMIN_KEY)
-    uid = herons_events(pushing)[0]["uid"]
-    set_status(pushing, uid, "not_attending", note="School trip")
-    assert sent == ["Grok Bot marked Herons on Tue 20 Oct 17:45 not attending: School trip."]
-    set_status(pushing, uid, None)
-    assert len(sent) == 1                          # putting back is not news
+    return client, sent
+
+
+def test_hiding_and_putting_back_an_event_each_send_a_push(pushing):
+    client, sent = pushing
+    uid = herons_events(client)[0]["uid"]
+    set_status(client, uid, "not_attending", note="School trip")
+    set_status(client, uid, None)
+    assert sent == ["Grok Bot marked Herons on Tue 20 Oct 17:45 not attending: School trip.",
+                    "Grok Bot put back Herons on Tue 20 Oct 17:45."]
 
 
 # --- venues ---------------------------------------------------------------------------
@@ -581,7 +588,13 @@ def test_a_field_number_is_not_a_venue(client):
     assert error["code"] == "field_in_name" and error["suggestion"] == "Kingsmere"
 
 
-@pytest.mark.parametrize("path", ["/999/aliases", "/abc/aliases"])
+def wsgi(path: str) -> str:
+    """A path as a WSGI server hands it over: UTF-8 bytes, read as Latin-1."""
+    return path.encode().decode("latin-1")
+
+
+@pytest.mark.parametrize("path", ["/999/aliases", "/abc/aliases", wsgi("/²/aliases"),
+                                  wsgi("/١/aliases"), "/" + "9" * 30 + "/aliases"])
 def test_an_alias_for_no_venue_is_404(client, path):
     assert client.call("POST", VENUES + path, {"alias": "x"})["status"] == 404
 
@@ -589,7 +602,8 @@ def test_an_alias_for_no_venue_is_404(client, path):
 def test_a_teams_home_venue_is_set_and_cleared(client):
     wren = wrenfield(client)
     r = client.call("PUT", f"{TEAMS}/in-herons/home-venue", {"venue_id": wren["id"]})
-    assert r["json"] == {"source_id": "in-herons", "home_venue": "Wrenfield Aquatic Center"}
+    assert r["json"] == {"source_id": "in-herons", "home_venue_id": wren["id"],
+                         "home_venue": "Wrenfield Aquatic Center"}
     assert wrenfield(client)["home_to"] == ["Herons"]
     cleared = client.call("PUT", f"{TEAMS}/in-herons/home-venue", {"venue_id": None})
     assert cleared["json"]["home_venue"] is None
@@ -602,3 +616,56 @@ def test_a_teams_home_venue_is_set_and_cleared(client):
 def test_venues_need_an_admin_key(client):
     assert client.get(VENUES, key=TEAM_KEY)["status"] == 401
     assert client.call("POST", VENUES, contract.NEW_VENUE, key=TEAM_KEY)["status"] == 401
+
+
+@pytest.mark.parametrize("bad", [0, -1, 10 ** 30, "7", True])
+def test_a_home_venue_id_must_be_a_real_id(client, bad):
+    r = client.call("PUT", f"{TEAMS}/in-herons/home-venue", {"venue_id": bad})
+    assert r["status"] == 422
+
+
+def test_aliases_that_differ_only_in_case_are_one(client):
+    r = client.call("POST", VENUES, {"name": "Larkmoor Pool",
+                                     "aliases": ["Larkmoor", " larkmoor ", "LARKMOOR POOL"]})
+    assert r["json"]["aliases"] == ["Larkmoor", "Larkmoor Pool"]
+
+
+def test_an_alias_added_by_mistake_is_removed(client):
+    wren = wrenfield(client)
+    aliases = f"{VENUES}/{wren['id']}/aliases"
+    client.call("POST", aliases, {"alias": "Main pool"})
+    r = client.call("DELETE", aliases, {"alias": "main pool"})
+    assert r["status"] == 200 and "Main pool" not in r["json"]["aliases"]
+    assert client.call("DELETE", aliases, {"alias": "Main pool"})["status"] == 200
+    own = client.call("DELETE", aliases, {"alias": "Wrenfield Aquatic Center"})
+    assert own["status"] == 409 and own["json"]["error"]["code"] == "own_name"
+
+
+def test_every_admin_change_that_can_touch_a_live_calendar_sends_a_push(pushing):
+    client, sent = pushing
+    source, key = staged_team(client)                       # staged: silent
+    client.call("POST", f"{TEAMS}/{source}/pause")          # staged: silent
+    client.call("POST", f"{TEAMS}/{source}/resume")
+    client.call("POST", f"{TEAMS}/in-herons/key")           # keys: silent
+    assert sent == []
+
+    client.call("POST", f"{TEAMS}/in-herons/pause")
+    client.call("POST", f"{TEAMS}/in-herons/pause")         # already paused: no change
+    client.call("POST", f"{TEAMS}/in-herons/resume")
+    venue = client.call("POST", VENUES, {"name": "Larkmoor Pool"})["json"]
+    client.call("POST", f"{VENUES}/{venue['id']}/aliases", {"alias": "Main pool"})
+    client.call("DELETE", f"{VENUES}/{venue['id']}/aliases", {"alias": "Main pool"})
+    client.call("PUT", f"{TEAMS}/in-herons/home-venue", {"venue_id": venue["id"]})
+    client.call("PUT", f"{TEAMS}/in-herons/home-venue", {"venue_id": None})
+    push(client, source, key)
+    client.call("POST", f"{TEAMS}/{source}/live")
+    assert sent == [
+        "Grok Bot paused Herons.",
+        "Grok Bot resumed Herons.",
+        "Grok Bot added the venue Larkmoor Pool.",
+        'Grok Bot: "Main pool" now means Larkmoor Pool.',
+        'Grok Bot: "Main pool" no longer means Larkmoor Pool.',
+        "Grok Bot set Herons's home venue to Larkmoor Pool.",
+        "Grok Bot cleared Herons's home venue.",
+        "Grok Bot made Kestrels live.",
+    ]

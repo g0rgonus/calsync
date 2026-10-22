@@ -29,6 +29,7 @@ happened rather than pretending to either.
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import threading
 import time
@@ -788,10 +789,13 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
     def set_team_enabled(source_id: str, enabled: bool):
         with connect() as conn:
             caller = authorise_admin(conn)
-            admin_source(conn, source_id)
+            source = admin_source(conn, source_id)
             repo.log_admin(conn, caller.label, "team_resumed" if enabled else "team_paused",
                            f"team:{source_id}")
             repo.set_enabled(conn, source_id, enabled)
+            if not source.staging_collection and source.enabled != enabled:
+                alert(conn, f"{caller.label} {'resumed' if enabled else 'paused'} "
+                            f"{team_name(conn, source)}.")
             return _dump(team_body(conn, repo.get_source(conn, source_id)))
 
     @app.post(ADMIN + "/teams/<source_id>/pause")
@@ -912,6 +916,7 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
                                    "answer them in the console")
             repo.log_admin(conn, caller.label, "team_made_live", f"team:{source_id}")
             repo.set_staging(conn, source_id, None)
+            alert(conn, f"{caller.label} made {team_name(conn, source)} live.")
             team = team_body(conn, repo.get_source(conn, source_id))
         return _dump({**team, "sync": sync(source)})
 
@@ -1007,7 +1012,7 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
                     conn.commit()
                 except (SecretError, TargetError) as exc:
                     unreachable = exc
-                tell(conn, caller, state, status, change.get("note"))
+            event_alert(conn, caller, state, status, change.get("note"))
             # This event's own record, not the team's report: another event
             # failing to come off says nothing about this one.
             off = repo.event_state(conn, uid).cancelled
@@ -1019,20 +1024,29 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
         audit(state.source_id, "POST admin/events/status", uid, str(status))
         return _dump({"uid": uid, "status": status, "on_calendar": not off, **result})
 
-    def tell(conn, caller, state, status, note) -> None:
-        """Push that a tool hid a real event. Best effort: the change is saved."""
+    def alert(conn, message: str) -> None:
+        """Push an admin change that can affect a live calendar.
+
+        Best effort: the change is already saved, so a failed push is only logged.
+        """
         config = notify.load(conn)
         if not config.available(secrets):
             return
+        try:
+            notify_sender(config, secrets, message, title="calsync: admin change")
+        except notify.NotifyError as exc:
+            log(f"inbound admin: push failed: {exc}")
+
+    def team_name(conn, source: repo.Source) -> str:
+        return repo.get_activity(conn, source.activity_id).name
+
+    def event_alert(conn, caller, state, status, note) -> None:
         activity = repo.get_activity(conn, repo.get_source(conn, state.source_id).activity_id)
         when = (datetime.fromisoformat(state.shown_starts_at)
                 .astimezone(ZoneInfo(activity.tz)).strftime("%a %-d %b %H:%M"))
-        message = (f"{caller.label} marked {activity.name} on {when} "
-                   f"{withheld_mod.REASONS[status]}" + (f": {note}" if note else "") + ".")
-        try:
-            notify_sender(config, secrets, message, title="calsync: event hidden")
-        except notify.NotifyError as exc:
-            log(f"inbound admin: push failed: {exc}")
+        what = (f"marked {activity.name} on {when} {withheld_mod.REASONS[status]}"
+                if status else f"put back {activity.name} on {when}")
+        alert(conn, f"{caller.label} {what}" + (f": {note}" if note else "") + ".")
 
     # --- admin: venues -----------------------------------------------------------------
 
@@ -1087,14 +1101,21 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
             repo.log_admin(conn, caller.label, "venue_created", f"venue:{venue_id}",
                            {"name": venue["name"]})
             conn.commit()
+            alert(conn, f"{caller.label} added the venue {venue['name']}"
+                        + (f" (also {', '.join(venue['aliases'])})" if venue["aliases"]
+                           else "") + ".")
             return _dump(venue_body(repo.get_venue_detail(conn, venue_id)), 201)
+
+    def venue_path_id(raw: str) -> int:
+        # ASCII digits only: str.isdigit() also takes ² and ١, and int() reads ١ as 1.
+        if not re.fullmatch(r"[0-9]{1,18}", raw):
+            raise Problem(404, "no_such_venue", "no venue has that id")
+        return int(raw)
 
     @app.post(ADMIN + "/venues/<venue_id>/aliases")
     def add_alias(venue_id):
         """Say that a name a feed uses means this venue. Repeating it is harmless."""
-        if not venue_id.isdigit():
-            raise Problem(404, "no_such_venue", "no venue has that id")
-        venue_id = int(venue_id)
+        venue_id = venue_path_id(venue_id)
         with connect() as conn:
             caller = admin_write(conn)
         try:
@@ -1110,6 +1131,34 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
                                {"alias": alias})
                 repo.add_venue_alias(conn, venue_id, alias, commit=False)
                 conn.commit()
+                alert(conn, f"{caller.label}: \"{alias}\" now means "
+                            f"{repo.get_venue_detail(conn, venue_id).name}.")
+            return _dump(venue_body(repo.get_venue_detail(conn, venue_id)))
+
+    @app.delete(ADMIN + "/venues/<venue_id>/aliases")
+    def remove_alias(venue_id):
+        """Undo an alias. Removing one the venue does not have is harmless."""
+        venue_id = venue_path_id(venue_id)
+        with connect() as conn:
+            caller = admin_write(conn)
+        try:
+            alias = admin.validate_alias(body())
+        except inbound.Invalid as exc:
+            raise Problem(422, "invalid", "nothing was changed", errors=exc.errors) from None
+        with lock_for("admin"), transaction() as conn:
+            venue = repo.get_venue_detail(conn, venue_id)
+            if venue is None:
+                raise Problem(404, "no_such_venue", "no venue has that id")
+            if alias.casefold() == venue.name.casefold():
+                raise Problem(409, "own_name", "that is the venue's own name; rename it "
+                                               "in the console")
+            if repo.alias_owner(conn, alias) == venue_id:
+                conn.execute("DELETE FROM venue_aliases WHERE venue_id = ? "
+                             "AND alias = ? COLLATE NOCASE", (venue_id, alias))
+                repo.log_admin(conn, caller.label, "venue_alias_removed",
+                               f"venue:{venue_id}", {"alias": alias})
+                conn.commit()
+                alert(conn, f"{caller.label}: \"{alias}\" no longer means {venue.name}.")
             return _dump(venue_body(repo.get_venue_detail(conn, venue_id)))
 
     @app.put(ADMIN + "/teams/<source_id>/home-venue")
@@ -1130,7 +1179,12 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
                            {"venue_id": venue_id})
             conn.commit()
             activity = repo.get_activity(conn, source.activity_id)
-            return _dump({"source_id": source_id, "home_venue": activity.home_venue})
+            if not source.staging_collection:
+                alert(conn, f"{caller.label} set {activity.name}'s home venue to "
+                            f"{activity.home_venue}." if venue_id else
+                            f"{caller.label} cleared {activity.name}'s home venue.")
+            return _dump({"source_id": source_id, "home_venue_id": venue_id,
+                          "home_venue": activity.home_venue})
 
     return app
 

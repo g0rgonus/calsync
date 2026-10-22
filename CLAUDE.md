@@ -83,7 +83,10 @@ console one and starts staged; the API can review it, make it live behind the
 console's gate, or discard it while staged. Creates need an `Idempotency-Key`; a retry gets
 the team back but never the key again. The API can also add venues and
 aliases (one alias means one venue), and mark events not attending or
-cancelled. Kids, settings, and editing or merging venues stay console-only. Nothing but calsync writes to Radicale.
+cancelled. Kids, settings, and editing or merging venues stay console-only.
+**Every admin change that can reach a live calendar sends a push and can be
+undone through the API** (`alert` in `inbound/app.py`); keep that true for new
+admin calls. Nothing but calsync writes to Radicale.
 
 The Google target is **withdrawn as a destination** — not in `targeting.KINDS`,
 not in the `--target` choices, not in the console's picker. Its payload builder
