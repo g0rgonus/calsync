@@ -325,8 +325,10 @@
     </select>
     <select name="retire">
       <option value="">and keep their other teams</option>
-% for sid, act in other_teams:
-      <option value="{{ sid }}">and retire {{ act.name }} ({{ sid }})</option>
+% for sid, act, kid in own_copies:
+% if kid.id in {c.id for c in others}:
+      <option value="{{ sid }}">and retire {{ kid.name }}'s {{ act.name }} ({{ sid }})</option>
+% end
 % end
     </select>
     <button class="btn" type="submit">Add to this team</button>

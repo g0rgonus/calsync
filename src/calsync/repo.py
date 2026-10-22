@@ -2377,7 +2377,7 @@ def clone_team(conn: sqlite3.Connection, *, activity_id: str, source_id: str,
     conn.execute("INSERT INTO activity_aliases (activity_id, alias, source) "
                  "SELECT ?, alias, source FROM activity_aliases WHERE activity_id = ?",
                  (new_activity_id, activity_id))
-    blank = {c: None for c in ("staging_collection", "last_success_at", "last_error",
+    blank = {c: None for c in ("last_success_at", "last_error",
                                "last_error_at", "inbound_key_sha256", "inbound_key_used_at")}
     _copy_row(conn, "sources", "id", source_id,
               {"id": new_source_id, "activity_id": new_activity_id, **blank})
@@ -2385,3 +2385,11 @@ def clone_team(conn: sqlite3.Connection, *, activity_id: str, source_id: str,
                  "created_at, updated_at) SELECT ?, external_id, state, cancelled, etag, "
                  "created_at, updated_at FROM inbound_events WHERE source_id = ?",
                  (new_source_id, source_id))
+    # The copy's uids are the original's under the new source id. Withholding
+    # them before the first sync keeps this kid's absences off their calendar.
+    conn.execute("INSERT INTO event_state (uid, source_id, collection, content_hash, "
+                 "starts_at, cancelled, withheld) SELECT ? || substr(es.uid, ?), ?, "
+                 "es.collection, es.content_hash, es.starts_at, 1, 'not_attending' "
+                 "FROM event_state es JOIN event_absences a ON a.uid = es.uid "
+                 "WHERE es.source_id = ? AND a.child_id = ?",
+                 (new_source_id, len(source_id) + 1, new_source_id, source_id, child_id))

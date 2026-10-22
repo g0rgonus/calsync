@@ -438,8 +438,11 @@ def create_app(
                 pushed_items=len(repo.inbound_items(conn, source_id)),
                 team_kids=repo.team_children(conn, activity),
                 all_kids=repo.list_children(conn),
-                other_teams=[(s_.id, repo.get_activity(conn, s_.activity_id))
-                             for s_ in repo.list_sources(conn) if s_.id != source_id],
+                # Only a kid's own copy can be retired by adding them here.
+                own_copies=[(s_.id, a_, repo.get_child(conn, a_.child_id))
+                            for s_ in repo.list_sources(conn) if s_.id != source_id
+                            for a_ in [repo.get_activity(conn, s_.activity_id)]
+                            if len(repo.team_children(conn, a_)) == 1],
                 held=_held_rows(
                     conn, source_id, report, zone=_zone(activity.tz), now=clock(),
                 ),
@@ -560,6 +563,9 @@ def create_app(
             other = _require_source(conn, retire_id) if retire_id else None
             if other and other.id == source_id:
                 raise Refused("that is this team")
+            if other and [c.id for c in repo.team_children(
+                    conn, repo.get_activity(conn, other.activity_id))] != [child_id]:
+                raise Refused("only a team that kid is on alone can be retired here")
             repo.add_team_child(conn, activity.id, child_id)
             repo.log_admin(conn, "console", "team_kid_added", f"team:{source_id}",
                            {"child": child_id})
@@ -572,12 +578,18 @@ def create_app(
                 except (SecretError, TargetError) as exc:
                     raise Refused(f"the kid is added, but the other team could not be "
                                   f"retired: {exc}") from exc
-                repo.revoke_team_key(conn, other.id, actor="console")
-                repo.log_admin(conn, "console", "team_retired", f"team:{other.id}",
-                               {"merged_into": source_id})
+                # A partial retire leaves events only that team's sync can remove.
+                if report.ok:
+                    repo.revoke_team_key(conn, other.id, actor="console")
+                    repo.log_admin(conn, "console", "team_retired", f"team:{other.id}",
+                                   {"merged_into": source_id})
                 conn.commit()
-                note = f" {other.id} retired: {report.line()}."
+                note = (f" {other.id} retired: {report.line()}." if report.ok else
+                        f" {other.id} is only partly retired and keeps its key: "
+                        f"{report.line()}.")
         _, problems = _sync_now([source_id])
+        if other and not report.ok:
+            problems = [f"Added to the team.{note}"] + problems
         redirect(f"/sources/{source_id}?" + ("err=" if problems else "ok=") + _q(
             problems[0] if problems else f"Added to the team.{note}"))
 
@@ -591,9 +603,6 @@ def create_app(
             kids = {c.id for c in repo.team_children(conn, activity)}
             if child_id not in kids or len(kids) < 2:
                 raise Refused("that kid is not sharing this team")
-            repo.remove_team_child(conn, activity, child_id)
-            repo.log_admin(conn, "console", "team_kid_removed", f"team:{source_id}",
-                           {"child": child_id})
             key = new_source_id = None
             if source.kind in sources.PUSHED:
                 new_activity_id, new_source_id = propose_ids(
@@ -606,6 +615,9 @@ def create_app(
                 repo.set_inbound_key_hash(conn, new_source_id, inbound_events.hash_key(key))
                 repo.log_admin(conn, "console", "team_split", f"team:{source_id}",
                                {"child": child_id, "new_team": new_source_id})
+            repo.remove_team_child(conn, activity, child_id)
+            repo.log_admin(conn, "console", "team_kid_removed", f"team:{source_id}",
+                           {"child": child_id})
             conn.commit()
         _sync_now([source_id] + ([new_source_id] if new_source_id else []))
         if key:
@@ -1632,6 +1644,10 @@ def create_app(
     @app.post("/settings/calendar")
     def save_calendar_settings():
         with connect() as conn:
+            if "{child}" in _field("collection_template") and conn.execute(
+                    "SELECT 1 FROM activity_children LIMIT 1").fetchone():
+                raise Refused("a team is shared by more than one kid, and a shared event "
+                              "cannot go on a calendar per kid; split it first")
             for key in ("target_kind",
                         "radicale_url", "radicale_user", "radicale_secret_ref",
                         "collection_template", "collection_game_label",

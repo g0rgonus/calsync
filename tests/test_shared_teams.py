@@ -18,8 +18,8 @@ from calsync.inbound import app as inbound_app
 from calsync.inbound import contract
 from calsync.inbound import events as inbound
 from calsync.secrets import SecretStore
-from calsync.settings import set_setting
-from calsync.targets import build
+from calsync.settings import Settings, set_setting
+from calsync.targets import TargetError, build
 from calsync.web import app as web_app
 
 from test_inbound import Client as ApiClient
@@ -58,7 +58,7 @@ def env(tmp_path):
     console = ConsoleClient(web_app.create_app(path, secrets=secrets, clock=lambda: NOW,
                                                write_target=target))
     return {"path": path, "api": api, "console": console, "out": tmp_path / "out",
-            "sent": sent}
+            "sent": sent, "secrets": secrets, "target": target}
 
 
 def team(env, name, children, idem=None):
@@ -154,7 +154,48 @@ def test_merging_adds_the_kid_and_retires_their_own_copy(env):
     r = env["console"].post(f"/sources/{herons}/kids", {"child": "nadia", "retire": copy})
     assert r["status"] == 303 and "retired" in r["headers"]["Location"]
     assert titles(env)["2026-10-20"] == ["J+N 🏊 Swim"]
-    assert env["api"].get(f"/inbound/v1/sources/{copy}", key=copy_key)["status"] == 401
+    gone = env["api"].get(f"/inbound/v1/sources/{copy}", key=copy_key)
+    assert gone["status"] == 401 and gone["json"]["error"]["code"] == "revoked"
+
+
+def test_only_the_added_kids_own_copy_can_be_retired(env):
+    herons, herons_key = team(env, "Herons", ["jesse"])
+    live(env, herons, herons_key)
+    copy, copy_key = team(env, "Herons", ["nadia"])
+    live(env, copy, copy_key)
+    otters, otters_key = team(env, "Otters", ["jesse"])
+    live(env, otters, otters_key)
+    page = env["console"].get(f"/sources/{herons}")["body"]
+    assert f"and retire Nadia's Herons ({copy})" in page and otters not in page
+
+    r = env["console"].post(f"/sources/{herons}/kids", {"child": "nadia", "retire": otters})
+    assert r["status"] >= 400
+    assert env["api"].get(f"/inbound/v1/sources/{otters}", key=otters_key)["status"] == 200
+    assert len(titles(env)["2026-10-20"]) == 3
+
+
+def test_a_partial_retire_keeps_the_other_teams_key(env):
+    class Refusing:
+        def __init__(self, inner):
+            self.inner = inner
+
+        def __getattr__(self, name):
+            return getattr(self.inner, name)
+
+        def cancel(self, ref):
+            raise TargetError("calendar said no")
+
+    herons, herons_key = team(env, "Herons", ["jesse"])
+    live(env, herons, herons_key)
+    copy, copy_key = team(env, "Herons", ["nadia"])
+    live(env, copy, copy_key)
+    console = ConsoleClient(web_app.create_app(
+        env["path"], secrets=env["secrets"], clock=lambda: NOW,
+        write_target=Refusing(env["target"])))
+    r = console.post(f"/sources/{herons}/kids", {"child": "nadia", "retire": copy})
+    assert r["status"] == 303 and "err=" in r["headers"]["Location"]
+    assert "keeps%20its%20key" in r["headers"]["Location"]
+    assert env["api"].get(f"/inbound/v1/sources/{copy}", key=copy_key)["status"] == 200
 
 
 def test_splitting_a_pushed_team_gives_the_kid_their_events_back(env):
@@ -169,6 +210,39 @@ def test_splitting_a_pushed_team_gives_the_kid_their_events_back(env):
     nadias = next(t for t in teams if t["children"] == ["nadia"])
     assert env["api"].get(f"/inbound/v1/sources/{nadias['source_id']}",
                           key=new_key)["status"] == 200
+
+
+def test_splitting_keeps_the_kids_absences_off_their_new_team(env):
+    source, key = team(env, "Herons", ["jesse", "nadia"])
+    live(env, source, key)
+    uid = uid_on(env, "2026-10-20")
+    env["api"].call("POST", STATUS, {"uid": uid, "status": "not_attending", "child": "nadia"})
+    assert env["console"].post(f"/sources/{source}/kids/split",
+                               {"child": "nadia"})["status"] == 200
+    by_day = titles(env)
+    assert by_day["2026-10-20"] == ["Jesse 🏊 Swim"]
+    assert sorted(by_day["2026-10-27"]) == ["Jesse 🏊 Swim", "Nadia 🏊 Swim"]
+
+
+def test_splitting_a_staged_team_keeps_the_copy_staged(env):
+    source, key = team(env, "Herons", ["jesse", "nadia"])
+    assert env["api"].put(f"/inbound/v1/sources/{source}/events/tue-swim", PRACTICE,
+                          key=key)["status"] == 201
+    assert env["console"].post(f"/sources/{source}/kids/split",
+                               {"child": "nadia"})["status"] == 200
+    conn = db.connect(env["path"])
+    copy = next(s for s in repo.list_sources(conn) if s.id != source)
+    assert copy.staging_collection
+    conn.close()
+
+
+def test_calendars_cannot_be_split_by_kid_while_a_team_is_shared(env):
+    team(env, "Herons", ["jesse", "nadia"])
+    r = env["console"].post("/settings/calendar", {"collection_template": "{child}-{type}"})
+    assert r["status"] >= 400
+    conn = db.connect(env["path"])
+    assert "{child}" not in Settings.load(conn).collection_template
+    conn.close()
 
 
 def test_a_team_cannot_be_shared_when_calendars_are_split_by_kid(env):
