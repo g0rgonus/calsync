@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import calendar as calendar_mod
+import hashlib
 import json
 import socketserver
 import sqlite3
@@ -24,7 +25,8 @@ from bottle import Bottle, redirect, request, response, static_file, template
 from .. import __version__
 from .. import config as config_mod
 from .. import (
-    db, dormancy, enrichment, matrix, notify, overlay as overlay_mod, repo, retire,
+    db, dormancy, enrichment, matrix, notify, overlay as overlay_mod,
+    repo, retire,
     sources, targeting,
     warmup, withheld as withheld_mod, zones,
 )
@@ -237,11 +239,14 @@ def create_app(
             for card in cards:
                 _apply_check(card, checked.get(card["source"].id))
 
+        with connect() as conn:
+            keys_revoked_at = repo.setting_row(conn, repo.KEYS_REVOKED_AT)
         return render(
             "home.tpl",
             cards=cards,
             children=children,
             live=live,
+            keys_revoked_at=keys_revoked_at,
             flash=_flash(),
         )
 
@@ -828,6 +833,16 @@ def create_app(
             read_key_set=repo.read_key_hash(conn) is not None,
             read_key_used=repo.read_key_used_at(conn),
             admin_keys=[k for k in repo.api_keys(conn) if k.scope == "admin"],
+            revocable=len(repo.api_keys(conn)),
+            feed_teams=sum(1 for s_ in repo.list_sources(conn)
+                           if s_.kind not in sources.PUSHED),
+            keys_revoked_at=repo.setting_row(conn, repo.KEYS_REVOKED_AT),
+            revoked_together=repo.keys_revoked_together(
+                conn, repo.setting_row(conn, repo.KEYS_REVOKED_AT) or ""),
+            paused_feeds=[s_ for s_ in repo.list_sources(conn, enabled_only=False)
+                          if s_.id in json.loads(repo.setting_row(conn, repo.FEEDS_PAUSED)
+                                                 or "[]")],
+            read_api_unblocked=repo.setting_row(conn, repo.READ_API_UNBLOCKED) is not None,
             api_token_ref=Settings.load(conn).api_token_ref,
             api_has_token=secrets.has(Settings.load(conn).api_token_ref),
             pushed=pushed,
@@ -1629,6 +1644,62 @@ def create_app(
             repo.revoke_key(conn, key_id)
         _saved("admin-keys", "Admin key revoked. It stopped working at once.")
 
+    # --- the kill switch ------------------------------------------------------
+
+    @app.post("/settings/kill-switch")
+    def kill_switch():
+        """Revoke every key, once "yes" is typed beside the button."""
+        if _field("confirm").strip().lower() != "yes":
+            raise Refused('type "yes" to revoke every key; nothing was revoked')
+        with connect() as conn:
+            if not repo.api_keys(conn):
+                raise Refused("no key is working, so there is nothing to revoke")
+        _revoke_everything(clock(), pause_feeds=bool(_field("pause_feeds")))
+        redirect("/settings#recovery")
+
+    def _revoke_everything(now, *, pause_feeds: bool) -> None:
+        at = now.isoformat()
+        with connect() as conn:
+            revoked = repo.revoke_all_keys(conn, actor="console", at=at)
+            try:
+                token = secrets.get(Settings.load(conn).api_token_ref)
+                repo.put_setting_row(conn, repo.READ_API_REVOKED,
+                                     hashlib.sha256(token.encode()).hexdigest())
+                unblocked = False
+            except SecretError:
+                unblocked = True
+            repo.put_setting_row(conn, repo.READ_API_UNBLOCKED, "1" if unblocked else None)
+            paused = []
+            if pause_feeds:
+                for source in repo.list_sources(conn):
+                    if source.kind not in sources.PUSHED:
+                        conn.execute("UPDATE sources SET enabled = 0 WHERE id = ?",
+                                     (source.id,))
+                        paused.append(source.id)
+                if paused:
+                    repo.log_admin(conn, "console", "feeds_paused", None, {"teams": paused})
+            repo.put_setting_row(conn, repo.FEEDS_PAUSED, json.dumps(paused) if paused else None)
+            repo.put_setting_row(conn, repo.KEYS_REVOKED_AT, at)
+            conn.commit()
+            try:
+                notify.send(notify.load(conn), secrets,
+                            f"Every calsync key was revoked from the console "
+                            f"({len(revoked)} keys"
+                            + (f", {len(paused)} feed teams paused" if paused else "")
+                            + ")." + (" The read API's token could not be read, so it is "
+                                      "NOT blocked." if unblocked else ""),
+                            title="calsync: all keys revoked", opener=push_opener)
+            except notify.NotifyError:
+                pass
+
+    @app.post("/settings/recovery/dismiss")
+    def dismiss_recovery():
+        with connect() as conn:
+            for key in (repo.KEYS_REVOKED_AT, repo.FEEDS_PAUSED, repo.READ_API_UNBLOCKED):
+                repo.put_setting_row(conn, key, None)
+            conn.commit()
+        _saved("kill-switch", "Recovery notes dismissed.")
+
     @app.post("/settings/notifications/test")
     def test_notification():
         """Send a real push.
@@ -2080,7 +2151,8 @@ def _q(value: str) -> str:
 #: in `settings.tpl`, so a name here that is not a heading there sends a save to
 #: the top of the page — which is the behaviour this exists to remove.
 SETTINGS_SECTIONS = (
-    "calendar", "titles", "safety", "seasons", "notifications", "api", "read-key", "matrix",
+    "calendar", "titles", "safety", "seasons", "notifications", "api", "read-key",
+    "admin-keys", "kill-switch", "matrix",
 )
 
 

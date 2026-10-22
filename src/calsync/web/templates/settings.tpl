@@ -15,6 +15,48 @@
   here is specific to one family.
 </p>
 
+% if keys_revoked_at:
+<h2 id="recovery">Every key was revoked</h2>
+<div class="card">
+  <p class="note" style="margin-top:0">At {{ keys_revoked_at }}. Give each tool a new
+    key, one at a time:</p>
+  <ul>
+% for k in revoked_together:
+% if k.scope == 'team':
+    <li>{{ k.label }}: <a href="/sources/{{ k.source_id }}">replace the team key</a> and give it to the tool that sends its events</li>
+% elif k.scope == 'admin':
+    <li>{{ k.label }}: <a href="#admin-keys">make a new admin key</a></li>
+% else:
+    <li>Household read key: <a href="#read-key">make a new one</a></li>
+% end
+% end
+% if read_api_unblocked:
+    <li><strong>The read API token could not be read, so it was not blocked.</strong>
+      Change <span class="raw">CALSYNC_SECRET_API_TOKEN</span> in <span class="raw">.env</span>
+      and restart, then put the new one in the mirror's config</li>
+% else:
+    <li>Read API token (the Mac mirror): set a new <span class="raw">CALSYNC_SECRET_API_TOKEN</span>
+      in <span class="raw">.env</span>, restart, and put it in the mirror's config</li>
+% end
+  </ul>
+% if paused_feeds:
+  <p class="note">Feed teams paused when the keys were revoked:</p>
+% for s_ in paused_feeds:
+  <form method="post" action="/sources/{{ s_.id }}/enabled" class="btn-row">
+    <input type="hidden" name="enabled" value="1">
+    <span>{{ s_.id }}{{ '' if not s_.enabled else ' (running again)' }}</span>
+% if not s_.enabled:
+    <button class="btn btn-quiet" type="submit">Resume</button>
+% end
+  </form>
+% end
+% end
+  <form method="post" action="/settings/recovery/dismiss">
+    <button class="btn btn-quiet" type="submit">Done, hide this</button>
+  </form>
+</div>
+% end
+
 <h2 id="calendar">Where events go</h2>
 % include('_saved.tpl', flash=flash, at=at, section='calendar')
 <div class="card">
@@ -435,6 +477,24 @@
   <form method="post" action="/settings/admin-keys" class="btn-row">
     <input name="label" placeholder="Who it's for, e.g. Grok Bot" maxlength="60" required>
     <button class="btn" type="submit">Make an admin key</button>
+  </form>
+</div>
+
+<h2 id="kill-switch">Emergency: revoke every key</h2>
+% include('_saved.tpl', flash=flash, at=at, section='kill-switch')
+<div class="card">
+  <p class="note" style="margin-top:0">
+    For a suspected leak. All {{ revocable }} keys stop working at once, and the read
+    API's <span class="raw">.env</span> token is blocked; each tool then needs a new
+    one. Calendars, teams and events are not touched.
+  </p>
+  <form method="post" action="/settings/kill-switch">
+% if feed_teams:
+    <p><label><input type="checkbox" name="pause_feeds" value="1"> Also pause the
+      {{ feed_teams }} feed {{ 'team' if feed_teams == 1 else 'teams' }}</label></p>
+% end
+    <input name="confirm" placeholder='Type "yes"' autocomplete="off" required>
+    <button class="btn" type="submit">Revoke every key</button>
   </form>
 </div>
 

@@ -2245,3 +2245,47 @@ def alias_owner(conn: sqlite3.Connection, alias: str) -> int | None:
 def set_home_venue(conn: sqlite3.Connection, activity_id: str, venue_id: int | None) -> None:
     conn.execute("UPDATE activities SET home_venue_id = ? WHERE id = ?",
                  (venue_id, activity_id))
+
+
+# --- the kill switch ------------------------------------------------------------
+
+KEYS_REVOKED_AT = "keys_revoked_at"
+READ_API_REVOKED = "read_api_revoked_sha256"
+#: What the last firing could not finish: feed teams it paused, as JSON, and
+#: "1" when the read API's token could not be read and so was not blocked.
+FEEDS_PAUSED = "kill_switch_paused_feeds"
+READ_API_UNBLOCKED = "kill_switch_read_api_unblocked"
+
+
+def setting_row(conn: sqlite3.Connection, key: str) -> str | None:
+    row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+    return (row["value"] or None) if row else None
+
+
+def put_setting_row(conn: sqlite3.Connection, key: str, value: str | None) -> None:
+    """Rows only the console writes, kept out of DEFAULT_SETTINGS. Not committed."""
+    conn.execute("DELETE FROM settings WHERE key = ?", (key,))
+    if value is not None:
+        conn.execute("INSERT INTO settings (key, value, updated_at) "
+                     "VALUES (?, ?, datetime('now'))", (key, value))
+
+
+def revoke_all_keys(conn: sqlite3.Connection, *, actor: str, at: str) -> list[ApiKey]:
+    """Revoke every working key at once. Returns what was revoked. Not committed."""
+    working = api_keys(conn)
+    conn.execute("UPDATE api_keys SET revoked_at = ? WHERE revoked_at IS NULL", (at,))
+    log_admin(conn, actor, "all_keys_revoked", None, {"count": len(working)})
+    return working
+
+
+def revoked_key(conn: sqlite3.Connection, digest: str) -> ApiKey | None:
+    """A revoked key with this hash, so a caller can be told it was revoked."""
+    row = conn.execute(
+        "SELECT * FROM api_keys WHERE sha256 = ? AND revoked_at IS NOT NULL "
+        "ORDER BY id DESC LIMIT 1", (digest,)).fetchone()
+    return _key(row) if row else None
+
+
+def keys_revoked_together(conn: sqlite3.Connection, at: str) -> list[ApiKey]:
+    return [_key(r) for r in conn.execute(
+        "SELECT * FROM api_keys WHERE revoked_at = ? ORDER BY scope, label", (at,))]

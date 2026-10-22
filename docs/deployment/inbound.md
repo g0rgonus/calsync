@@ -99,7 +99,9 @@ can be undone through the API. Staged teams and key changes are silent.
 
 A 401 carries `WWW-Authenticate: CalsyncKey`, not `Basic`, so a client in
 "extended compatibility" mode does not answer it by resending the proxy's
-password in a loop. An unknown source and a wrong key are the same 401.
+password in a loop. An unknown source and a wrong key are the same 401. A key
+that was revoked gets 401 `revoked`, so a tool stops retrying and asks for a new
+one; the console's "Revoke every key" (Settings) revokes them all at once.
 
 ## Pangolin
 

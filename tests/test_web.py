@@ -1284,7 +1284,7 @@ def test_every_route_is_exercised_by_some_test():
     from pathlib import Path as _Path
 
     app_src = _Path(web_app.__file__).read_text()
-    tests_src = _Path(__file__).read_text()
+    tests_src = "\n".join(p.read_text() for p in _Path(__file__).parent.glob("test_*.py"))
     missing = []
     for _verb, path in re.findall(r'@app\.(get|post)\("([^"]+)"\)', app_src):
         pattern = re.sub(r'<[^>]*>', '[^"\']*', re.escape(path).replace("\\<", "<"))
@@ -2851,7 +2851,8 @@ def test_an_admin_key_is_shown_once_listed_by_label_and_revocable(client, tmp_pa
     settings = client.get("/settings")["body"]
     assert "Grok Bot" in settings and key not in settings
 
-    client.post(f"/settings/admin-keys/{admin.id}/revoke")
+    revoked = client.post(f"/settings/admin-keys/{admin.id}/revoke")
+    assert revoked["status"] == 303
     conn = db.connect(tmp_path / "calsync.db")
     assert repo.admin_key(conn, inbound_events.hash_key(key)) is None
     conn.close()
