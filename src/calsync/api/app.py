@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 import json
 import socketserver
@@ -109,6 +110,14 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None) -> Bo
         # request.
         if not hmac.compare_digest(presented.strip(), token):
             raise ApiError(401, "bad_credential", "that token is not recognised")
+        # The console's kill switch cannot change .env, so it blocks this
+        # token's hash until a new one is set there.
+        with connect() as conn:
+            revoked = repo.setting_row(conn, repo.READ_API_REVOKED)
+        if revoked and hmac.compare_digest(
+                revoked, hashlib.sha256(presented.strip().encode()).hexdigest()):
+            raise ApiError(401, "revoked", "this token was revoked; set a new "
+                                           "CALSYNC_SECRET_API_TOKEN and restart")
 
     @app.hook("after_request")
     def _json():

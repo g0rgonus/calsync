@@ -3,6 +3,12 @@
 <p class="eyebrow">Season</p>
 <h1>Teams</h1>
 
+% if get('keys_revoked_at'):
+<p class="lede"><strong>Every key was revoked at {{ keys_revoked_at }}.</strong>
+  Tools cannot send or read events until they have new keys.
+  <a href="/settings#recovery">What to do</a>.</p>
+% end
+
 % asking = [c for c in cards if c['state'] == 'asking']
 % if asking and len(asking) == len(cards):
 <p class="lede">

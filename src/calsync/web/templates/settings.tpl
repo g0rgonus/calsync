@@ -15,6 +15,30 @@
   here is specific to one family.
 </p>
 
+% if keys_revoked_at:
+<h2 id="recovery">Every key was revoked</h2>
+<div class="card">
+  <p class="note" style="margin-top:0">At {{ keys_revoked_at }}. Give each tool a new
+    key, one at a time:</p>
+  <ul>
+% for k in revoked_together:
+% if k.scope == 'team':
+    <li>{{ k.label }}: <a href="/sources/{{ k.source_id }}">replace the team key</a> and give it to the tool that sends its events</li>
+% elif k.scope == 'admin':
+    <li>{{ k.label }}: <a href="#admin-keys">make a new admin key</a></li>
+% else:
+    <li>Household read key: <a href="#read-key">make a new one</a></li>
+% end
+% end
+    <li>Read API token (the Mac mirror): set a new <span class="raw">CALSYNC_SECRET_API_TOKEN</span>
+      in <span class="raw">.env</span>, restart, and put it in the mirror's config</li>
+  </ul>
+  <form method="post" action="/settings/recovery/dismiss">
+    <button class="btn btn-quiet" type="submit">Done, hide this</button>
+  </form>
+</div>
+% end
+
 <h2 id="calendar">Where events go</h2>
 % include('_saved.tpl', flash=flash, at=at, section='calendar')
 <div class="card">
@@ -436,6 +460,32 @@
     <input name="label" placeholder="Who it's for, e.g. Grok Bot" maxlength="60" required>
     <button class="btn" type="submit">Make an admin key</button>
   </form>
+</div>
+
+<h2 id="admin-password">Admin password</h2>
+% include('_saved.tpl', flash=flash, at=at, section='admin-password')
+<div class="card">
+  <p class="note" style="margin-top:0">
+    Asked for before every key can be revoked at once. calsync keeps only a hash.
+  </p>
+  <form method="post" action="/settings/admin-password">
+% if password_set:
+    <input name="current" type="password" placeholder="Current password" autocomplete="current-password" required>
+% end
+    <input name="new" type="password" placeholder="New password, 12+ characters" autocomplete="new-password" required>
+    <input name="confirm" type="password" placeholder="New password again" autocomplete="new-password" required>
+    <button class="btn" type="submit">{{ 'Change password' if password_set else 'Set password' }}</button>
+  </form>
+</div>
+
+<h2 id="kill-switch">Emergency: revoke every key</h2>
+% include('_saved.tpl', flash=flash, at=at, section='kill-switch')
+<div class="card">
+  <p class="note" style="margin-top:0">
+    For a suspected leak. Every key stops working at once, after five confirmations.
+    Calendars and teams are not touched.
+  </p>
+  <a class="btn btn-quiet" href="/settings/kill-switch">Start</a>
 </div>
 
 <h2 id="matrix">Matrix</h2>
