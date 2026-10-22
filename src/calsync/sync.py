@@ -432,8 +432,28 @@ def sync_source(
                 "venue": event.venue.name if named else None,
                 "field": event.venue.field if event.venue else None,
             }
+
+    # --- diff --------------------------------------------------------------
+    max_pct, max_count = _guard_thresholds(source, settings)
+    # Same lower bound the incoming events were filtered by, so an event ageing
+    # out of the window is not mistaken for one that was cancelled.
+    known = repo.known_hashes(
+        conn, source.id,
+        since=(now - timedelta(days=settings.sync_window_back_days)).isoformat(),
+    )
+    delta = diff_poll(
+        events, known, now=now, max_pct=max_pct, max_count=max_count,
+        # A warm-up is derived from a game, not read from the feed, so it says
+        # nothing about whether this fetch can be trusted. See `diff_poll`.
+        counts_as_evidence=lambda uid: not warmup.is_synthetic(uid),
+        called_off=called_off,
+    )
+
+    report.unchanged = len(delta.unchanged)
+
     before = repo.source_candidates(conn, source.id)
-    candidates = sorted(mine.values(), key=lambda r: r["uid"])
+    # A held poll keeps what was stored: a suspect fetch must not reshape a group.
+    candidates = before if delta.is_anomalous else sorted(mine.values(), key=lambda r: r["uid"])
     if not dry_run:
         repo.replace_candidates(conn, source.id, candidates)
         conn.commit()
@@ -460,24 +480,6 @@ def sync_source(
     # Dropped like a withheld event, and never stored as one: only a person sets
     # `event_state.withheld`, and this copy returns the moment the group ends.
     off = off | dropped
-
-    # --- diff --------------------------------------------------------------
-    max_pct, max_count = _guard_thresholds(source, settings)
-    # Same lower bound the incoming events were filtered by, so an event ageing
-    # out of the window is not mistaken for one that was cancelled.
-    known = repo.known_hashes(
-        conn, source.id,
-        since=(now - timedelta(days=settings.sync_window_back_days)).isoformat(),
-    )
-    delta = diff_poll(
-        events, known, now=now, max_pct=max_pct, max_count=max_count,
-        # A warm-up is derived from a game, not read from the feed, so it says
-        # nothing about whether this fetch can be trusted. See `diff_poll`.
-        counts_as_evidence=lambda uid: not warmup.is_synthetic(uid),
-        called_off=called_off,
-    )
-
-    report.unchanged = len(delta.unchanged)
 
     if not dry_run and delta.confirm(confirm_held):
         report.confirmed = len(delta.cancelled)

@@ -296,3 +296,21 @@ def test_names_match_after_normalising_and_practices_have_no_key():
         correlate.key(mk(detail="harbor invitational", opponent=""), "swimming")
     assert correlate.key(mk(detail="A"), "swimming") != correlate.key(mk(detail="A"), "diving")
     assert correlate.key(mk(warmup_for="x"), "swimming") is None
+
+
+def test_a_held_poll_does_not_reshape_the_group(env):
+    (herons, hk), _ = two_teams(env)
+    for i in range(1, 6):
+        push(env, herons, hk, ext=f"g{i}", label=f"Gala {i}",
+             start=f"2026-12-{3 * i:02d}", end=f"2026-12-{3 * i + 1:02d}")
+    conn = db.connect(env["path"])
+    stored = repo.source_candidates(conn, herons)
+    payload = json.loads(repo.inbound_payload(conn, herons))
+    payload["items"] = [i for i in payload["items"] if i["external_id"] == "g1"]
+    report = sync_source(conn, repo.get_source(conn, herons), env["target"], now=NOW,
+                         raw=json.dumps(payload).encode())
+    assert report.status == "held"
+    assert repo.source_candidates(conn, herons) == stored
+    conn.close()
+    (event,) = calendar(env)
+    assert "J+N" in event["title"]
