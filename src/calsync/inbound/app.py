@@ -41,7 +41,8 @@ from zoneinfo import ZoneInfo
 
 from bottle import Bottle, HTTPResponse, request, response
 
-from .. import db, onboarding, repo, retire, routing, sources, targeting
+from .. import db, onboarding, repo, retire, routing, sources, targeting, warmup
+from .. import withheld as withheld_mod
 from ..api.app import _QuietHandler, _Threaded, _event_json, events_body
 from ..secrets import SecretError, SecretStore
 from ..settings import Settings
@@ -213,6 +214,8 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
     def authorise_reader(conn) -> None:
         """The household read key: every team's calendar, and nothing else.
 
+        An admin key reads it too, to find the events it changes.
+
         Checked the same way as a team key — one comparison, against a dummy
         when no key is set — and refused the same way, so the response says
         nothing about whether a read key exists. A team key is not one: each
@@ -221,6 +224,12 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
         presented = (request.get_header(KEY_HEADER) or "").strip()
         stored = repo.read_key_hash(conn)
         matched = inbound.key_matches(presented, stored or _NO_SUCH_KEY)
+        admin_ = None if matched or not presented else repo.admin_key(
+            conn, inbound.hash_key(presented))
+        if admin_:
+            touch(conn, lambda: repo.key_used_at(conn, admin_.id),
+                  lambda at: repo.touch_key(conn, admin_.id, at))
+            return
         if not (stored and matched):
             log(f"inbound calendar refused: "
                 f"{'no key' if not presented else 'wrong key'} from {client()}")
@@ -942,6 +951,65 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
             conn.commit()
         audit(source_id, "DELETE admin/teams", source_id, "204")
         return HTTPResponse(status=204)
+
+    # --- admin: event status -------------------------------------------------------
+
+    @app.post(ADMIN + "/events/status")
+    def set_event_status():
+        """Mark one event not attending or cancelled, or put it back.
+
+        The console's withhold and restore, reached by a tool: the same flag,
+        the same refusal of past events, and putting back is an ordinary sync.
+        """
+        with connect() as conn:
+            caller = authorise_admin(conn)
+        throttle(f"admin:{caller.id}")
+        try:
+            change = admin.validate_status(body())
+        except inbound.Invalid as exc:
+            raise Problem(422, "invalid", "nothing was changed", errors=exc.errors) from None
+        uid, status = change["uid"], change["status"]
+        with connect() as conn:
+            state = repo.event_state(conn, uid)
+        if state is None:
+            raise Problem(404, "no_such_event", "calsync has not written an event with that uid")
+        if warmup.is_synthetic(uid):
+            raise Problem(422, "warmup", "a warm-up follows its game; change the game",
+                          game=warmup.parent_of(uid))
+        if not retire.upcoming(state.shown_starts_at, clock()):
+            raise Problem(409, "already_started",
+                          "that event has started; taking it off would remove the "
+                          "record of something that happened")
+        with lock_for(state.source_id), connect() as conn:
+            repo.set_withheld(conn, uid, status)
+            repo.log_admin(conn, caller.label,
+                           "event_restored" if status is None else "event_withheld",
+                           f"event:{uid}", {"status": status, "note": change.get("note")})
+            conn.commit()
+            source = repo.get_source(conn, state.source_id)
+            if status is None:
+                result = {"status": None, "sync": (sync(source) if source.enabled else
+                          {"status": "deferred", "detail": "the team is paused; the "
+                           "event comes back when it resumes"})}
+            else:
+                try:
+                    target = write_target or targeting.build_target(conn, secrets=secrets)
+                    report = withheld_mod.enforce(conn, state.source_id, target)
+                    conn.commit()
+                except (SecretError, TargetError) as exc:
+                    report = None
+                    detail = f"saved; the calendar could not be reached ({exc}), so the next sync removes it"
+                else:
+                    detail = ("off the calendar" if report.ok else
+                              "saved; removing it failed, so a later sync retries: "
+                              + "; ".join(report.errors[:3]))
+                result = {"status": status, "on_calendar": not (report and report.ok),
+                          "detail": detail}
+        if status is None:
+            with connect() as conn:
+                result["on_calendar"] = not repo.event_state(conn, uid).cancelled
+        audit(state.source_id, "POST admin/events/status", uid, str(status))
+        return _dump({"uid": uid, **result})
 
     return app
 

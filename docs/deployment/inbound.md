@@ -79,6 +79,12 @@ events move at once; only the console can override a failed check.
 `DELETE …/{source}` discards a staged team, taking all its events off the
 staging calendar; a live team is refused and is retired in the console.
 
+`…/admin/events/status` marks one event `not_attending` or `cancelled`, or puts
+it back with `null`, for any team's event. It is the console's mark: it survives
+later syncs, an event that has started is refused, and a warm-up is changed
+through its game. An admin key also reads `GET /inbound/v1/calendar`, which is
+where a tool finds the event's `uid`.
+
 A 401 carries `WWW-Authenticate: CalsyncKey`, not `Basic`, so a client in
 "extended compatibility" mode does not answer it by resending the proxy's
 password in a loop. An unknown source and a wrong key are the same 401.
@@ -129,6 +135,7 @@ POST   /inbound/v1/admin/teams                                       create a te
 GET    /inbound/v1/admin/teams/{source}/review                       checks, events, clashes
 POST   /inbound/v1/admin/teams/{source}/live                         make a staged team live
 DELETE /inbound/v1/admin/teams/{source}                              discard a staged team
+POST   /inbound/v1/admin/events/status                               not attending / cancelled / put back
 POST   /inbound/v1/admin/teams/{source}/pause                        stop writing its events
 POST   /inbound/v1/admin/teams/{source}/resume                       start again
 POST   /inbound/v1/admin/teams/{source}/key                          new team key; the old one stops

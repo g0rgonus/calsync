@@ -61,6 +61,8 @@ SESSION = {
     "part_of": "harbor-invitational",
 }
 OVERRIDE = {"start": "2026-10-27T18:30:00", "location": "Larkmoor Pool"}
+STATUS = {"uid": "tue-swim-2026-10-27@in-herons", "status": "not_attending",
+          "note": "School trip"}
 NEW_TEAM = {"name": "Kestrels", "children": ["nadia"], "sport": "robotics"}
 
 
@@ -139,6 +141,16 @@ TEAM_FIELDS: tuple[Field, ...] = (
 )
 assert {f.name for f in TEAM_FIELDS} == admin.FIELDS
 
+STATUS_FIELDS: tuple[Field, ...] = (
+    Field("uid", "string", "The event's uid, from the calendar read.", "always"),
+    Field("status", "string", "not_attending or cancelled to take the event off the "
+          "calendar; null to put it back.", "always",
+          enum=("not_attending", "cancelled", None)),
+    Field("note", "string", "Why, in a few words. Kept in the admin log.",
+          example="School trip"),
+)
+assert {f.name for f in STATUS_FIELDS} == admin.STATUS_FIELDS
+
 
 @dataclass(frozen=True)
 class Param:
@@ -209,8 +221,8 @@ ROUTES: tuple[Route, ...] = (
           responses={200: ("The spec", None)}, auth=False),
     Route("GET", PREFIX + "/calendar", "getCalendar",
           "Every team's events, for every kid. Read-only.",
-          "Needs the household read key, made on the console's settings page; a "
-          "team key is refused. The same answer as the read API's GET /v1/events: "
+          "Needs the household read key, made on the console's settings page, or "
+          "an admin key; a team key is refused. The same answer as the read API's GET /v1/events: "
           "each event's child, team, times, venue, notes, rendered title, calendar "
           "and whether it is cancelled. Only what calsync wrote — hand-made "
           "family appointments are not in calsync and so are not here.",
@@ -319,6 +331,18 @@ ROUTES: tuple[Route, ...] = (
           responses={204: ("Discarded", None), 404: ("No such team", _E),
                      409: ("not_staged", _E),
                      503: ("The calendar could not be reached; nothing deleted", _E)}),
+    Route("POST", PREFIX + "/admin/events/status", "setEventStatus",
+          "Mark one event not attending or cancelled, or put it back.",
+          "Admin key only. Works for any team's event, from any source, and the "
+          "mark survives later syncs. Each date of a series is its own uid. An event "
+          "that has started is refused, and so is a warm-up: change its game. "
+          "Find uids with getCalendar.",
+          body="StatusChange", example=STATUS,
+          responses={200: ("The event's status and whether it is on the calendar",
+                           "EventStatus"),
+                     404: ("calsync has not written that event", _E),
+                     409: ("already_started", _E),
+                     422: ("Invalid, or a warm-up", _E)}),
     Route("DELETE", PREFIX + "/admin/teams/{source_id}/key", "revokeTeamKey",
           "Revoke a team's key.", "Admin key only. Idempotent.", params=("team_id",),
           responses={204: ("Revoked, or there was none", None), 404: ("No such team", _E)}),
@@ -359,6 +383,8 @@ def _schema(fields: tuple[Field, ...], *, required=()) -> dict:
                              else {"type": "string", "format": f.items})
         if f.enum:
             prop["enum"] = list(f.enum)
+            if None in f.enum:
+                prop["type"] = [f.type, "null"]
         if f.example is not None:
             prop["example"] = f.example
         props[f.name] = prop
@@ -502,6 +528,13 @@ def openapi(server: str) -> dict:
                     "events": {"type": "array", "items": {"type": "object"},
                                "description": "As the read API's events, plus lands_in."},
                     "clashes": {"type": "array", "items": {"type": "object"}}}},
+                "StatusChange": _schema(STATUS_FIELDS, required=("uid", "status")),
+                "EventStatus": {"type": "object", "properties": {
+                    "uid": {"type": "string"},
+                    "status": {"type": ["string", "null"]},
+                    "on_calendar": {"type": "boolean"},
+                    "detail": {"type": "string"},
+                    "sync": {"type": "object"}}},
                 "TeamKey": {"type": "object", "properties": {
                     "source_id": {"type": "string"}, "team_key": {"type": "string"},
                     "key_id": {"type": "integer"}}},
@@ -558,7 +591,7 @@ def _rows(fields: tuple[Field, ...]) -> str:
     e = html.escape
     out = []
     for f in fields:
-        kind = " | ".join(f.enum) if f.enum else f.type
+        kind = " | ".join("null" if v is None else v for v in f.enum) if f.enum else f.type
         out.append(f"<tr><td><code>{e(f.name)}</code></td><td>{e(kind)}</td>"
                    f"<td>{e(f.required or '')}</td><td>{e(f.summary)}</td></tr>")
     return "\n".join(out)
@@ -697,6 +730,12 @@ console, not here.</p>
 <div class="card wrap"><table>
 <tr><th>Field</th><th>Type</th><th>Required</th><th></th></tr>
 {_rows(TEAM_FIELDS)}
+</table></div>
+<p>To mark one event not attending or cancelled, find its <code>uid</code> with the
+calendar read, then <code>POST …/admin/events/status</code>:</p>
+<div class="card wrap"><table>
+<tr><th>Field</th><th>Type</th><th>Required</th><th></th></tr>
+{_rows(STATUS_FIELDS)}
 </table></div>
 
 <h2>Changing one date</h2>
