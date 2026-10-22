@@ -94,15 +94,16 @@ def validate_status(body) -> dict:
     if "status" not in body:
         errors.append(_err("status", "required", "not_attending, cancelled, or null "
                                                  "to put the event back"))
-    elif body["status"] is not None and body["status"] not in withheld.REASONS:
+    elif body["status"] is not None and (not isinstance(body["status"], str)
+                                         or body["status"] not in withheld.REASONS):
         errors.append({**_err("status", "unknown_status", "not a status"),
                        "candidates": sorted(withheld.REASONS)})
     note = body.get("note")
-    if note is not None and not (isinstance(note, str) and len(note) <= MAX_NOTE):
+    if note is not None and not (isinstance(note, str) and len(note.strip()) <= MAX_NOTE):
         errors.append(_err("note", "bad_note", f"text, at most {MAX_NOTE} characters"))
     if errors:
         raise Invalid(errors)
-    return body
+    return {**body, "note": (note or "").strip() or None}
 
 
 def request_hash(body) -> str:

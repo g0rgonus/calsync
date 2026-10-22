@@ -466,3 +466,59 @@ def test_a_warmup_is_changed_through_its_game(client, db_path):
     r = set_status(client, warm["uid"], "not_attending")
     assert r["status"] == 422
     assert r["json"]["error"]["game"] == warm["warmup_for"]
+
+
+@pytest.mark.parametrize("bad", [["cancelled"], {}, 3])
+def test_a_status_that_is_not_text_is_a_422(client, bad):
+    r = set_status(client, "x", bad)
+    assert r["status"] == 422
+    assert r["json"]["error"]["errors"][0]["code"] == "unknown_status"
+
+
+def test_a_hidden_event_can_be_put_back_after_it_started(client, clock):
+    uid = herons_events(client)[0]["uid"]
+    set_status(client, uid, "cancelled")
+    clock["now"] = NOW + timedelta(days=7)        # the first practice has happened
+    r = set_status(client, uid, None)
+    assert r["status"] == 200 and r["json"]["status"] is None
+
+
+def test_putting_back_an_event_that_was_not_hidden_does_nothing(client, db_path):
+    uid = herons_events(client)[0]["uid"]
+    r = set_status(client, uid, None)
+    assert r["json"] == {"uid": uid, "status": None, "on_calendar": True,
+                         "detail": "it was not marked"}
+    conn = conn_for(db_path)
+    assert not [e for e in repo.admin_log(conn) if e["action"].startswith("event_")]
+    conn.close()
+
+
+def test_a_blank_note_is_no_note(client, db_path):
+    uid = herons_events(client)[0]["uid"]
+    set_status(client, uid, "cancelled", note="   ")
+    conn = conn_for(db_path)
+    entry = next(e for e in repo.admin_log(conn) if e["action"] == "event_withheld")
+    conn.close()
+    assert json.loads(entry["detail"])["note"] is None
+
+
+def test_the_calendar_refusal_names_both_keys_that_open_it(client):
+    detail = client.get("/inbound/v1/calendar", key=None)["json"]["error"]["detail"]
+    assert detail.startswith("send the household read key or an admin key")
+
+
+def test_hiding_an_event_through_the_api_sends_a_push(db_path, tmp_path):
+    secrets_file = tmp_path / "push-secrets.json"
+    secrets_file.write_text(json.dumps({"pushover_token": "t", "pushover_user": "u"}))
+    secrets_file.chmod(0o600)
+    sent = []
+    pushing = Client(inbound_app.create_app(
+        db_path, secrets=SecretStore(path=secrets_file), clock=lambda: NOW,
+        log=lambda line: None, write_target=build("ics_file", directory=tmp_path / "out"),
+        notify_sender=lambda config, secrets, message, **kw: sent.append(message)),
+        key=ADMIN_KEY)
+    uid = herons_events(pushing)[0]["uid"]
+    set_status(pushing, uid, "not_attending", note="School trip")
+    assert sent == ["Grok Bot marked Herons on Tue 20 Oct 17:45 not attending: School trip."]
+    set_status(pushing, uid, None)
+    assert len(sent) == 1                          # putting back is not news

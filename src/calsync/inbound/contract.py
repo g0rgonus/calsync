@@ -334,9 +334,10 @@ ROUTES: tuple[Route, ...] = (
     Route("POST", PREFIX + "/admin/events/status", "setEventStatus",
           "Mark one event not attending or cancelled, or put it back.",
           "Admin key only. Works for any team's event, from any source, and the "
-          "mark survives later syncs. Each date of a series is its own uid. An event "
-          "that has started is refused, and so is a warm-up: change its game. "
-          "Find uids with getCalendar.",
+          "mark survives later syncs. Each date of a series is its own uid. Hiding an "
+          "event that has started is refused; putting one back never is. A warm-up "
+          "is refused: change its game. Hiding sends the household a push, when "
+          "Pushover is set up. Find uids with getCalendar.",
           body="StatusChange", example=STATUS,
           responses={200: ("The event's status and whether it is on the calendar",
                            "EventStatus"),

@@ -81,8 +81,9 @@ staging calendar; a live team is refused and is retired in the console.
 
 `…/admin/events/status` marks one event `not_attending` or `cancelled`, or puts
 it back with `null`, for any team's event. It is the console's mark: it survives
-later syncs, an event that has started is refused, and a warm-up is changed
-through its game. An admin key also reads `GET /inbound/v1/calendar`, which is
+later syncs, hiding an event that has started is refused (putting one back never
+is), and a warm-up is changed through its game. Every hide sends a Pushover
+alert naming the key, the team and the time, when Pushover is set up. An admin key also reads `GET /inbound/v1/calendar`, which is
 where a tool finds the event's `uid`.
 
 A 401 carries `WWW-Authenticate: CalsyncKey`, not `Basic`, so a client in
