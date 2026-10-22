@@ -679,8 +679,8 @@ Decisions that span several files and are easy to undo by accident:
   on `event_state.withheld`, and two things follow. The **event is dropped on
   the way to the write, not out of the diff**: it is still in the feed, and
   removing it there would make it look like a disappearance and count against
-  the guard. And **nothing in the poll path ever sets the flag**, and an agent
-  has no path to it, the same division the review gate draws. Two reasons share
+  the guard. And **nothing in the poll path ever sets the flag**: a person in
+  the console sets it, or a tool through the admin API. Two reasons share
   one mechanism, because the event comes off either way and the label is all
   that differs: `not_attending`, and `cancelled` for a cancellation the export
   does not carry. Putting it back writes no event here — clearing the flag

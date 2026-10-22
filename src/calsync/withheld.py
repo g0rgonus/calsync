@@ -21,10 +21,8 @@ which reason it was changes nothing but the label:
   the one that does not, which calsync will not infer a delete for. A person
   can state it, which is what this is.
 
-**Only a person reaches this.** Nothing in the poll path sets the flag — the
-same division the
-review gate draws (docs/API.md): an agent may put something in front of you and
-has no path to the function that writes it.
+**Nothing in the poll path sets the flag.** A person sets it in the console, or
+a tool through the admin API's event status call.
 
 What it is *not* is a second writer of events. `enforce` cancels, the same call
 `retire.py` makes, and putting an event back is an ordinary sync: clearing the
