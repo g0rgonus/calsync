@@ -415,6 +415,19 @@ def cmd_retire(args) -> int:
     return 0
 
 
+def cmd_unmerge(args) -> int:
+    """End every merged meet before rolling back to a version without merging."""
+    conn = db.open_db(args.db)
+    secrets = _secrets(args)
+    target = _target(conn, args, secrets)
+    report = merging.unmerge(conn, target, now=_now(getattr(args, "now", None)),
+                             secrets=secrets)
+    for error in report.errors:
+        print(f"error: {error}", file=sys.stderr)
+    print(f"{report.ended} merged event(s) ended")
+    return 1 if report.errors else 0
+
+
 def cmd_digest(args) -> int:
     """What is on in the next day. Prints it; `--send` puts it in the room.
 
@@ -765,6 +778,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_retire.add_argument("--forget", action="store_true",
                           help="also drop the source row, once nothing is left live")
     p_retire.set_defaults(fn=cmd_retire)
+
+    p_unmerge = sub.add_parser(
+        "unmerge", help="end every merged meet before rolling back to 0.21.0")
+    target_args(p_unmerge)
+    p_unmerge.add_argument("--now", help="ISO timestamp to treat as now")
+    p_unmerge.set_defaults(fn=cmd_unmerge)
 
     p_digest = sub.add_parser("digest", help="what is on in the next day")
     p_digest.add_argument("--send", action="store_true",

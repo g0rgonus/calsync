@@ -1242,7 +1242,9 @@ def source_freshness(
     """
     out: dict[str, Freshness] = {}
     for row in conn.execute(
-        "SELECT id, enabled, poll_interval_s, last_success_at, last_error FROM sources"
+        # A companion never polls; its events answer to the carrier team's freshness.
+        "SELECT id, enabled, poll_interval_s, last_success_at, last_error FROM sources "
+        "WHERE kind != 'merged'"
     ):
         last = parse_db_stamp(row["last_success_at"])
         enabled = bool(row["enabled"])
@@ -2401,6 +2403,14 @@ def clear_candidates(conn: sqlite3.Connection, source_id: str) -> None:
 
 def companion_id(carrier_source_id: str) -> str:
     return f"merged-{carrier_source_id}"
+
+
+def carrier_of(conn: sqlite3.Connection, source_id: str) -> str:
+    """The team behind a source: a companion's carrier, or the source itself."""
+    row = conn.execute("SELECT kind FROM sources WHERE id = ?", (source_id,)).fetchone()
+    if row is not None and row["kind"] == "merged":
+        return source_id.removeprefix(companion_id(""))
+    return source_id
 
 
 def ensure_companion(conn: sqlite3.Connection, carrier_source_id: str) -> Source:

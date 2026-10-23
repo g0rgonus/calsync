@@ -601,7 +601,7 @@ def _sources_json(conn, items, *, now: datetime) -> list[dict]:
     """
     health = repo.source_freshness(conn, now=now)
     out = []
-    for source_id in sorted({item.source_id for item in items}):
+    for source_id in sorted({repo.carrier_of(conn, item.source_id) for item in items}):
         row = health.get(source_id)
         if row is None:
             continue

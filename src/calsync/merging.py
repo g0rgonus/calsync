@@ -22,7 +22,7 @@ import hashlib
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 
-from . import correlate, repo, warmup, withheld
+from . import correlate, repo, sources, warmup, withheld
 from .diff import diff_poll, fingerprint
 from .fetch import http_fetch
 from .render import render
@@ -264,6 +264,10 @@ def _restore(conn, target, report, members, *, now, secrets, fetcher) -> bool:
             back.append(m)
     for sid in sorted({m["source_id"] for m in back}):
         source = repo.get_source(conn, sid)
+        if not source.enabled and source.kind not in sources.PUSHED:
+            # A paused feed is not fetched for this; its copy waits, and the
+            # merged event with it, until the team resumes.
+            continue
         sub = sync.sync_source(conn, source, target, now=now, secrets=secrets,
                                fetcher=fetcher, publish=False)
         report.errors.extend(f"{sid}: {e}" for e in sub.errors)
@@ -285,3 +289,30 @@ def _end(conn, target, report, uid: str, *, now, secrets, fetcher) -> bool:
     ok &= _cancel(conn, target, uid, report)
     conn.commit()
     return ok
+
+
+def unmerge(conn, target, *, now: datetime, secrets: SecretStore | None = None,
+            fetcher=http_fetch) -> MergeReport:
+    """End every merged event and disable the companions, before a downgrade.
+
+    A version without this module polls a companion as a team it cannot parse and
+    never cancels its events. A merged event a person withheld passes that
+    decision to the members' copies, so they stay off once they are back.
+    """
+    report = MergeReport()
+    for companion in repo.companions(conn):
+        for uid, state in sorted(repo.event_states(conn, companion.id).items()):
+            if warmup.is_synthetic(uid) or not (_live(state) or state.withheld):
+                continue
+            if state.withheld:
+                for m in repo.members_of(conn, uid):
+                    repo.set_withheld(conn, m["member_uid"], state.withheld)
+                conn.commit()
+            if _end(conn, target, report, uid, now=now, secrets=secrets, fetcher=fetcher):
+                report.ended += 1
+    if report.errors:
+        return report   # a companion still holding a live event stays enabled for a rerun
+    for companion in repo.companions(conn):
+        repo.set_enabled(conn, companion.id, False)
+    conn.commit()
+    return report

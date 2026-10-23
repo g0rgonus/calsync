@@ -769,3 +769,46 @@ def test_lifting_a_withhold_after_the_group_ended_brings_the_copy_straight_back(
     assert env["api"].call("POST", STATUS, {"uid": MERGED, "status": None})["status"] == 200
     (event,) = calendar(env)
     assert event["uid"].startswith(herons + ".")
+
+
+def test_the_api_names_the_carrier_team_and_never_calls_a_merged_event_stale(env, tmp_path):
+    two_teams(env)
+    body = reader(env, tmp_path).get(f"/v1/events/{MERGED}")["json"]
+    assert [s["id"] for s in body["sources"]] == ["in-herons"]
+    assert not any(s["stale"] for s in body["sources"])
+
+
+def test_a_paused_feed_is_not_fetched_to_end_a_group_and_the_merged_event_waits(env):
+    (herons, hk), (otters, ok) = two_teams(env)
+    conn = conn_for(env)
+    conn.execute("UPDATE sources SET kind = 'teamreach', enabled = 0, "
+                 "url_template = 'https://feeds.example/otters.ics' WHERE id = ?", (otters,))
+    conn.execute("DELETE FROM shared_candidates WHERE source_id = ?", (herons,))
+    conn.commit()
+    conn.close()
+    fetched = []
+    report = run_publish(env, fetcher=lambda url: fetched.append(url) or b"")
+    assert fetched == []
+    assert report.ended == 0 and any("could not be restored" in e for e in report.errors)
+    assert [e["uid"] for e in calendar(env)] == [MERGED]
+
+
+def test_unmerge_gives_every_team_its_copy_back_and_disables_the_companions(env):
+    (herons, hk), (otters, ok) = two_teams(env)
+    conn = conn_for(env)
+    report = merging.unmerge(conn, env["target"], now=NOW, secrets=env["secrets"])
+    assert report.ended == 1 and report.errors == []
+    assert sorted(e["uid"].split(".")[0] for e in calendar(env)) == [herons, otters]
+    assert [s.enabled for s in repo.companions(conn)] == [False]
+    # 0.21.0 lists enabled sources only, so it never polls the companion.
+    assert all(s.kind != "merged" for s in repo.list_sources(conn))
+    conn.close()
+
+
+def test_unmerge_keeps_a_withheld_merged_meet_off(env):
+    two_teams(env)
+    env["api"].call("POST", STATUS, {"uid": MERGED, "status": "not_attending"})
+    conn = conn_for(env)
+    merging.unmerge(conn, env["target"], now=NOW, secrets=env["secrets"])
+    conn.close()
+    assert calendar(env) == []
