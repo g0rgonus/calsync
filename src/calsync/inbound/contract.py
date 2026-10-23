@@ -477,6 +477,9 @@ def openapi(server: str) -> dict:
                                               "the series no longer has them."},
         "sync": {"type": "object", "description": "What reaching the calendar did: "
                  "status ok, held, error, or deferred (stored; the next poll applies it)."},
+        "merge_errors": {"type": "array", "items": {"type": "string"},
+                         "description": "Only when non-empty: why a merged event (teams at "
+                                        "one meet) may be stale. Also inside `sync`."},
     }}
     error = {"type": "object", "properties": {"error": {"type": "object", "properties": {
         "code": {"type": "string"},

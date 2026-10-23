@@ -434,6 +434,14 @@ def sync_source(
     # event: still in the diff, never stored as withheld, back the moment the
     # merged event is gone.
     claimed = repo.claimed_uids(conn, source.id)
+    # A brand-new copy at a meet a live merged event already covers is dropped the
+    # same way: the merge step adds this team to it, so no phone sees a copy
+    # appear and then vanish.
+    meets = repo.live_merged_keys(conn, source.id)
+    if meets:
+        claimed = claimed | {
+            uid for uid, row in mine.items()
+            if row["key"] in meets and not (states.get(uid) and not states[uid].cancelled)}
     if claimed and not dry_run:
         for event in events:
             if event.uid in claimed and event.uid not in states:

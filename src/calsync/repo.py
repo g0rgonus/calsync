@@ -377,6 +377,8 @@ def placements(conn: sqlite3.Connection, *, since: str) -> list[dict]:
     a copy another team's source writes for both: accounted for, so the Mac
     mirror does not hold its absence.
     """
+    from . import warmup
+
     away = merged_away(conn)
     rows = conn.execute(
         "SELECT uid, source_id, collection, shown_starts_at, cancelled, "
@@ -389,8 +391,9 @@ def placements(conn: sqlite3.Connection, *, since: str) -> list[dict]:
     for r in rows:
         if r["withheld"]:
             state = "withheld"
-        elif r["uid"] in away:
-            state = "merged"
+        elif r["uid"] in away or warmup.parent_of(r["uid"]) in away:
+            # A copy whose takedown failed is still on the calendar, so it is live.
+            state = "live" if not (r["cancelled"] or r["cancelled_upstream_at"]) else "merged"
         elif r["cancelled"] or r["cancelled_upstream_at"]:
             state = "cancelled"
         elif r["removal_approved_at"]:
@@ -2463,6 +2466,16 @@ def claimed_uids(conn: sqlite3.Connection, source_id: str) -> set[str]:
     """This source's copies a live merged event stands in for."""
     return {r["member_uid"] for r in conn.execute(
         f"SELECT m.member_uid {_CLAIMED} AND m.source_id = ?", (source_id,))}
+
+
+def live_merged_keys(conn: sqlite3.Connection, source_id: str) -> set[str]:
+    """Candidate keys of the live merged events this source is a member of."""
+    return {r["key"] for r in conn.execute(
+        "SELECT DISTINCT c.key FROM merged_members m "
+        "JOIN event_state e ON e.uid = m.merged_uid "
+        "JOIN merged_members o ON o.merged_uid = m.merged_uid "
+        "JOIN shared_candidates c ON c.uid = o.member_uid "
+        "WHERE e.cancelled = 0 AND m.source_id = ?", (source_id,))}
 
 
 def members_of(conn: sqlite3.Connection, merged_uid: str) -> list[dict]:

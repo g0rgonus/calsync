@@ -812,3 +812,80 @@ def test_unmerge_keeps_a_withheld_merged_meet_off(env):
     merging.unmerge(conn, env["target"], now=NOW, secrets=env["secrets"])
     conn.close()
     assert calendar(env) == []
+
+
+def rename_meet(env, source, old, new):
+    """The sender re-sends a meet under a new id: the old one is simply gone."""
+    conn = conn_for(env)
+    conn.execute("UPDATE inbound_events SET external_id = ? WHERE source_id = ? "
+                 "AND external_id = ?", (new, source, old))
+    conn.commit()
+    conn.close()
+
+
+def test_a_new_copy_at_a_meet_the_team_is_already_merged_into_is_never_written(env):
+    (herons, hk), (otters, ok) = two_teams(env)
+    rename_meet(env, otters, "harbor", "harbor2")
+    env["target"].calls.clear()
+    conn = conn_for(env)
+    sync_source(conn, repo.get_source(conn, otters), env["target"], now=NOW,
+                secrets=env["secrets"])
+    members = {m for m, _ in repo.all_members(conn)[MERGED]}
+    conn.close()
+    fresh = OTTERS_UID.replace("harbor", "harbor2")
+    assert ("upsert", fresh) not in env["target"].calls, env["target"].calls
+    assert uids(env) == [MERGED]
+    assert members == {HERONS_UID, fresh}
+
+
+def test_the_console_shows_a_merge_failure_beside_the_action_that_caused_it(env):
+    two_teams(env)
+    env["target"].fail = ("merged.",)
+    r = env["console"].post("/sources/in-otters/retire", {})
+    assert r["status"] in (302, 303), r
+    where = unquote(r["headers"]["Location"])
+    assert "ok=" in where and "merged event: " in where and "refused merged." in where
+
+
+def test_the_admin_api_reports_merge_errors_only_when_there_are_some(env):
+    two_teams(env)
+    env["target"].fail = ("merged.",)
+    r = env["api"].call("POST", STATUS, {"uid": OTTERS_UID, "status": "not_attending"})
+    assert r["status"] == 200, r["json"]
+    assert any("refused merged." in e for e in r["json"]["merge_errors"]), r["json"]
+    env["target"].fail = ()
+    r = env["api"].call("POST", STATUS, {"uid": HERONS_UID, "status": "not_attending"})
+    assert r["status"] == 200 and "merge_errors" not in r["json"], r["json"]
+
+
+def test_placements_call_a_claimed_copy_live_while_its_takedown_is_failing(env):
+    herons, hk = team(env, "Herons", "jesse")
+    otters, ok = team(env, "Otters", "nadia")
+    push(env, herons, hk)
+    push(env, otters, ok)
+    live(env, herons)
+    env["target"].fail = ("in-",)
+    live(env, otters)
+    conn = conn_for(env)
+    states = {p["uid"]: p["state"] for p in repo.placements(conn, since="2000-01-01")}
+    conn.close()
+    assert states[HERONS_UID] == "live" and states[OTTERS_UID] == "live"
+    assert states[MERGED] == "live"
+
+
+def test_placements_call_a_claimed_copys_warmup_merged_not_cancelled(env):
+    herons, hk = team(env, "Herons", "jesse")
+    conn = conn_for(env)
+    conn.execute("UPDATE activities SET warmup_minutes = 45 WHERE id = "
+                 "(SELECT activity_id FROM sources WHERE id = ?)", (herons,))
+    conn.commit()
+    conn.close()
+    otters, ok = team(env, "Otters", "nadia")
+    for source, key in ((herons, hk), (otters, ok)):
+        push(env, source, key, **TIMED)
+        live(env, source)
+    conn = conn_for(env)
+    states = {p["uid"]: p["state"] for p in repo.placements(conn, since="2000-01-01")}
+    conn.close()
+    assert state(env, f"calsync-warmup-{HERONS_UID}").cancelled
+    assert states[f"calsync-warmup-{HERONS_UID}"] == "merged"

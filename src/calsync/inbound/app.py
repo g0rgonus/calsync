@@ -358,6 +358,8 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
             out["held"] = report.held
         if report.errors:
             out["errors"] = report.errors
+        if report.merge_errors:
+            out["merge_errors"] = report.merge_errors
         return out
 
     def parts_index(conn, source: repo.Source) -> dict[str, list[str]]:
@@ -1032,11 +1034,13 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
                            "event comes back when it resumes"})}
             else:
                 unreachable = None
+                merge_errors: list[str] = []
                 try:
                     target = write_target or targeting.build_target(conn, secrets=secrets)
                     withheld_mod.enforce(conn, state.source_id, target)
                     conn.commit()
-                    merging.publish(conn, target, now=clock(), secrets=secrets)
+                    merge_errors = merging.publish(
+                        conn, target, now=clock(), secrets=secrets).errors
                 except (SecretError, TargetError) as exc:
                     unreachable = exc
             event_alert(conn, caller, state, status, change.get("note"))
@@ -1047,7 +1051,8 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
                 result = {"detail": "off the calendar" if off else
                           f"saved; the calendar could not be reached ({unreachable}), so "
                           "the next sync removes it" if unreachable else
-                          "saved; removing it failed, so a later sync retries"}
+                          "saved; removing it failed, so a later sync retries",
+                          **({"merge_errors": merge_errors} if merge_errors else {})}
         audit(state.source_id, "POST admin/events/status", uid, str(status))
         return _dump({"uid": uid, "status": status, "on_calendar": not off, **result})
 
@@ -1103,11 +1108,13 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
             repo.log_admin(conn, caller.label, "kid_absent" if absent else "kid_back",
                            f"event:{state.uid}", {"child": child_id, "note": note})
             conn.commit()
+            merge_errors: list[str] = []
             try:
                 target = write_target or targeting.build_target(conn, secrets=secrets)
                 withheld_mod.enforce(conn, source.id, target)
                 conn.commit()
-                merging.publish(conn, target, now=clock(), secrets=secrets)
+                merge_errors = merging.publish(
+                    conn, target, now=clock(), secrets=secrets).errors
             except (SecretError, TargetError):
                 pass
             result = sync(source) if source.enabled else {"status": "deferred"}
@@ -1118,7 +1125,7 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
                         + ("not attending " if absent else "going to ")
                         + f"{activity.name} on {when}" + (f": {note}" if note else "") + ".")
         else:
-            result = None
+            result, merge_errors = None, []
         away = set().union(*repo.absences_of(
             conn, [state.uid, *(m["member_uid"] for m in members)]).values())
         fresh = repo.event_state(conn, shown.uid)
@@ -1126,7 +1133,8 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
                       "status": "not_attending" if absent else None,
                       "going": [k for k in kids if k not in away],
                       "on_calendar": not fresh.cancelled,
-                      **({"sync": result} if result else {"detail": "no change"})})
+                      **({"sync": result} if result else {"detail": "no change"}),
+                      **({"merge_errors": merge_errors} if merge_errors else {})})
 
     def alert(conn, message: str) -> None:
         """Push an admin change that can affect a live calendar.
