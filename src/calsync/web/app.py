@@ -581,7 +581,7 @@ def create_app(
                                   f"retired: {exc}") from exc
                 # A partial retire leaves events only that team's sync can remove.
                 if report.ok:
-                    merge_errs = merging.publish(
+                    merge_errs = merging.publish_safely(
                         conn, target, now=clock(), secrets=secrets).errors
                     repo.revoke_team_key(conn, other.id, actor="console")
                     repo.log_admin(conn, "console", "team_retired", f"team:{other.id}",
@@ -687,7 +687,7 @@ def create_app(
                 report = retire.retire_source(conn, source, target, now=clock())
                 if report.ok:
                     # Its meets go back to the other teams' own copies.
-                    merge_errs = merging.publish(
+                    merge_errs = merging.publish_safely(
                         conn, target, now=clock(), secrets=secrets).errors
             except (SecretError, TargetError) as exc:
                 raise Refused(f"could not reach the calendar: {exc}") from exc
@@ -1167,7 +1167,7 @@ def create_app(
                 target = write_target or targeting.build_target(conn, secrets=secrets)
                 withheld_mod.enforce(conn, source.id, target)
                 conn.commit()
-                merge_errs = merging.publish(
+                merge_errs = merging.publish_safely(
                     conn, target, now=clock(), secrets=secrets).errors
             except (SecretError, TargetError):
                 pass
@@ -1234,7 +1234,7 @@ def create_app(
                 conn.commit()
                 # A copy taken off may end a group; a merged event taken off
                 # keeps its members dropped.
-                merge_errs = merging.publish(
+                merge_errs = merging.publish_safely(
                     conn, target, now=clock(), secrets=secrets).errors
             except (SecretError, TargetError) as exc:
                 raise Refused(
@@ -1281,7 +1281,7 @@ def create_app(
                 # Written by the merge step; a companion has no feed to sync.
                 try:
                     target = write_target or targeting.build_target(conn, secrets=secrets)
-                    merged = merging.publish(conn, target, now=clock(), secrets=secrets)
+                    merged = merging.publish_safely(conn, target, now=clock(), secrets=secrets)
                 except (SecretError, TargetError) as exc:
                     raise Refused(f"cleared, but the calendar could not be reached: {exc}"
                                   ) from exc

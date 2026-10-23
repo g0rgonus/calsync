@@ -433,9 +433,11 @@ Decisions that span several files and are easy to undo by accident:
   after its merged replacement was accepted and recorded, and a merged event is
   cancelled only after the members' own copies are restored. Dropped copies stay
   in the team's diff and are never stored as withheld; only a person sets that
-  flag. A mass group-end is held by the companion's disappearance guard, a held
-  poll keeps its stored candidates, and the read API reports a claimed copy as
-  `merged_into`, not cancelled.
+  flag. A group-end is not guarded: it always restores the members' copies first.
+  A group keeps its merged uid as teams join or leave, so a person's withhold
+  survives. One merge step runs at a time (`merge_lease`; a busy one is skipped).
+  A held poll keeps its stored candidates, and the read API reports a claimed
+  copy as `merged_into`, not cancelled.
 - **The title is a render, not data.** `Event` deliberately has no `summary`
   field; the display title is composed at write time from a configurable template
   (`normalize/title.py`). Nothing downstream parses it back, so conventions can

@@ -485,7 +485,7 @@ def test_retiring_the_carrier_gives_the_other_team_its_own_copy_back(env):
     conn.close()
 
 
-def test_a_new_carrier_is_written_before_the_old_merged_event_goes(env):
+def test_the_carrier_leaving_keeps_the_merged_event_and_its_uid(env):
     herons, hk = team(env, "Herons", "jesse")
     otters, ok = team(env, "Otters", "nadia")
     pike, pk = team(env, "Pike", "sam")
@@ -497,8 +497,8 @@ def test_a_new_carrier_is_written_before_the_old_merged_event_goes(env):
     env["target"].calls.clear()
     env["console"].post(f"/sources/{herons}/retire", {})
     (event,) = calendar(env)
-    assert event["uid"] == f"merged.{OTTERS_UID}" and "N+S" in event["title"]
-    assert env["target"].at("upsert", f"merged.{OTTERS_UID}") < env["target"].at("cancel", MERGED)
+    assert event["uid"] == MERGED and "N+S" in event["title"]
+    assert ("cancel", MERGED) not in env["target"].calls
 
 
 def test_a_claimed_copy_with_no_row_gets_a_cancelled_placeholder(env):
@@ -766,6 +766,7 @@ def test_lifting_a_withhold_after_the_group_ended_brings_the_copy_straight_back(
     r = env["api"].call("POST", STATUS, {"uid": MERGED, "status": "not_attending"})
     assert r["status"] == 200 and calendar(env) == []
     delete_meet(env, otters, ok)
+    assert calendar(env) == []
     assert env["api"].call("POST", STATUS, {"uid": MERGED, "status": None})["status"] == 200
     (event,) = calendar(env)
     assert event["uid"].startswith(herons + ".")
@@ -889,3 +890,56 @@ def test_placements_call_a_claimed_copys_warmup_merged_not_cancelled(env):
     conn.close()
     assert state(env, f"calsync-warmup-{HERONS_UID}").cancelled
     assert states[f"calsync-warmup-{HERONS_UID}"] == "merged"
+
+
+def test_a_hidden_meet_stays_hidden_when_a_lower_id_team_joins(env):
+    two_teams(env)
+    assert env["api"].call("POST", STATUS, {"uid": MERGED, "status": "not_attending"})["status"] == 200
+    assert calendar(env) == []
+    avocets, ak = team(env, "Avocets", "sam")
+    push(env, avocets, ak)
+    live(env, avocets)
+    assert calendar(env) == []
+    assert state(env, MERGED).withheld == "not_attending"
+
+
+def test_a_merge_step_is_skipped_while_another_holds_the_lease(env):
+    herons, hk = team(env, "Herons", "jesse")
+    otters, ok = team(env, "Otters", "nadia")
+    for source, key in ((herons, hk), (otters, ok)):
+        push(env, source, key)
+    conn = conn_for(env)
+    assert repo.take_merge_lease(conn, now="2000-01-01", until="9999-01-01")
+    conn.close()
+    live(env, herons)
+    live(env, otters)
+    assert len(calendar(env)) == 2          # nothing merged while held
+    assert run_publish(env).skipped
+    conn = conn_for(env)
+    repo.release_merge_lease(conn)
+    conn.close()
+    assert not run_publish(env).skipped
+    assert [e["uid"] for e in calendar(env)] == [MERGED]
+
+
+def test_a_lease_left_by_a_crashed_run_expires(env):
+    conn = conn_for(env)
+    assert repo.take_merge_lease(conn, now="2026-10-22T00:00:00", until="2026-10-22T00:05:00")
+    assert not repo.take_merge_lease(conn, now="2026-10-22T00:04:00", until="2026-10-22T00:09:00")
+    assert repo.take_merge_lease(conn, now="2026-10-22T00:06:00", until="2026-10-22T00:11:00")
+    conn.close()
+
+
+def test_a_crashing_merge_step_is_reported_and_the_change_still_stands(env, monkeypatch):
+    two_teams(env)
+
+    def boom(*a, **kw):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(merging, "publish", boom)
+    r = env["api"].call("POST", STATUS, {"uid": MERGED, "status": "not_attending"})
+    assert r["status"] == 200 and any("boom" in e for e in r["json"]["merge_errors"])
+    assert state(env, MERGED).withheld == "not_attending"
+    page = env["console"].post("/events/restore", {"uid": MERGED})
+    assert page["status"] == 303 and "boom" in page["headers"]["Location"]
+    assert state(env, MERGED).withheld is None

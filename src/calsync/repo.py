@@ -2408,6 +2408,19 @@ def companion_id(carrier_source_id: str) -> str:
     return f"merged-{carrier_source_id}"
 
 
+def take_merge_lease(conn: sqlite3.Connection, *, now: str, until: str) -> bool:
+    """Claim the merge step until ``until``; False while another run holds it."""
+    taken = conn.execute("UPDATE merge_lease SET held_until = ? WHERE id = 1 AND "
+                         "(held_until = '' OR held_until < ?)", (until, now)).rowcount
+    conn.commit()
+    return taken == 1
+
+
+def release_merge_lease(conn: sqlite3.Connection) -> None:
+    conn.execute("UPDATE merge_lease SET held_until = '' WHERE id = 1")
+    conn.commit()
+
+
 def carrier_of(conn: sqlite3.Connection, source_id: str) -> str:
     """The team behind a source: a companion's carrier, or the source itself."""
     row = conn.execute("SELECT kind FROM sources WHERE id = ?", (source_id,)).fetchone()

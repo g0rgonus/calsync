@@ -1039,7 +1039,7 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
                     target = write_target or targeting.build_target(conn, secrets=secrets)
                     withheld_mod.enforce(conn, state.source_id, target)
                     conn.commit()
-                    merge_errors = merging.publish(
+                    merge_errors = merging.publish_safely(
                         conn, target, now=clock(), secrets=secrets).errors
                 except (SecretError, TargetError) as exc:
                     unreachable = exc
@@ -1060,7 +1060,7 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
         """Run the merge step now (it reads the database, no feed), and say how it went."""
         try:
             target = write_target or targeting.build_target(conn, secrets=secrets)
-            report = merging.publish(conn, target, now=clock(), secrets=secrets)
+            report = merging.publish_safely(conn, target, now=clock(), secrets=secrets)
         except (SecretError, TargetError) as exc:
             return {"status": "deferred",
                     "detail": f"stored; the calendar could not be reached ({exc}), "
@@ -1113,7 +1113,7 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
                 target = write_target or targeting.build_target(conn, secrets=secrets)
                 withheld_mod.enforce(conn, source.id, target)
                 conn.commit()
-                merge_errors = merging.publish(
+                merge_errors = merging.publish_safely(
                     conn, target, now=clock(), secrets=secrets).errors
             except (SecretError, TargetError):
                 pass

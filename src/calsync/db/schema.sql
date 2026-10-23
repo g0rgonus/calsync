@@ -12,6 +12,14 @@ CREATE TABLE IF NOT EXISTS schema_version (
 );
 
 -- Instance settings: radicale_url, collection_template, title_template, ...
+-- One merge step at a time across the poller, console and inbound processes. A
+-- lease rather than a transaction, because the step calls the calendar server.
+CREATE TABLE IF NOT EXISTS merge_lease (
+    id          INTEGER PRIMARY KEY CHECK (id = 1),
+    held_until  TEXT NOT NULL DEFAULT ''
+);
+INSERT OR IGNORE INTO merge_lease (id) VALUES (1);
+
 CREATE TABLE IF NOT EXISTS settings (
     key         TEXT PRIMARY KEY,
     value       TEXT NOT NULL,

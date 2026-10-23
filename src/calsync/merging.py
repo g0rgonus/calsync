@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from . import correlate, repo, sources, warmup, withheld
 from .diff import diff_poll, fingerprint
@@ -31,11 +31,16 @@ from .settings import Settings
 from .targets import TargetError, TargetRef
 
 
+LEASE = timedelta(minutes=5)   # longer than any run; a crashed one frees it
+
+
 @dataclass
 class MergeReport:
     written: int = 0
     ended: int = 0
     errors: list[str] = field(default_factory=list)
+    #: Another merge step held the lease, so this one did nothing.
+    skipped: bool = False
 
 
 @dataclass
@@ -69,8 +74,12 @@ def _desired(conn, rows: list[dict]) -> list[_Group]:
     by_key: dict[str, list[dict]] = {}
     for r in rows:
         by_key.setdefault(r["key"], []).append(r)
+    # A group keeps the merged uid its members already have, so a team joining or
+    # leaving never re-creates the event on phones or undoes a person's withhold.
+    current = {m: uid for uid, ms in repo.all_members(conn).items() for m, _ in ms}
+    taken: set[str] = set()
     groups = []
-    for members in by_key.values():
+    for members in sorted(by_key.values(), key=lambda ms: min(r["uid"] for r in ms)):
         if not correlate.usable(members):
             continue
         lead = min(members, key=lambda r: r["source_id"])
@@ -78,7 +87,10 @@ def _desired(conn, rows: list[dict]) -> list[_Group]:
         kids = tuple(c.id for c in sorted(
             (repo.get_child(conn, i) for i in merged.kids),
             key=lambda c: (c.birth_order, c.name)))
-        groups.append(_Group(f"merged.{lead['uid']}", lead, members, merged, kids))
+        held = sorted({current[r["uid"]] for r in members if r["uid"] in current} - taken)
+        uid = held[0] if held else f"merged.{lead['uid']}"
+        taken.add(uid)
+        groups.append(_Group(uid, lead, members, merged, kids))
     return sorted(groups, key=lambda g: g.uid)
 
 
@@ -122,13 +134,37 @@ def _cancel(conn, target, uid: str, report: MergeReport) -> bool:
 def publish(conn, target, *, now: datetime, secrets: SecretStore | None = None,
             fetcher=http_fetch) -> MergeReport:
     """Bring the merged events in line with the stored candidates."""
+    return _leased(conn, lambda: _publish(conn, target, now=now, secrets=secrets,
+                                          fetcher=fetcher))
+
+
+def _leased(conn, run) -> MergeReport:
+    """Run unless another merge step holds the lease; the next sync converges anyway."""
+    # Wall time, not the sync's clock: the lease is about processes, not the schedule.
+    wall = datetime.now(timezone.utc)
+    if not repo.take_merge_lease(conn, now=wall.isoformat(),
+                                 until=(wall + LEASE).isoformat()):
+        return MergeReport(skipped=True)
+    try:
+        return run()
+    finally:
+        repo.release_merge_lease(conn)
+
+
+def _publish(conn, target, *, now: datetime, secrets: SecretStore | None = None,
+             fetcher=http_fetch) -> MergeReport:
     from . import sync   # imports this module for its own run
 
     report = MergeReport()
     settings = Settings.load(conn)
     groups = _desired(conn, _members(conn))
     # Created on demand, committed before anything is written under it.
-    needed = {g.uid: repo.ensure_companion(conn, g.lead["source_id"]) for g in groups}
+    # An existing merged event stays with the companion that holds it.
+    needed = {}
+    for g in groups:
+        state = repo.event_state(conn, g.uid)
+        needed[g.uid] = (repo.get_source(conn, state.source_id) if state is not None
+                         else repo.ensure_companion(conn, g.lead["source_id"]))
     conn.commit()
     floor = (now - timedelta(days=settings.sync_window_back_days)).isoformat()
 
@@ -299,6 +335,12 @@ def unmerge(conn, target, *, now: datetime, secrets: SecretStore | None = None,
     never cancels its events. A merged event a person withheld passes that
     decision to the members' copies, so they stay off once they are back.
     """
+    return _leased(conn, lambda: _unmerge(conn, target, now=now, secrets=secrets,
+                                          fetcher=fetcher))
+
+
+def _unmerge(conn, target, *, now: datetime, secrets: SecretStore | None = None,
+             fetcher=http_fetch) -> MergeReport:
     report = MergeReport()
     for companion in repo.companions(conn):
         for uid, state in sorted(repo.event_states(conn, companion.id).items()):
@@ -316,3 +358,11 @@ def unmerge(conn, target, *, now: datetime, secrets: SecretStore | None = None,
         repo.set_enabled(conn, companion.id, False)
     conn.commit()
     return report
+
+
+def publish_safely(conn, target, **kwargs) -> MergeReport:
+    """`publish` for a route whose own change is already saved: a crash is reported."""
+    try:
+        return publish(conn, target, **kwargs)
+    except Exception as exc:  # noqa: BLE001 — the person's change stands either way
+        return MergeReport(errors=[f"merge step failed: {exc}"])

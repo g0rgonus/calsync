@@ -422,6 +422,10 @@ def cmd_unmerge(args) -> int:
     target = _target(conn, args, secrets)
     report = merging.unmerge(conn, target, now=_now(getattr(args, "now", None)),
                              secrets=secrets)
+    if report.skipped:
+        print("error: a merge step is running; stop the poller and try again",
+              file=sys.stderr)
+        return 1
     for error in report.errors:
         print(f"error: {error}", file=sys.stderr)
     print(f"{report.ended} merged event(s) ended")

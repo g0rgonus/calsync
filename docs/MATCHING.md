@@ -233,7 +233,10 @@ was accepted by the calendar and `merged_members` recorded it. When a group ends
 copy is restored first and the merged event is cancelled only once those are
 back; if one cannot be restored the merged event stays. Dropped copies stay in
 their team's diff and are never stored as withheld. A group-end is not held by a
-guard: every end replaces the merged event with the members' own copies. A team
+guard: every end replaces the merged event with the members' own copies. A group
+keeps the merged uid its members already have, so a team joining or leaving never
+re-creates the event or undoes a withhold. One merge step runs at a time
+(`merge_lease`); a run that finds it held is skipped, and the next sync converges. A team
 leaving a group that lives on gets its own copy back the same way. A held poll
 keeps its stored candidates; a paused team keeps its candidates, because its copy
 is still on the calendar.
