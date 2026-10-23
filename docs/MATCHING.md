@@ -236,7 +236,9 @@ their team's diff and are never stored as withheld. A group-end is not held by a
 guard: every end replaces the merged event with the members' own copies. A group
 keeps the merged uid its members already have, so a team joining or leaving never
 re-creates the event or undoes a withhold. One merge step runs at a time
-(`merge_lease`); a run that finds it held is skipped, and the next sync converges. A team
+(`merge_lease`, held by token and renewed between groups); a run that finds it
+held asks the holder to go again. A split group's held uid goes to the group with
+the member it was made from, and no two groups ever share one. A team
 leaving a group that lives on gets its own copy back the same way. A held poll
 keeps its stored candidates; a paused team keeps its candidates, because its copy
 is still on the calendar.

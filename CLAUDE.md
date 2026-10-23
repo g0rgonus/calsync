@@ -435,7 +435,8 @@ Decisions that span several files and are easy to undo by accident:
   in the team's diff and are never stored as withheld; only a person sets that
   flag. A group-end is not guarded: it always restores the members' copies first.
   A group keeps its merged uid as teams join or leave, so a person's withhold
-  survives. One merge step runs at a time (`merge_lease`; a busy one is skipped).
+  survives. One merge step runs at a time (`merge_lease`, held by token): a run that finds it
+  busy asks the holder to go again, so a change made mid-run still lands at once.
   A held poll keeps its stored candidates, and the read API reports a claimed
   copy as `merged_into`, not cancelled.
 - **The title is a render, not data.** `Event` deliberately has no `summary`

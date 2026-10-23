@@ -909,26 +909,63 @@ def test_a_merge_step_is_skipped_while_another_holds_the_lease(env):
     for source, key in ((herons, hk), (otters, ok)):
         push(env, source, key)
     conn = conn_for(env)
-    assert repo.take_merge_lease(conn, now="2000-01-01", until="9999-01-01")
+    assert repo.take_merge_lease(conn, token="other", now="2000-01-01", until="9999-01-01")
     conn.close()
     live(env, herons)
     live(env, otters)
     assert len(calendar(env)) == 2          # nothing merged while held
     assert run_publish(env).skipped
     conn = conn_for(env)
-    repo.release_merge_lease(conn)
+    repo.release_merge_lease(conn, token="other")
     conn.close()
     assert not run_publish(env).skipped
     assert [e["uid"] for e in calendar(env)] == [MERGED]
 
 
-def test_a_lease_left_by_a_crashed_run_expires(env):
+def test_a_run_frees_only_its_own_lease(env):
     conn = conn_for(env)
-    assert repo.take_merge_lease(conn, now="2026-10-22T00:00:00", until="2026-10-22T00:05:00")
-    assert not repo.take_merge_lease(conn, now="2026-10-22T00:04:00", until="2026-10-22T00:09:00")
-    assert repo.take_merge_lease(conn, now="2026-10-22T00:06:00", until="2026-10-22T00:11:00")
+    assert repo.take_merge_lease(conn, token="a", now="2026-10-22T00:00:00",
+                                 until="2026-10-22T00:05:00")
+    assert not repo.take_merge_lease(conn, token="b", now="2026-10-22T00:04:00",
+                                     until="2026-10-22T00:09:00")
+    # A outlived its lease, so B takes over; A's late release and renewal touch nothing.
+    assert repo.take_merge_lease(conn, token="b", now="2026-10-22T00:06:00",
+                                 until="2026-10-22T00:11:00")
+    repo.release_merge_lease(conn, token="a")
+    assert not repo.renew_merge_lease(conn, token="a", until="2026-10-22T00:20:00")
+    assert not repo.take_merge_lease(conn, token="c", now="2026-10-22T00:07:00",
+                                     until="2026-10-22T00:12:00")
+    repo.release_merge_lease(conn, token="b")
+    assert repo.take_merge_lease(conn, token="c", now="2026-10-22T00:07:00",
+                                 until="2026-10-22T00:12:00")
     conn.close()
 
+
+def test_a_run_that_loses_its_lease_stops_between_groups(env, monkeypatch):
+    two_teams(env)
+    monkeypatch.setattr(repo, "renew_merge_lease", lambda conn, **kw: False)
+    report = run_publish(env)
+    assert any("another run took over" in e for e in report.errors)
+
+
+def test_a_change_made_during_a_run_is_merged_by_that_run_going_again(env, monkeypatch):
+    two_teams(env)
+    calls = []
+    real = merging._publish
+
+    def run(conn, target, **kw):
+        calls.append(1)
+        if len(calls) == 1:
+            # Another process's change lands mid-run, and its own merge step is turned away.
+            assert merging.publish(conn, target, now=NOW).skipped
+        return real(conn, target, **kw)
+
+    monkeypatch.setattr(merging, "_publish", run)
+    assert not run_publish(env).skipped
+    assert len(calls) == 2
+    conn = conn_for(env)
+    assert not repo.clear_merge_rerun(conn)   # nothing left pending
+    conn.close()
 
 def test_a_crashing_merge_step_is_reported_and_the_change_still_stands(env, monkeypatch):
     two_teams(env)
@@ -943,3 +980,25 @@ def test_a_crashing_merge_step_is_reported_and_the_change_still_stands(env, monk
     page = env["console"].post("/events/restore", {"uid": MERGED})
     assert page["status"] == 303 and "boom" in page["headers"]["Location"]
     assert state(env, MERGED).withheld is None
+
+
+def test_a_split_group_never_shares_a_merged_uid(env):
+    conn = conn_for(env)
+    conn.execute("INSERT INTO children (id, name, initial, birth_order) "
+                 "VALUES ('ola', 'Ola', 'O', 4)")
+    conn.commit()
+    conn.close()
+    two_teams(env)                                   # merged.<herons copy>
+    late = [team(env, "Avocets", "sam"), team(env, "Bitterns", "ola")]
+    for source, key in late:                         # lower ids join; the uid stays
+        push(env, source, key)
+        live(env, source)
+    assert [e["uid"] for e in calendar(env)] == [MERGED]
+    # The late pair renames its meet and splits off. It sorts first and holds
+    # MERGED too; the pair holding the copy MERGED was made from must keep it.
+    for source, key in late:
+        push(env, source, key, label="Harbor Invitational Relays")
+    by_uid = {e["uid"]: e["title"] for e in calendar(env)}
+    assert len(by_uid) == 2 and MERGED in by_uid, by_uid
+    assert "J+N" in by_uid[MERGED]
+    assert run_publish(env).written == 0             # settled, not flipping

@@ -16,7 +16,9 @@ CREATE TABLE IF NOT EXISTS schema_version (
 -- lease rather than a transaction, because the step calls the calendar server.
 CREATE TABLE IF NOT EXISTS merge_lease (
     id          INTEGER PRIMARY KEY CHECK (id = 1),
-    held_until  TEXT NOT NULL DEFAULT ''
+    held_until  TEXT NOT NULL DEFAULT '',
+    token       TEXT NOT NULL DEFAULT '',     -- which run holds it
+    rerun       INTEGER NOT NULL DEFAULT 0    -- a skipped run asked the holder to go again
 );
 INSERT OR IGNORE INTO merge_lease (id) VALUES (1);
 

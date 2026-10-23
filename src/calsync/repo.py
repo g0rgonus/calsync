@@ -2408,17 +2408,40 @@ def companion_id(carrier_source_id: str) -> str:
     return f"merged-{carrier_source_id}"
 
 
-def take_merge_lease(conn: sqlite3.Connection, *, now: str, until: str) -> bool:
+def take_merge_lease(conn: sqlite3.Connection, *, token: str, now: str, until: str) -> bool:
     """Claim the merge step until ``until``; False while another run holds it."""
-    taken = conn.execute("UPDATE merge_lease SET held_until = ? WHERE id = 1 AND "
-                         "(held_until = '' OR held_until < ?)", (until, now)).rowcount
+    taken = conn.execute(
+        "UPDATE merge_lease SET held_until = ?, token = ? WHERE id = 1 AND "
+        "(held_until = '' OR held_until < ?)", (until, token, now)).rowcount
     conn.commit()
     return taken == 1
 
 
-def release_merge_lease(conn: sqlite3.Connection) -> None:
-    conn.execute("UPDATE merge_lease SET held_until = '' WHERE id = 1")
+def renew_merge_lease(conn: sqlite3.Connection, *, token: str, until: str) -> bool:
+    """Extend this run's lease; False once another run has taken it over."""
+    kept = conn.execute("UPDATE merge_lease SET held_until = ? WHERE id = 1 AND token = ?",
+                        (until, token)).rowcount
     conn.commit()
+    return kept == 1
+
+
+def release_merge_lease(conn: sqlite3.Connection, *, token: str) -> None:
+    """Free the lease if this run still holds it, never another run's."""
+    conn.execute("UPDATE merge_lease SET held_until = '', token = '' "
+                 "WHERE id = 1 AND token = ?", (token,))
+    conn.commit()
+
+
+def request_merge_rerun(conn: sqlite3.Connection) -> None:
+    conn.execute("UPDATE merge_lease SET rerun = 1 WHERE id = 1")
+    conn.commit()
+
+
+def clear_merge_rerun(conn: sqlite3.Connection) -> bool:
+    """Take a pending rerun request; True if there was one."""
+    taken = conn.execute("UPDATE merge_lease SET rerun = 0 WHERE id = 1 AND rerun = 1").rowcount
+    conn.commit()
+    return taken == 1
 
 
 def carrier_of(conn: sqlite3.Connection, source_id: str) -> str:
