@@ -411,8 +411,9 @@ CREATE TABLE IF NOT EXISTS event_absences (
 
 -- One row per game a source has on, keyed so teams going to the same meet land
 -- together (`correlate.py`). Replaced whole at every sync of the source, and
--- committed before it writes, so a partner reading it sees the same picture
--- the deletes are about to act on.
+-- read by `merging.publish`, which never fetches. `content` is the event after
+-- the person's overlay (`repo.content_of` plus its identity), enough to rebuild
+-- it; `kids` is the team's kids before absences, which publish reads live.
 CREATE TABLE IF NOT EXISTS shared_candidates (
     uid        TEXT PRIMARY KEY,
     source_id  TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
@@ -424,6 +425,16 @@ CREATE TABLE IF NOT EXISTS shared_candidates (
     kit        TEXT,
     arrive_at  TEXT,
     venue      TEXT,
-    field      TEXT
+    field      TEXT,
+    content    TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS shared_candidates_key ON shared_candidates(key);
+
+-- Which team copies a merged event stands in for. A copy is taken off the
+-- calendar only once its row is here and the merged event is accepted.
+CREATE TABLE IF NOT EXISTS merged_members (
+    member_uid TEXT PRIMARY KEY,
+    merged_uid TEXT NOT NULL,
+    source_id  TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS merged_members_merged ON merged_members(merged_uid);

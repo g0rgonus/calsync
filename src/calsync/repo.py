@@ -13,7 +13,6 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 
 from . import overlay as overlay_mod
-from .correlate import carrier, usable
 from .models import Activity, Child, Event, Venue
 
 
@@ -123,10 +122,13 @@ def get_activity(conn: sqlite3.Connection, activity_id: str) -> Activity:
     )
 
 
-def list_sources(conn: sqlite3.Connection, *, enabled_only: bool = True) -> list[Source]:
-    sql = "SELECT * FROM sources"
-    if enabled_only:
-        sql += " WHERE enabled = 1"
+def list_sources(conn: sqlite3.Connection, *, enabled_only: bool = True,
+                 include_merged: bool = False) -> list[Source]:
+    # A companion (`ensure_companion`) holds merged events and has no feed, so
+    # nothing that polls, lists or reports teams should meet one.
+    where = [c for c, on in (("enabled = 1", enabled_only),
+                             ("kind != 'merged'", not include_merged)) if on]
+    sql = "SELECT * FROM sources" + (f" WHERE {' AND '.join(where)}" if where else "")
     return [
         Source(
             id=r["id"],
@@ -1044,7 +1046,7 @@ _STORED_SQL = f"""
     SELECT s.uid, s.source_id, s.collection, s.cancelled, s.withheld, s.starts_at,
            s.shown_starts_at, s.applied_overlay, s.content_hash, c.observed_at,
            {', '.join('c.' + col for col in CONTENT_COLUMNS)},
-           src.activity_id, a.child_id, s.kids, s.merged
+           src.activity_id, src.kind, a.child_id, s.kids, s.merged
       FROM event_state s
       JOIN event_content c ON c.uid = s.uid
       JOIN sources src ON src.id = s.source_id
@@ -1052,7 +1054,14 @@ _STORED_SQL = f"""
 """
 
 
-def _stored_event(row: sqlite3.Row) -> StoredEvent:
+def event_from(row) -> Event:
+    """An ``Event`` from its stored form: :data:`CONTENT_COLUMNS` plus its identity.
+
+    ``row`` is a mapping with ``uid``, ``activity_id``, ``starts_at``,
+    ``source_id`` and ``content_hash`` beside the content, which is how both a
+    receipt (`_stored_event`) and a shared candidate (`event_from_candidate`)
+    read it back.
+    """
     venue = None
     if row["venue_raw"]:
         # No coordinates. Events carry LOCATION as name and address, and
@@ -1063,8 +1072,7 @@ def _stored_event(row: sqlite3.Row) -> StoredEvent:
             address=row["venue_address"],
             field=row["venue_field"],
         )
-    applied = _overlay(row["applied_overlay"])
-    source = Event(
+    return Event(
         uid=row["uid"],
         activity_id=row["activity_id"],
         starts_at=datetime.fromisoformat(row["starts_at"]),
@@ -1087,6 +1095,28 @@ def _stored_event(row: sqlite3.Row) -> StoredEvent:
         ),
         warmup_for=row["warmup_for"],
     )
+
+
+def candidate_content(event: Event) -> str:
+    """The event as a shared candidate stores it: enough to rebuild it."""
+    return json.dumps({**content_of(event), "uid": event.uid,
+                       "activity_id": event.activity_id,
+                       "starts_at": event.starts_at.isoformat()}, sort_keys=True)
+
+
+def event_from_candidate(content: str, **changes) -> Event:
+    """Rebuild a candidate's event, with ``changes`` (a new uid, say) laid over it."""
+    stored = json.loads(content)
+    return replace(event_from({**stored, "source_id": None, "content_hash": None}),
+                   **changes)
+
+
+def _stored_event(row: sqlite3.Row) -> StoredEvent:
+    applied = _overlay(row["applied_overlay"])
+    source = event_from(row)
+    if row["kind"] == "merged":
+        # Written as the carrier team's, not as the companion that holds it.
+        source = replace(source, source_id=row["source_id"].removeprefix("merged-"))
     shown = overlay_mod.apply(source, applied)
     if row["merged"]:
         # Another team's notes, kit and arrival, as the carrier last wrote them.
@@ -1318,7 +1348,7 @@ def set_staging(conn: sqlite3.Connection, source_id: str, collection: str | None
 
 
 def get_source(conn: sqlite3.Connection, source_id: str) -> Source | None:
-    for source in list_sources(conn, enabled_only=False):
+    for source in list_sources(conn, enabled_only=False, include_merged=True):
         if source.id == source_id:
             return source
     return None
@@ -2325,11 +2355,12 @@ def keys_revoked_together(conn: sqlite3.Connection, at: str) -> list[ApiKey]:
 
 # --- shared meets ---------------------------------------------------------------
 #
-# Several teams' copies of one meet (`correlate.py`). The lowest source id
-# writes it; the rest are candidates only.
+# Several teams' copies of one meet (`correlate.py`). Each sync stores its
+# candidates; `merging.publish` reads them, writes the merged event under a
+# companion source, and only then takes the member copies down.
 
 CANDIDATE_COLUMNS = ("uid", "source_id", "key", "kids", "kid_order", "body", "url",
-                     "kit", "arrive_at", "venue", "field")
+                     "kit", "arrive_at", "venue", "field", "content")
 
 
 def _candidates(conn: sqlite3.Connection, where: str, params: tuple) -> list[dict]:
@@ -2343,8 +2374,12 @@ def _candidates(conn: sqlite3.Connection, where: str, params: tuple) -> list[dic
         "ORDER BY c.kid_order, c.source_id", params)]
 
 
+def all_candidates(conn: sqlite3.Connection) -> list[dict]:
+    return _candidates(conn, "1 = 1", ())
+
+
 def source_candidates(conn: sqlite3.Connection, source_id: str) -> list[dict]:
-    """What this source last stored, enabled or not — for comparing before and after."""
+    """What this source last stored, enabled or not."""
     return [dict(r) for r in conn.execute(
         f"SELECT {', '.join(CANDIDATE_COLUMNS)} FROM shared_candidates "
         "WHERE source_id = ? ORDER BY uid", (source_id,))]
@@ -2359,64 +2394,108 @@ def replace_candidates(conn: sqlite3.Connection, source_id: str, rows: list[dict
         [tuple(r[col] for col in CANDIDATE_COLUMNS) for r in rows])
 
 
-def clear_candidates(conn: sqlite3.Connection, source_id: str) -> set[str]:
-    """Drop this source's candidates and return their keys. Not committed."""
-    keys = {r["key"] for r in conn.execute(
-        "SELECT key FROM shared_candidates WHERE source_id = ?", (source_id,))}
+def clear_candidates(conn: sqlite3.Connection, source_id: str) -> None:
+    """Drop this source's candidates. Not committed."""
     conn.execute("DELETE FROM shared_candidates WHERE source_id = ?", (source_id,))
-    return keys
 
 
-def candidate_groups(conn: sqlite3.Connection, keys) -> dict[str, list[dict]]:
-    """Members of each key, from non-staged sources only."""
-    keys = sorted(set(keys))
-    out: dict[str, list[dict]] = {}
-    for i in range(0, len(keys), 500):
-        chunk = keys[i:i + 500]
-        for r in _candidates(conn, f"c.key IN ({', '.join('?' * len(chunk))})", tuple(chunk)):
-            out.setdefault(r["key"], []).append(r)
-    return out
+def companion_id(carrier_source_id: str) -> str:
+    return f"merged-{carrier_source_id}"
+
+
+def ensure_companion(conn: sqlite3.Connection, carrier_source_id: str) -> Source:
+    """The hidden source that holds a carrier team's merged events. Not committed."""
+    conn.execute(
+        "INSERT OR IGNORE INTO sources (id, activity_id, kind, shape, enabled) "
+        "SELECT ?, activity_id, 'merged', 'relay', 1 FROM sources WHERE id = ?",
+        (companion_id(carrier_source_id), carrier_source_id))
+    return get_source(conn, companion_id(carrier_source_id))
+
+
+def companions(conn: sqlite3.Connection) -> list[Source]:
+    return [s for s in list_sources(conn, enabled_only=False, include_merged=True)
+            if s.kind == "merged"]
+
+
+def delete_companion(conn: sqlite3.Connection, source_id: str) -> None:
+    """Forget a companion with nothing tracked. Not committed."""
+    conn.execute("DELETE FROM sources WHERE id = ? AND kind = 'merged'", (source_id,))
+
+
+def placeholder_state(conn: sqlite3.Connection, *, uid: str, source_id: str,
+                      collection: str, content_hash: str, starts_at: str) -> None:
+    """A cancelled row for a copy that was never written, so absences can name it."""
+    conn.execute(
+        "INSERT OR IGNORE INTO event_state (uid, source_id, collection, content_hash, "
+        "starts_at, shown_starts_at, cancelled) VALUES (?, ?, ?, ?, ?, ?, 1)",
+        (uid, source_id, collection, content_hash, starts_at, starts_at))
+
+
+_CLAIMED = ("FROM merged_members m JOIN event_state e ON e.uid = m.merged_uid "
+            "WHERE (e.withheld IS NOT NULL OR e.cancelled = 0)")
 
 
 def merged_into(conn: sqlite3.Connection) -> dict[str, str]:
-    """Each non-carrier uid of a live group, mapped to the uid that writes it."""
-    groups: dict[str, list[dict]] = {}
-    for r in _candidates(conn, "1 = 1", ()):
-        groups.setdefault(r["key"], []).append(r)
-    out: dict[str, str] = {}
-    for rows in groups.values():
-        if not usable(rows):
-            continue
-        lead = carrier(x["source_id"] for x in rows)
-        head = next(r["uid"] for r in rows if r["source_id"] == lead)
-        out.update({r["uid"]: head for r in rows if r["source_id"] != lead})
-    return out
+    """Each claimed member copy, mapped to the merged event that stands in for it.
 
-
-def in_shared_group(conn: sqlite3.Connection, uid: str) -> bool:
-    """Is this event (or the game a warm-up follows) merged with another team's copy?
-
-    A status change on one of these has to re-run the sync, which also syncs
-    the other teams, because the merged event is written from all of them.
+    Claimed only while the merged event is on the calendar or withheld: a
+    cancelled one carries nobody, so its members write their own again.
     """
-    from . import warmup
-    base = warmup.parent_of(uid) or uid
-    state = event_state(conn, base)
-    if state is not None and state.merged:
-        return True
-    return conn.execute(
-        "SELECT 1 FROM shared_candidates c JOIN shared_candidates o "
-        "ON o.key = c.key AND o.source_id != c.source_id "
-        "JOIN sources s ON s.id = o.source_id AND s.staging_collection IS NULL "
-        "WHERE c.uid = ?", (base,)).fetchone() is not None
+    return {r["member_uid"]: r["merged_uid"]
+            for r in conn.execute(f"SELECT m.member_uid, m.merged_uid {_CLAIMED}")}
 
 
 def merged_away(conn: sqlite3.Connection) -> set[str]:
-    """Uids that another team's source writes for them: non-carriers of a live group."""
     return set(merged_into(conn))
 
 
-# --- shared teams ---------------------------------------------------------------
+def claimed_uids(conn: sqlite3.Connection, source_id: str) -> set[str]:
+    """This source's copies a live merged event stands in for."""
+    return {r["member_uid"] for r in conn.execute(
+        f"SELECT m.member_uid {_CLAIMED} AND m.source_id = ?", (source_id,))}
+
+
+def members_of(conn: sqlite3.Connection, merged_uid: str) -> list[dict]:
+    """The member copies of a merged event, with the kids each was for."""
+    return [dict(r) for r in conn.execute(
+        "SELECT m.member_uid, m.source_id, c.kids FROM merged_members m "
+        "LEFT JOIN shared_candidates c ON c.uid = m.member_uid "
+        "WHERE m.merged_uid = ? ORDER BY m.source_id", (merged_uid,))]
+
+
+def all_members(conn: sqlite3.Connection) -> dict[str, list[tuple[str, str]]]:
+    """``{merged_uid: [(member_uid, source_id)]}`` for every merged event."""
+    out: dict[str, list[tuple[str, str]]] = {}
+    for r in conn.execute("SELECT merged_uid, member_uid, source_id FROM merged_members "
+                          "ORDER BY source_id"):
+        out.setdefault(r["merged_uid"], []).append((r["member_uid"], r["source_id"]))
+    return out
+
+
+def set_members(conn: sqlite3.Connection, merged_uid: str,
+                members: list[tuple[str, str]]) -> None:
+    """Make these (member uid, source id) the whole membership of a merged event. Not committed."""
+    conn.execute("DELETE FROM merged_members WHERE merged_uid = ?", (merged_uid,))
+    conn.executemany(
+        "INSERT OR REPLACE INTO merged_members (member_uid, merged_uid, source_id) "
+        "VALUES (?, ?, ?)", [(m, merged_uid, src) for m, src in members])
+
+
+def drop_members(conn: sqlite3.Connection, merged_uid: str) -> None:
+    conn.execute("DELETE FROM merged_members WHERE merged_uid = ?", (merged_uid,))
+
+
+def absences_of(conn: sqlite3.Connection, uids) -> dict[str, set[str]]:
+    """Which kids are not going to each of these events, whichever team holds them."""
+    uids = list(uids)
+    out: dict[str, set[str]] = {}
+    for i in range(0, len(uids), 500):
+        chunk = uids[i:i + 500]
+        for r in conn.execute(
+                f"SELECT uid, child_id FROM event_absences "
+                f"WHERE uid IN ({', '.join('?' * len(chunk))})", chunk):
+            out.setdefault(r["uid"], set()).add(r["child_id"])
+    return out
 
 
 def team_children(conn: sqlite3.Connection, activity: Activity) -> list[Child]:

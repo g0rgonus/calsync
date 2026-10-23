@@ -59,10 +59,6 @@ class RetireReport:
     kept: int = 0
     errors: list[str] = field(default_factory=list)
     disabled: bool = False
-    #: Meet keys this source stopped carrying; the caller syncs their other
-    #: teams (`sync.sync_partners`) so one takes over. This module cannot
-    #: import `sync`.
-    freed_keys: set[str] = field(default_factory=set)
 
     @property
     def ok(self) -> bool:
@@ -137,8 +133,9 @@ def retire_source(conn, source: repo.Source, target, *, now: datetime) -> Retire
     if report.ok:
         repo.set_enabled(conn, source.id, False)
         report.disabled = True
-        # After its events are cancelled: the other teams in its meets take over.
-        report.freed_keys = repo.clear_candidates(conn, source.id)
+        # A retired team no longer goes to any meet; `merging.publish` (run by
+        # the caller) hands its meets back to the other teams.
+        repo.clear_candidates(conn, source.id)
         repo.record_poll_run(
             conn, source_id=source.id, status="ok",
             detail=f"retired: {report.cancelled} events cancelled, polling stopped",

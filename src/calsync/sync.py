@@ -93,9 +93,9 @@ class SyncReport:
     #: Cancellations applied because a person confirmed a held set.
     confirmed: int = 0
     errors: list[str] = field(default_factory=list)
-    #: Other sources synced because this one's games changed what they share
-    #: with it (`correlate.py`); their errors are in `errors`.
-    partners_synced: list[str] = field(default_factory=list)
+    #: Problems from the merge step that follows a sync (`merging.publish`).
+    #: Kept apart from `errors` so a healthy team never backs off over them.
+    merge_errors: list[str] = field(default_factory=list)
 
     #: Which collection the events actually went to, so a staged run says so.
     staged_to: str | None = None
@@ -160,11 +160,10 @@ class SyncReport:
             parts.append(f"staged to {self.staged_to!r}")
         if self.confirmed:
             parts.append(f"{self.confirmed} held cancellation(s) confirmed")
-        if self.partners_synced:
-            parts.append(f"also synced {', '.join(self.partners_synced)}")
         if self.held:
             parts.append(f"HELD ({self.held_kind}): {self.held}")
         parts.extend(f"ERROR: {e}" for e in self.errors)
+        parts.extend(f"MERGE ERROR: {e}" for e in self.merge_errors)
         return ", ".join(parts)
 
     def diagnostic_lines(self) -> list[str]:
@@ -268,7 +267,7 @@ def sync_source(
     raw: bytes | str | None = None,
     dry_run: bool = False,
     confirm_held: str | None = None,
-    follow: bool = True,
+    publish: bool = True,
 ) -> SyncReport:
     """Poll one source and reconcile it into ``target``.
 
@@ -281,9 +280,11 @@ def sync_source(
     moved since, the poll stays held and nothing is cancelled. Only a person
     reaches this — the console's confirm button — never the poller.
 
-    ``follow`` syncs the other sources that share a meet with this one once its
-    games change; those runs pass False, so it goes one hop and stops.
+    ``publish`` runs the merge step afterwards (`merging.publish`); the restore
+    inside that step syncs a team with it off.
     """
+    # A companion has no feed; `merging.publish` is the only thing that writes it.
+    assert source.kind != "merged", f"{source.id} is a merge companion, not a feed"
     report = SyncReport(
         source_id=source.id, staged_to=source.staging_collection,
         pushed=source.kind in sources.PUSHED,
@@ -295,13 +296,8 @@ def sync_source(
     children = repo.team_children(conn, activity)
     away = repo.absences(conn, source.id)
 
-    merged_kids: dict[str, list] = {}   # carrier uid -> every team's kids going
-
     def kids_for(uid: str) -> list:
-        base = warmup.parent_of(uid) or uid
-        if base in merged_kids:
-            return merged_kids[base]
-        gone = away.get(base, set())
+        gone = away.get(warmup.parent_of(uid) or uid, set())
         return [c for c in children if c.id not in gone] or children
 
     # --- fetch + parse: any failure aborts before the diff ------------------
@@ -411,28 +407,44 @@ def sync_source(
             original.arrive_at = event.arrive_at
 
     # --- other teams at the same meet (`correlate.py`) ---------------------
-    # Stored and committed before any write or delete, for `approve_removals`'
-    # reason: a partner reading it must see what the deletes below act on.
+    # What this team could take to a meet, after the person's overlay. Kids are
+    # the team's, before absences: `merging.publish` reads those live.
     mine: dict[str, dict] = {}
     if source.enabled and not source.staging_collection:
         for event in events:
             if event.needs_enrichment or withheld.is_withheld(event.uid, off):
                 continue
-            own = kids_for(event.uid)
             k = correlate.key(event, activity.sport,
-                              collection_for(event, activity, own[0], settings))
+                              collection_for(event, activity, children[0], settings))
             if k is None:
                 continue
             named = event.venue is not None and event.uid in placed
             mine[event.uid] = {
                 "uid": event.uid, "source_id": source.id, "key": k,
-                "kids": ",".join(c.id for c in own),
-                "kid_order": min(c.birth_order for c in own),
+                "kids": ",".join(c.id for c in children),
+                "kid_order": children[0].birth_order,
                 "body": event.body, "url": event.url, "kit": event.kit,
                 "arrive_at": event.arrive_at.isoformat() if event.arrive_at else None,
                 "venue": event.venue.name if named else None,
                 "field": event.venue.field if event.venue else None,
+                "content": repo.candidate_content(event),
             }
+
+    # Copies a live merged event stands in for are dropped like a withheld
+    # event: still in the diff, never stored as withheld, back the moment the
+    # merged event is gone.
+    claimed = repo.claimed_uids(conn, source.id)
+    if claimed and not dry_run:
+        for event in events:
+            if event.uid in claimed and event.uid not in states:
+                # So an absence or a status change has a row to name.
+                repo.placeholder_state(
+                    conn, uid=event.uid, source_id=source.id,
+                    collection=collection_for(event, activity, children[0], settings),
+                    content_hash=event.content_hash or "",
+                    starts_at=event.starts_at.isoformat())
+        states = repo.event_states(conn, source.id)
+    off = off | claimed
 
     # --- diff --------------------------------------------------------------
     max_pct, max_count = _guard_thresholds(source, settings)
@@ -452,43 +464,6 @@ def sync_source(
 
     report.unchanged = len(delta.unchanged)
 
-    before = repo.source_candidates(conn, source.id)
-    # A held poll keeps what was stored: a suspect fetch must not reshape a group.
-    candidates = before if delta.is_anomalous else sorted(mine.values(), key=lambda r: r["uid"])
-    if not dry_run:
-        repo.replace_candidates(conn, source.id, candidates)
-        conn.commit()
-    # A dry run has not stored its own rows, so they are laid over the others'.
-    groups = repo.candidate_groups(conn, {r["key"] for r in candidates})
-    merges: dict[str, correlate.Merged] = {}
-    dropped: set[str] = set()
-    for k in {r["key"] for r in candidates}:
-        members = [r for r in groups.get(k, []) if r["source_id"] != source.id]
-        members += [r for r in candidates if r["key"] == k]
-        if not correlate.usable(members):
-            continue
-        lead = correlate.carrier(r["source_id"] for r in members)
-        for r in members:
-            if r["source_id"] != source.id:
-                continue
-            if lead != source.id:
-                dropped.add(r["uid"])
-            else:
-                merges[r["uid"]] = merged = correlate.merge(members)
-                merged_kids[r["uid"]] = sorted(
-                    (repo.get_child(conn, i) for i in merged.kids),
-                    key=lambda c: (c.birth_order, c.name))
-    # The merged arrival is the earliest team's, so the carrier's warm-up starts
-    # there too (an all-day game has none, and a team without warm-ups has none to move).
-    by_uid = {e.uid: e for e in events}
-    for uid, merged in merges.items():
-        block = by_uid.get(warmup.uid_for(uid))
-        if block is not None and merged.arrive_at:
-            block.starts_at = merged.arrive_at
-    # Dropped like a withheld event, and never stored as one: only a person sets
-    # `event_state.withheld`, and this copy returns the moment the group ends.
-    base_off, off = off, off | dropped
-
     if not dry_run and delta.confirm(confirm_held):
         report.confirmed = len(delta.cancelled)
         # Recorded and committed before a single delete is sent. The Mac mirror
@@ -497,6 +472,16 @@ def sync_source(
         # window where the absence is unexplained and the mirror holds it —
         # asking a second person for a decision this one has just made.
         repo.approve_removals(conn, delta.cancelled)
+        conn.commit()
+
+    # After the confirmation, so a held poll a person just confirmed is no longer
+    # suspect. A suspect fetch keeps what was stored: it must not reshape a group.
+    # A paused source is not re-read at all, only restored, and keeps its rows.
+    if not dry_run and source.enabled:
+        repo.replace_candidates(
+            conn, source.id,
+            repo.source_candidates(conn, source.id) if delta.is_anomalous
+            else sorted(mine.values(), key=lambda r: r["uid"]))
         conn.commit()
 
     if delta.is_anomalous:
@@ -510,34 +495,6 @@ def sync_source(
         # left to apply. A disappearance still has valid creates and updates:
         # the events that ARE present are real, only their absence is suspect.
 
-    # Copies about to come off because another team now writes the meet. A deleted
-    # event is a deleted event however it got there, so a mass of them (a first
-    # sync after deploy, say) meets the disappearance guard's thresholds and is
-    # held for a person; a held poll leaves them written as before.
-    new_drops = {u for u in dropped if u in states and not states[u].cancelled}
-    merge_held = False
-    if new_drops and (confirm_held == fingerprint(new_drops)) and not dry_run:
-        report.confirmed += len(new_drops)
-    elif new_drops:
-        # The disappearance guard's denominator (`diff_poll`): in-window games
-        # only, so a stored past season cannot dilute the share.
-        live = sum(1 for u in known if not warmup.is_synthetic(u))
-        # A lone copy is an ordinary merge, never a mass, whatever its share.
-        if len(new_drops) > max_count or (
-                len(new_drops) > 1 and (not live or len(new_drops) / live > max_pct)):
-            dropped -= new_drops
-            off = base_off | dropped
-            merge_held = True
-            if not delta.is_anomalous:
-                report.status = "held"
-                report.held = (
-                    f"{len(new_drops)} of {live} tracked events would come off the "
-                    "calendar at once because another team's source now writes "
-                    "them — holding them pending confirmation")
-                report.held_kind = "merge"
-                report.held_cancellations = sorted(new_drops)
-                report.held_fingerprint = fingerprint(new_drops)
-
     def _kept(events: list[Event]) -> list[Event]:
         """``events``, minus the ones somebody has taken off the calendar.
 
@@ -550,19 +507,16 @@ def sync_source(
     if dry_run:
         report.created = len(_kept(delta.created))
         report.updated = len(_kept(delta.updated))
-        # Copies another team now writes come off like a delete, held ones excepted.
-        coming_off = sum(1 for u, st in states.items()
-                         if not st.cancelled and withheld.is_withheld(u, dropped))
-        report.cancelled = len(delta.cancelled) + len(delta.called_off) + coming_off
+        report.cancelled = len(delta.cancelled) + len(delta.called_off)
         report.called_off = len(delta.called_off)
         report.withheld = len(delta.created) + len(delta.updated) \
             - report.created - report.updated
         return report
 
-    if delta.is_anomalous or merge_held:
+    if delta.is_anomalous:
         repo.record_poll_run(
             conn, source_id=source.id, status="held",
-            detail=delta.anomaly or report.held, raw_sha256=result.raw_sha256,
+            detail=delta.anomaly, raw_sha256=result.raw_sha256,
         )
 
     # Committed before anything is written or deleted, for the same reader and
@@ -622,10 +576,6 @@ def sync_source(
             # and the title says who.
             pending.append(event)
             refreshed_uids.add(event.uid)
-        elif state.merged != (merges[event.uid].layer if event.uid in merges else None):
-            # Another team's copy of this meet changed what is merged into it.
-            pending.append(event)
-            refreshed_uids.add(event.uid)
         elif stored is None:
             pending.append(event)
             refreshed_uids.add(event.uid)
@@ -661,12 +611,9 @@ def sync_source(
                 remote_id=previous_state.remote_id or event.uid,
                 etag=previous_state.remote_etag,
             )
-        merge = merges.get(event.uid)
-        shown = event if merge is None else replace(
-            event, body=merge.body, kit=merge.kit, arrive_at=merge.arrive_at)
         try:
             rendered = render(
-                shown, activity, kids_for(event.uid), settings,
+                event, activity, kids_for(event.uid), settings,
                 alarm_minutes=activity.alarm_minutes(is_game=event.alarms_as_game),
 
                 collection_override=source.staging_collection,
@@ -695,7 +642,6 @@ def sync_source(
             shown_starts_at=event.starts_at.isoformat(),
             applied_overlay=overrides.get(event.uid),
             kids=tuple(c.id for c in kids_for(event.uid)),
-            merged=merge.layer if merge else None,
         )
         # Placement and content are recorded together, behind the same barrier:
         # both describe a write the target has just accepted, and a copy of the
@@ -764,7 +710,7 @@ def sync_source(
     # Its own read of `event_state`, not the `states` above: the loop just
     # above marked rows cancelled, and a stale copy would ask the target to
     # delete an event it has already deleted.
-    removal = withheld.enforce(conn, source.id, target, also=dropped)
+    removal = withheld.enforce(conn, source.id, target, also=claimed)
     report.cancelled += removal.removed
     if not removal.ok:
         report.status = "error"
@@ -786,7 +732,7 @@ def sync_source(
             detail=detail, raw_sha256=result.raw_sha256,
         )
         repo.record_source_error(conn, source.id, detail)
-    elif not (delta.is_anomalous or merge_held):
+    elif not delta.is_anomalous:
         # What was done, not what the diff proposed: the diff counts a withheld
         # event the feed still publishes as new on every poll, and the log said
         # "3 new" for weeks while nothing was written.
@@ -801,25 +747,14 @@ def sync_source(
 
     conn.commit()
 
-    # Whoever shares a meet with this source, old key or new, now sees a
-    # different group; one run each is enough for them to converge.
-    if follow and not dry_run and before != candidates:
-        synced, errors, changed = sync_partners(
-            conn, source.id, {r["key"] for r in before} | {r["key"] for r in candidates},
-            target, now=now, secrets=secrets, fetcher=fetcher)
-        report.partners_synced.extend(synced)
-        report.errors.extend(errors)
-        if errors:
-            report.status = "error"
-        # A partner whose own text moved on its re-sync leaves this carrier's
-        # merge stale; one more run, with no follow, brings it level.
-        if any(source.id == correlate.carrier(r["source_id"] for r in rows)
-               and any(r["source_id"] == source.id for r in rows) and correlate.usable(rows)
-               for rows in repo.candidate_groups(conn, changed).values()):
-            again = sync_source(conn, source, target, now=now, secrets=secrets,
-                                fetcher=fetcher, follow=False)
-            report.refreshed += again.refreshed + again.updated + again.created
-            report.errors.extend(again.errors)
+    if publish and not dry_run:
+        from . import merging   # imports this module for the restore
+        try:
+            report.merge_errors.extend(
+                merging.publish(conn, target, now=now, secrets=secrets,
+                                fetcher=fetcher).errors)
+        except Exception as exc:  # noqa: BLE001 — never the team's status
+            report.merge_errors.append(str(exc))
     return report
 
 
@@ -913,29 +848,3 @@ class NoTarget:
             )
 
         return refuse
-
-
-def sync_partners(conn, source_id: str, keys, target, *, now: datetime,
-                  secrets: SecretStore | None = None, fetcher=http_fetch
-                  ) -> tuple[list[str], list[str], set[str]]:
-    """Sync every other source in the groups under ``keys``, once each.
-
-    Returns the ids synced, their errors, and the keys whose candidates changed. They run with ``follow=False``, so
-    it goes one hop and stops.
-    """
-    # A paused partner keeps its candidates but is never synced: that would
-    # put a stopped team back on the calendar.
-    partners = sorted({r["source_id"] for rows in repo.candidate_groups(conn, keys).values()
-                       for r in rows if repo.get_source(conn, r["source_id"]).enabled}
-                      - {source_id})
-    errors: list[str] = []
-    changed: set[str] = set()
-    for partner_id in partners:
-        before = repo.source_candidates(conn, partner_id)
-        sub = sync_source(conn, repo.get_source(conn, partner_id), target, now=now,
-                          secrets=secrets, fetcher=fetcher, follow=False)
-        errors.extend(f"{partner_id}: {e}" for e in sub.errors)
-        after = repo.source_candidates(conn, partner_id)
-        if after != before:
-            changed |= {r["key"] for r in before + after}
-    return partners, errors, changed
