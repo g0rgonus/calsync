@@ -1198,6 +1198,11 @@ def create_app(
                     "now would remove the record of something that happened "
                     "rather than change anybody's plans."
                 )
+            def on_calendar() -> int:
+                rows = (repo.event_state(conn, u) for u in (uid, warmup.uid_for(uid)))
+                return sum(1 for r in rows if r is not None and not r.cancelled)
+
+            was = on_calendar()
             repo.set_withheld(conn, uid, reason)
             conn.commit()
 
@@ -1215,6 +1220,9 @@ def create_app(
                     f"reached to act on it, so the event is still there for now "
                     f"and the next sync will remove it: {exc}"
                 ) from exc
+            # What came off, not what `enforce` found: for a merged meet the
+            # sync above already took it down and `enforce` has nothing left.
+            removed = was - on_calendar()
             conn.commit()
 
         if not report.ok:
@@ -1224,7 +1232,7 @@ def create_app(
             )
         label = withheld_mod.REASONS[reason]
         redirect(_back_to("/calendar") + "ok=" + _q(
-            f"Marked {label} — {report.removed} event(s) off the calendar, and "
+            f"Marked {label} — {removed} event(s) off the calendar, and "
             "the next poll will leave it that way."
         ))
 

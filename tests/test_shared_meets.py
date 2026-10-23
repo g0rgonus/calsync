@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+from urllib.parse import unquote
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -582,3 +583,11 @@ def test_the_carrier_converges_when_a_partners_resync_changes_its_text(env, monk
     (event,) = calendar(env)
     assert "Elm St" in event["body"] and "Nadia swims 100 free" in event["body"]
     assert "200 IM" not in event["body"]
+
+
+def test_the_console_counts_what_a_withheld_merged_meet_took_off(env):
+    two_teams(env)
+    carrier_uid = calendar(env)[0]["uid"]
+    r = env["console"].post("/events/withhold", {"uid": carrier_uid, "reason": "cancelled"})
+    assert r["status"] in (302, 303), r
+    assert "1 event(s) off the calendar" in unquote(r["headers"]["Location"])
