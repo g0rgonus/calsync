@@ -337,6 +337,8 @@ def _migrate_once(conn: sqlite3.Connection) -> None:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
         # An earlier v18 build stored a fingerprint here and candidates without
         # content; readers expect JSON, and every sync rebuilds its candidates.
+        # Such a build predates companions and `merged_members`, so no merged
+        # event depends on the rows deleted here.
         conn.execute("UPDATE event_state SET merged = NULL "
                      "WHERE merged IS NOT NULL AND merged NOT LIKE '{%'")
         conn.execute("DELETE FROM shared_candidates WHERE content = ''")

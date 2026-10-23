@@ -1035,12 +1035,13 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
             else:
                 unreachable = None
                 merge_errors: list[str] = []
+                merge_notes: list[str] = []
                 try:
                     target = write_target or targeting.build_target(conn, secrets=secrets)
                     withheld_mod.enforce(conn, state.source_id, target)
                     conn.commit()
-                    merge_errors = merging.publish_safely(
-                        conn, target, now=clock(), secrets=secrets).errors
+                    merged = merging.publish_safely(conn, target, now=clock(), secrets=secrets)
+                    merge_errors, merge_notes = merged.errors, merged.notes
                 except (SecretError, TargetError) as exc:
                     unreachable = exc
             event_alert(conn, caller, state, status, change.get("note"))
@@ -1052,7 +1053,8 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
                           f"saved; the calendar could not be reached ({unreachable}), so "
                           "the next sync removes it" if unreachable else
                           "saved; removing it failed, so a later sync retries",
-                          **({"merge_errors": merge_errors} if merge_errors else {})}
+                          **({"merge_errors": merge_errors} if merge_errors else {}),
+                          **({"merge_notes": merge_notes} if merge_notes else {})}
         audit(state.source_id, "POST admin/events/status", uid, str(status))
         return _dump({"uid": uid, "status": status, "on_calendar": not off, **result})
 
@@ -1065,8 +1067,9 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
             return {"status": "deferred",
                     "detail": f"stored; the calendar could not be reached ({exc}), "
                               "so the next poll applies it"}
-        return {"status": "error" if report.errors else "ok", **(
-            {"errors": report.errors} if report.errors else {})}
+        return {"status": "error" if report.errors else "ok",
+                **({"errors": report.errors} if report.errors else {}),
+                **({"notes": report.notes} if report.notes else {})}
 
     def set_kid_absent(conn, caller, state, child_id: str, absent: bool, note):
         """One kid of a shared team not going to one event, or going again.
@@ -1109,12 +1112,13 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
                            f"event:{state.uid}", {"child": child_id, "note": note})
             conn.commit()
             merge_errors: list[str] = []
+            merge_notes: list[str] = []
             try:
                 target = write_target or targeting.build_target(conn, secrets=secrets)
                 withheld_mod.enforce(conn, source.id, target)
                 conn.commit()
-                merge_errors = merging.publish_safely(
-                    conn, target, now=clock(), secrets=secrets).errors
+                merged = merging.publish_safely(conn, target, now=clock(), secrets=secrets)
+                merge_errors, merge_notes = merged.errors, merged.notes
             except (SecretError, TargetError):
                 pass
             result = sync(source) if source.enabled else {"status": "deferred"}
@@ -1134,7 +1138,8 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
                       "going": [k for k in kids if k not in away],
                       "on_calendar": not fresh.cancelled,
                       **({"sync": result} if result else {"detail": "no change"}),
-                      **({"merge_errors": merge_errors} if merge_errors else {})})
+                      **({"merge_errors": merge_errors} if merge_errors else {}),
+                      **({"merge_notes": merge_notes} if merge_notes else {})})
 
     def alert(conn, message: str) -> None:
         """Push an admin change that can affect a live calendar.

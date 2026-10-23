@@ -42,6 +42,11 @@ class MergeReport:
     errors: list[str] = field(default_factory=list)
     #: Another merge step held the lease, so this one did nothing.
     skipped: bool = False
+    #: Not errors: a state that settles on its own, worth saying where a person looks.
+    notes: list[str] = field(default_factory=list)
+
+    def said(self) -> list[str]:
+        return self.errors + self.notes
 
 
 @dataclass
@@ -211,8 +216,11 @@ def _leased(conn, run, *, rerun: bool) -> MergeReport:
         report.written += part.written
         report.ended += part.ended
         report.errors.extend(part.errors)
+        report.notes.extend(part.notes)
         # The last pass never takes the lease again: a request still pending stays
         # set for the next merge step instead of holding the lease to its expiry.
+        if rerun and n == passes - 1 and repo.merge_rerun_pending(conn):
+            report.notes.append("a change is queued for the next merge step")
         if not rerun or n == passes - 1 or not take(rerun_only=True):
             break
     return report
@@ -227,9 +235,9 @@ def _publish(conn, target, *, now: datetime, secrets: SecretStore | None = None,
     groups = _desired(conn, _members(conn))
     waiting = [g for g in groups if not g.uid]
     if waiting:
-        # Its members keep their own copies; the uid it needs frees up this run.
-        report.errors.append(f"{len(waiting)} group(s) wait for a free merged uid until "
-                             "the next merge step")
+        # Its members keep their own copies until the uid it needs is free.
+        report.notes.append(f"{len(waiting)} group(s) wait for a free merged uid until "
+                            "the next merge step")
     groups = [g for g in groups if g.uid]
     # Created on demand, committed before anything is written under it.
     # An existing merged event stays with the companion that holds it.

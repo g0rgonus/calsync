@@ -1015,8 +1015,9 @@ def test_the_last_pass_frees_the_lease_and_leaves_a_pending_request_for_later(en
         return real(conn, target, **kw)
 
     monkeypatch.setattr(merging, "_publish", run)
-    run_publish(env)
+    report = run_publish(env)
     assert len(calls) == 3
+    assert "a change is queued for the next merge step" in report.notes
     conn = conn_for(env)
     assert repo.merge_rerun_pending(conn)     # not swallowed by the last pass
     assert repo.take_merge_lease(conn, token="next", now="2000-01-01", until="2000-01-02")
@@ -1079,7 +1080,8 @@ def test_a_group_with_no_free_uid_waits_and_says_so(env, monkeypatch):
     two_teams(env)
     monkeypatch.setattr(merging, "_desired", lambda conn, rows: [group])
     report = run_publish(env)
-    assert any("wait for a free merged uid" in e for e in report.errors)
+    assert any("wait for a free merged uid" in n for n in report.notes)
+    assert not any("wait for a free merged uid" in e for e in report.errors)
 
 
 def test_a_request_made_while_another_run_takes_over_is_not_lost(env, monkeypatch):
@@ -1100,3 +1102,13 @@ def test_a_request_made_while_another_run_takes_over_is_not_lost(env, monkeypatc
     conn = conn_for(env)
     assert repo.merge_rerun_pending(conn)     # left for C, which holds the lease
     conn.close()
+
+
+def test_a_merge_note_is_not_an_error_in_the_admin_api(env, monkeypatch):
+    two_teams(env)
+    env["api"].call("POST", STATUS, {"uid": MERGED, "status": "not_attending"})
+    monkeypatch.setattr(merging, "publish_safely",
+                        lambda *a, **kw: merging.MergeReport(notes=["queued"]))
+    r = env["api"].call("POST", STATUS, {"uid": MERGED, "status": None})
+    assert r["status"] == 200, r["json"]
+    assert r["json"]["sync"] == {"status": "ok", "notes": ["queued"]}

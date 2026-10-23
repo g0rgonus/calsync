@@ -582,7 +582,7 @@ def create_app(
                 # A partial retire leaves events only that team's sync can remove.
                 if report.ok:
                     merge_errs = merging.publish_safely(
-                        conn, target, now=clock(), secrets=secrets).errors
+                        conn, target, now=clock(), secrets=secrets).said()
                     repo.revoke_team_key(conn, other.id, actor="console")
                     repo.log_admin(conn, "console", "team_retired", f"team:{other.id}",
                                    {"merged_into": source_id})
@@ -688,7 +688,7 @@ def create_app(
                 if report.ok:
                     # Its meets go back to the other teams' own copies.
                     merge_errs = merging.publish_safely(
-                        conn, target, now=clock(), secrets=secrets).errors
+                        conn, target, now=clock(), secrets=secrets).said()
             except (SecretError, TargetError) as exc:
                 raise Refused(f"could not reach the calendar: {exc}") from exc
 
@@ -1168,7 +1168,7 @@ def create_app(
                 withheld_mod.enforce(conn, source.id, target)
                 conn.commit()
                 merge_errs = merging.publish_safely(
-                    conn, target, now=clock(), secrets=secrets).errors
+                    conn, target, now=clock(), secrets=secrets).said()
             except (SecretError, TargetError):
                 pass
         _, problems = _sync_now([source.id]) if source.enabled else ([], [])
@@ -1235,7 +1235,7 @@ def create_app(
                 # A copy taken off may end a group; a merged event taken off
                 # keeps its members dropped.
                 merge_errs = merging.publish_safely(
-                    conn, target, now=clock(), secrets=secrets).errors
+                    conn, target, now=clock(), secrets=secrets).said()
             except (SecretError, TargetError) as exc:
                 raise Refused(
                     f"the decision is saved, but the calendar could not be "
