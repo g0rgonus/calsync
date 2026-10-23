@@ -474,3 +474,20 @@ def test_the_console_withhold_and_kid_routes_resync_a_merged_event(env):
     assert r["status"] in (302, 303), r
     (event,) = calendar(env)
     assert event["uid"].startswith("in-otters.") and "Jesse" not in event["title"]
+
+
+@pytest.mark.parametrize("past", [30, 0])
+def test_the_merge_hold_ignores_a_stored_past_season(env, past):
+    herons, otters = otters_first(env, shared=3, total=3)
+    conn = db.connect(env["path"])
+    conn.executemany(
+        "INSERT INTO event_state (uid, source_id, collection, content_hash, starts_at, "
+        "shown_starts_at) VALUES (?, ?, 'x', 'h', ?, ?)",
+        [(f"old-{i}", otters, f"2025-01-{i % 28 + 1:02d}T10:00:00+00:00",
+          f"2025-01-{i % 28 + 1:02d}T10:00:00+00:00") for i in range(past)])
+    conn.commit()
+    report = sync_source(conn, repo.get_source(conn, otters), env["target"], now=NOW,
+                         secrets=env["secrets"])
+    conn.close()
+    assert report.status == "held" and report.held_kind == "merge"
+    assert on_calendar(env) == 6

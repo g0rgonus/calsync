@@ -512,11 +512,12 @@ def sync_source(
     if new_drops and (confirm_held == fingerprint(new_drops)) and not dry_run:
         report.confirmed += len(new_drops)
     elif new_drops:
-        live = sum(1 for u, st in states.items()
-                   if not st.cancelled and not warmup.is_synthetic(u))
+        # The disappearance guard's denominator (`diff_poll`): in-window games
+        # only, so a stored past season cannot dilute the share.
+        live = sum(1 for u in known if not warmup.is_synthetic(u))
         # A lone copy is an ordinary merge, never a mass, whatever its share.
         if len(new_drops) > max_count or (
-                len(new_drops) > 1 and len(new_drops) / live > max_pct):
+                len(new_drops) > 1 and (not live or len(new_drops) / live > max_pct)):
             dropped -= new_drops
             off = base_off | dropped
             merge_held = True
