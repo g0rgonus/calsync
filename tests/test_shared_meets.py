@@ -339,7 +339,7 @@ def five_merged(env):
     return herons, otters
 
 
-def test_a_mass_group_end_is_held_and_the_members_stay_dropped(env):
+def test_a_mass_group_end_gives_every_member_its_copy_back_before_cancelling(env):
     herons, otters = five_merged(env)
     conn = conn_for(env)
     conn.execute("DELETE FROM shared_candidates WHERE source_id = ?", (otters,))
@@ -347,13 +347,14 @@ def test_a_mass_group_end_is_held_and_the_members_stay_dropped(env):
     conn.close()
     env["target"].calls.clear()
     report = run_publish(env)
-    assert any("held" in e for e in report.errors) and report.ended == 0
-    assert [c for c in env["target"].calls if c[0] == "cancel"] == []
+    assert report.ended == 5, report.errors
+    t = env["target"]
+    for i in range(1, 6):
+        own = f"{herons}.g{i}@inbound.calsync"
+        assert t.at("upsert", own) < t.at("cancel", f"merged.{own}")
     assert on_calendar(env) == 5
     conn = conn_for(env)
-    assert conn.execute("SELECT COUNT(*) FROM merged_members").fetchone()[0] == 10
-    assert conn.execute("SELECT COUNT(*) FROM event_state WHERE cancelled = 0 "
-                        "AND source_id LIKE 'merged-%'").fetchone()[0] == 5
+    assert conn.execute("SELECT COUNT(*) FROM merged_members").fetchone()[0] == 0
     conn.close()
 
 
@@ -744,3 +745,27 @@ def test_the_merged_warmup_starts_at_the_earliest_arrival(env, tmp_path):
     assert one["arrive_at"].startswith("2026-11-14T07:30")
     # Both old copies and both old warm-ups are gone from the calendar.
     assert state(env, f"calsync-warmup-{HERONS_UID}").cancelled
+
+
+def test_a_team_leaving_a_group_that_lives_on_gets_its_own_copy_back(env):
+    teams = [team(env, name, kid) for name, kid in
+             (("Herons", "jesse"), ("Otters", "nadia"), ("Wrens", "sam"))]
+    for source, key in teams:
+        push(env, source, key)
+        live(env, source)
+    assert len(calendar(env)) == 1
+    wrens, wk = teams[2]
+    push(env, wrens, wk, start="2026-11-14T09:00:00", end="2026-11-14T11:00:00")
+    days = calendar(env)
+    assert len(days) == 2, days
+    assert any(e["uid"].startswith(wrens + ".") for e in days)
+
+
+def test_lifting_a_withhold_after_the_group_ended_brings_the_copy_straight_back(env):
+    (herons, hk), (otters, ok) = two_teams(env)
+    r = env["api"].call("POST", STATUS, {"uid": MERGED, "status": "not_attending"})
+    assert r["status"] == 200 and calendar(env) == []
+    delete_meet(env, otters, ok)
+    assert env["api"].call("POST", STATUS, {"uid": MERGED, "status": None})["status"] == 200
+    (event,) = calendar(env)
+    assert event["uid"].startswith(herons + ".")

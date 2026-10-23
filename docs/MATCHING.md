@@ -232,9 +232,11 @@ was accepted by the calendar and `merged_members` recorded it. When a group ends
 (a team cancels, retires, is withheld or marked out), each remaining team's own
 copy is restored first and the merged event is cancelled only once those are
 back; if one cannot be restored the merged event stays. Dropped copies stay in
-their team's diff and are never stored as withheld. A mass group-end is held by
-the companion's disappearance guard; a held poll keeps its stored candidates; a
-paused team keeps its candidates, because its copy is still on the calendar.
+their team's diff and are never stored as withheld. A group-end is not held by a
+guard: every end replaces the merged event with the members' own copies. A team
+leaving a group that lives on gets its own copy back the same way. A held poll
+keeps its stored candidates; a paused team keeps its candidates, because its copy
+is still on the calendar.
 A source with two events under one key, or a group the rules split, writes
 everyone's own. Withhold and per-kid absence work on the merged uid (the
 absence is recorded on that kid's own team copy), and a fix is made on the kid's

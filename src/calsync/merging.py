@@ -146,9 +146,9 @@ def publish(conn, target, *, now: datetime, secrets: SecretStore | None = None,
             events, repo.known_hashes(conn, companion.id, since=floor), now=now,
             max_pct=max_pct, max_count=max_count,
             counts_as_evidence=lambda uid: not warmup.is_synthetic(uid))
-        lone = [u for u in delta.held_cancellations if not warmup.is_synthetic(u)]
-        if delta.anomaly_kind == "disappearance" and len(lone) <= 1:
-            # One group ending is an ordinary end, whatever its share of a small set.
+        if delta.anomaly_kind == "disappearance":
+            # A merged event is cancelled only once its members' own copies are back
+            # (`_end`), so an end replaces rather than removes; a hold would only strand it.
             delta.confirm(fingerprint(delta.held_cancellations))
         if delta.is_anomalous:
             report.errors.append(f"{companion.id}: held, not cancelling: {delta.anomaly}")
@@ -172,12 +172,20 @@ def publish(conn, target, *, now: datetime, secrets: SecretStore | None = None,
             fresh = repo.event_state(conn, g.uid)
             if not ok or fresh is None or not (_live(fresh) or fresh.withheld):
                 continue   # nothing accepted, so no member copy may come off
+            before = repo.members_of(conn, g.uid)
             repo.set_members(conn, g.uid, [(r["uid"], r["source_id"]) for r in g.rows])
             conn.commit()
             for sid in sorted({r["source_id"] for r in g.rows}):
                 removal = withheld.enforce(conn, sid, target, also=repo.claimed_uids(conn, sid))
                 conn.commit()
                 report.errors.extend(removal.errors)
+            # A member that left a group that lives on (its copy changed) is no longer
+            # claimed, and nothing else would put its own copy back.
+            claimed = {m for ms in repo.all_members(conn).values() for m, _ in ms}
+            left = [m for m in before if m["member_uid"] not in claimed]
+            if left and not _restore(conn, target, report, left, now=now, secrets=secrets,
+                                     fetcher=fetcher):
+                report.errors.append(f"{g.uid}: a team that left could not be restored")
 
     # --- groups that end: members back first, merged event after ---------------
     for companion, mine, delta, states, contents in plans:
@@ -188,6 +196,14 @@ def publish(conn, target, *, now: datetime, secrets: SecretStore | None = None,
         for uid in games:
             if _end(conn, target, report, uid, now=now, secrets=secrets, fetcher=fetcher):
                 report.ended += 1
+
+    # Claims left by a merged event that is off, not withheld and no longer wanted
+    # (its group ended while it was withheld): give the members their copies back.
+    desired = {g.uid for g in groups}
+    for uid in sorted(repo.all_members(conn)):
+        state = repo.event_state(conn, uid)
+        if uid not in desired and not _live(state) and not (state and state.withheld):
+            _end(conn, target, report, uid, now=now, secrets=secrets, fetcher=fetcher)
 
     # --- a companion with no row at all and nothing to hold can go -------------
     wanted = {c.id for c in needed.values()}
@@ -236,25 +252,30 @@ def _write(conn, target, report, companion, activity, settings, g, event, state,
     return True
 
 
-def _end(conn, target, report, uid: str, *, now, secrets, fetcher) -> bool:
-    """Retire a merged event whose group is gone, once its members are back."""
+def _restore(conn, target, report, members, *, now, secrets, fetcher) -> bool:
+    """Sync the teams of released members still going; True if every copy is back."""
     from . import sync
 
-    members = repo.members_of(conn, uid)
     candidates = {r["uid"] for r in repo.all_candidates(conn)}
     back = []
     for m in members:
         off = withheld.off_uids(conn, m["source_id"], repo.event_states(conn, m["source_id"]))
         if m["member_uid"] in candidates and m["member_uid"] not in off:
             back.append(m)
-    repo.drop_members(conn, uid)
-    conn.commit()
     for sid in sorted({m["source_id"] for m in back}):
         source = repo.get_source(conn, sid)
         sub = sync.sync_source(conn, source, target, now=now, secrets=secrets,
                                fetcher=fetcher, publish=False)
         report.errors.extend(f"{sid}: {e}" for e in sub.errors)
-    if not all(_live(repo.event_state(conn, m["member_uid"])) for m in back):
+    return all(_live(repo.event_state(conn, m["member_uid"])) for m in back)
+
+
+def _end(conn, target, report, uid: str, *, now, secrets, fetcher) -> bool:
+    """Retire a merged event whose group is gone, once its members are back."""
+    members = repo.members_of(conn, uid)
+    repo.drop_members(conn, uid)
+    conn.commit()
+    if not _restore(conn, target, report, members, now=now, secrets=secrets, fetcher=fetcher):
         # A member's own copy is not on the calendar, so the merged one stays.
         repo.set_members(conn, uid, [(m["member_uid"], m["source_id"]) for m in members])
         conn.commit()
