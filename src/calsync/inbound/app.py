@@ -1031,7 +1031,12 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
                 unreachable = None
                 try:
                     target = write_target or targeting.build_target(conn, secrets=secrets)
-                    withheld_mod.enforce(conn, state.source_id, target)
+                    if source.enabled and repo.in_shared_group(conn, uid):
+                        # The merged event is written from every team's copy, so
+                        # this is a real sync (which syncs the others too).
+                        sync_source(conn, source, target, now=clock(), secrets=secrets)
+                    else:
+                        withheld_mod.enforce(conn, state.source_id, target)
                     conn.commit()
                 except (SecretError, TargetError) as exc:
                     unreachable = exc

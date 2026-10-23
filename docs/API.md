@@ -281,7 +281,11 @@ as written (`docs/deployment/proxy.md`); everything else here — documents, pro
 tasks, amendments — is a design contract with no code behind it, because none
 of its consumers exist yet. Cancellation still writes a tombstone rather than
 purging, so a deletion propagates instead of leaving a stale event on every
-device that already synced it; that is what `cancelled: true` on a read means.
+device that already synced it; that is what `cancelled: true` on a read means. A copy that another team's
+source writes for both kids is not cancelled: `GET /v1/events` leaves it out
+(the merged event lists every kid in `children`), and `GET /v1/events/{uid}`
+returns it with `cancelled: false` and `merged_into` set to the uid that carries
+it. `merged_into` is null on every other event.
 
 ```json
 {

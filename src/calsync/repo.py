@@ -2384,6 +2384,24 @@ def merged_into(conn: sqlite3.Connection) -> dict[str, str]:
     return out
 
 
+def in_shared_group(conn: sqlite3.Connection, uid: str) -> bool:
+    """Is this event (or the game a warm-up follows) merged with another team's copy?
+
+    A status change on one of these has to re-run the sync, which also syncs
+    the other teams, because the merged event is written from all of them.
+    """
+    from . import warmup
+    base = warmup.parent_of(uid) or uid
+    state = event_state(conn, base)
+    if state is not None and state.merged:
+        return True
+    return conn.execute(
+        "SELECT 1 FROM shared_candidates c JOIN shared_candidates o "
+        "ON o.key = c.key AND o.source_id != c.source_id "
+        "JOIN sources s ON s.id = o.source_id AND s.staging_collection IS NULL "
+        "WHERE c.uid = ?", (base,)).fetchone() is not None
+
+
 def merged_away(conn: sqlite3.Connection) -> set[str]:
     """Uids that another team's source writes for them: non-carriers of a live group."""
     return set(merged_into(conn))

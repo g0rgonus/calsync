@@ -201,7 +201,7 @@ classifier anyone depends on.
 ## 3b. One meet, two teams
 
 Built (`correlate.py`). Kids on different teams who go to the same meet get one
-event. Two events from different enabled, non-staged sources are one occurrence
+event. Two events from different non-staged sources are one occurrence
 when all of these hold:
 
 - same sport, and the same local start and end date in the event's zone;
@@ -212,13 +212,24 @@ when all of these hold:
 - a game: practices and warm-ups never correlate, nor does anything cancelled,
   outside the sync window, held for review or off (withheld, every kid absent);
 - venue: if the group names more than one resolved venue, or more than one
-  non-empty field, nobody merges. An unresolved venue has no opinion.
+  non-empty field, nobody merges. An unresolved venue has no opinion;
+- the same collection: the merged event lives on the carrier's calendar only,
+  so under a `{child}` or `{activity}` template copies bound for different
+  calendars stay separate.
 
 The lowest source id writes the event; the others drop their copy the way a
 withheld event is dropped, without ever setting the flag. The carrier shows the
 union of kids in birth order, each team's notes with duplicate lines said once,
 every distinct kit, and the earliest arrival. A source with two events under one
 key, or a group the rules split, writes everyone's own.
+
+A paused carrier keeps carrying (its event is still on the calendar); retiring
+clears its candidates and syncs the other teams so one takes over. A withhold
+or a kid marked out on any copy re-runs the real sync, which also syncs the
+others. Many copies dropped at once (past the disappearance thresholds, two or
+more) hold the poll as kind `merge`, leave the copies written and wait for a
+person to confirm the set. The read API leaves a dropped copy out of the
+lists, and a read of it gives `cancelled: false` and `merged_into`.
 
 ## 4. After setup: flag duplicates, never block or delete
 

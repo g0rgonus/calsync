@@ -1203,6 +1203,11 @@ def create_app(
 
             try:
                 target = write_target or targeting.build_target(conn, secrets=secrets)
+                source = _require_source(conn, state.source_id)
+                if source.enabled and repo.in_shared_group(conn, uid):
+                    # The merged event is written from every team's copy, so
+                    # this is a real sync (which syncs the others too).
+                    sync_source(conn, source, target, now=clock(), secrets=secrets)
                 report = withheld_mod.enforce(conn, state.source_id, target)
             except (SecretError, TargetError) as exc:
                 raise Refused(

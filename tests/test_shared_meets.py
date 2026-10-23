@@ -435,3 +435,42 @@ def test_a_single_merged_copy_is_not_held(env):
     conn.close()
     assert report.status == "ok" and report.held is None
     assert on_calendar(env) == 10
+
+
+def test_marking_the_dropped_copys_kid_out_reaches_the_merged_event(env):
+    two_teams(env)
+    carrier_uid = calendar(env)[0]["uid"]
+    dropped_uid = carrier_uid.replace("in-herons.", "in-otters.")
+    r = env["api"].call("POST", STATUS, {"uid": dropped_uid, "status": "not_attending",
+                                         "child": "nadia"})
+    assert r["status"] == 200, r["json"]
+    (event,) = calendar(env)
+    assert "Jesse" in event["title"] and "Nadia" not in event["title"]
+    assert "Nadia swims 200 IM" not in event["body"]
+
+
+def test_withholding_the_carriers_copy_leaves_the_other_kids_event(env):
+    two_teams(env)
+    carrier_uid = calendar(env)[0]["uid"]
+    r = env["api"].call("POST", STATUS, {"uid": carrier_uid, "status": "cancelled"})
+    assert r["status"] == 200, r["json"]
+    (event,) = calendar(env)
+    assert event["uid"].startswith("in-otters.")
+    assert "Nadia" in event["title"] and "Jesse" not in event["title"]
+
+
+def test_the_console_withhold_and_kid_routes_resync_a_merged_event(env):
+    two_teams(env)
+    carrier_uid = calendar(env)[0]["uid"]
+    dropped_uid = carrier_uid.replace("in-herons.", "in-otters.")
+    r = env["console"].post("/events/withhold", {"uid": dropped_uid, "reason": "not_attending",
+                                                 "child": "nadia"})
+    assert r["status"] in (302, 303), r
+    (event,) = calendar(env)
+    assert "Nadia" not in event["title"]
+    env["console"].post("/events/restore", {"uid": dropped_uid, "child": "nadia"})
+    assert "J+N" in calendar(env)[0]["title"]
+    r = env["console"].post("/events/withhold", {"uid": carrier_uid, "reason": "cancelled"})
+    assert r["status"] in (302, 303), r
+    (event,) = calendar(env)
+    assert event["uid"].startswith("in-otters.") and "Jesse" not in event["title"]

@@ -428,7 +428,11 @@ Decisions that span several files and are easy to undo by accident:
   event — kept in the diff, never stored in `event_state.withheld` — and the
   carrier renders the union of kids and notes from a copy, while `event_content`
   keeps what its own source said. A sync that changes a source's
-  `shared_candidates` syncs its partners once (`follow`).
+  `shared_candidates` syncs its partners once (`follow`, `sync.sync_partners`).
+  Copies must share a collection to merge; a paused carrier keeps carrying and
+  retiring hands over (`RetireReport.freed_keys`); status changes on a grouped
+  event run the real sync; a mass drop is held as kind `merge` and confirmed by
+  fingerprint; the read API reports a dropped copy as `merged_into`, not cancelled.
 - **The title is a render, not data.** `Event` deliberately has no `summary`
   field; the display title is composed at write time from a configurable template
   (`normalize/title.py`). Nothing downstream parses it back, so conventions can
