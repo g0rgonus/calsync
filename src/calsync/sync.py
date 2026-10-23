@@ -801,11 +801,20 @@ def sync_source(
     # Whoever shares a meet with this source, old key or new, now sees a
     # different group; one run each is enough for them to converge.
     if follow and not dry_run and before != candidates:
-        synced, errors = sync_partners(
+        synced, errors, changed = sync_partners(
             conn, source.id, {r["key"] for r in before} | {r["key"] for r in candidates},
             target, now=now, secrets=secrets, fetcher=fetcher)
         report.partners_synced.extend(synced)
         report.errors.extend(errors)
+        # A partner whose own text moved on its re-sync leaves this carrier's
+        # merge stale; one more run, with no follow, brings it level.
+        if any(source.id == correlate.carrier(r["source_id"] for r in rows)
+               and any(r["source_id"] == source.id for r in rows) and correlate.usable(rows)
+               for rows in repo.candidate_groups(conn, changed).values()):
+            again = sync_source(conn, source, target, now=now, secrets=secrets,
+                                fetcher=fetcher, follow=False)
+            report.refreshed += again.refreshed + again.updated + again.created
+            report.errors.extend(again.errors)
     return report
 
 
@@ -903,10 +912,10 @@ class NoTarget:
 
 def sync_partners(conn, source_id: str, keys, target, *, now: datetime,
                   secrets: SecretStore | None = None, fetcher=http_fetch
-                  ) -> tuple[list[str], list[str]]:
+                  ) -> tuple[list[str], list[str], set[str]]:
     """Sync every other source in the groups under ``keys``, once each.
 
-    Returns the ids synced and their errors. They run with ``follow=False``, so
+    Returns the ids synced, their errors, and the keys whose candidates changed. They run with ``follow=False``, so
     it goes one hop and stops.
     """
     # A paused partner keeps its candidates but is never synced: that would
@@ -915,8 +924,13 @@ def sync_partners(conn, source_id: str, keys, target, *, now: datetime,
                        for r in rows if repo.get_source(conn, r["source_id"]).enabled}
                       - {source_id})
     errors: list[str] = []
+    changed: set[str] = set()
     for partner_id in partners:
+        before = repo.source_candidates(conn, partner_id)
         sub = sync_source(conn, repo.get_source(conn, partner_id), target, now=now,
                           secrets=secrets, fetcher=fetcher, follow=False)
         errors.extend(f"{partner_id}: {e}" for e in sub.errors)
-    return partners, errors
+        after = repo.source_candidates(conn, partner_id)
+        if after != before:
+            changed |= {r["key"] for r in before + after}
+    return partners, errors, changed

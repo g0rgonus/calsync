@@ -18,7 +18,8 @@ from calsync.settings import set_setting
 from calsync.inbound import app as inbound_app
 from calsync.inbound import events as inbound
 from calsync.secrets import SecretStore
-from calsync.sync import NoTarget, sync_source
+from calsync import sync as sync_module
+from calsync.sync import NoTarget, sync_partners, sync_source
 from calsync.targets import build
 
 from calsync.api import app as api_app
@@ -555,3 +556,29 @@ def test_the_carriers_warmup_starts_at_the_earliest_arrival(env):
                        (blocks[0]["uid"],)).fetchone()
     conn.close()
     assert datetime.fromisoformat(row[0]) == datetime(2026, 11, 14, 14, 0, tzinfo=timezone.utc) - timedelta(minutes=90)
+
+
+
+def test_the_carrier_converges_when_a_partners_resync_changes_its_text(env, monkeypatch):
+    (herons, hk), (otters, ok) = two_teams(env)
+    conn = db.connect(env["path"])
+
+    def edit(source, old, new):
+        conn.execute("UPDATE inbound_events SET state = replace(state, ?, ?) "
+                     "WHERE source_id = ?", (old, new, source))
+        conn.commit()
+
+    real = sync_partners
+
+    def partner_text_moves_first(*args, **kwargs):
+        edit(otters, "200 IM", "100 free")
+        return real(*args, **kwargs)
+
+    edit(herons, "Quay St", "Elm St")
+    monkeypatch.setattr(sync_module, "sync_partners", partner_text_moves_first)
+    sync_source(conn, repo.get_source(conn, herons), env["target"], now=NOW,
+                secrets=env["secrets"])
+    conn.close()
+    (event,) = calendar(env)
+    assert "Elm St" in event["body"] and "Nadia swims 100 free" in event["body"]
+    assert "200 IM" not in event["body"]

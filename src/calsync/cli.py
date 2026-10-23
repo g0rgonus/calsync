@@ -401,7 +401,7 @@ def cmd_retire(args) -> int:
     print(report.line())
     if report.freed_keys:
         # Its teams at the same meets take the events over.
-        _, errors = sync_partners(conn, source.id, report.freed_keys, target, now=now,
+        _, errors, _ = sync_partners(conn, source.id, report.freed_keys, target, now=now,
                                   secrets=secrets)
         for error in errors:
             print(f"warning: {error}", file=sys.stderr)
