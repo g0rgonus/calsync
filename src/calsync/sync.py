@@ -612,7 +612,7 @@ def sync_source(
             # and the title says who.
             pending.append(event)
             refreshed_uids.add(event.uid)
-        elif state.merged != (merges[event.uid].fingerprint if event.uid in merges else None):
+        elif state.merged != (merges[event.uid].layer if event.uid in merges else None):
             # Another team's copy of this meet changed what is merged into it.
             pending.append(event)
             refreshed_uids.add(event.uid)
@@ -685,7 +685,7 @@ def sync_source(
             shown_starts_at=event.starts_at.isoformat(),
             applied_overlay=overrides.get(event.uid),
             kids=tuple(c.id for c in kids_for(event.uid)),
-            merged=merge.fingerprint if merge else None,
+            merged=merge.layer if merge else None,
         )
         # Placement and content are recorded together, behind the same barrier:
         # both describe a write the target has just accepted, and a copy of the

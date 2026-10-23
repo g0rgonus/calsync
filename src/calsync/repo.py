@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 
 from . import overlay as overlay_mod
@@ -193,7 +193,7 @@ class EventState:
     applied_overlay: dict | None = None
     #: The kids that write was for, or None for a team's only kid.
     kids: tuple[str, ...] | None = None
-    #: Fingerprint of the merge of several teams' copies this write carried.
+    #: The layer of several teams' copies this write carried (JSON), or None.
     merged: str | None = None
 
 
@@ -1044,7 +1044,7 @@ _STORED_SQL = f"""
     SELECT s.uid, s.source_id, s.collection, s.cancelled, s.withheld, s.starts_at,
            s.shown_starts_at, s.applied_overlay, s.content_hash, c.observed_at,
            {', '.join('c.' + col for col in CONTENT_COLUMNS)},
-           src.activity_id, a.child_id, s.kids
+           src.activity_id, a.child_id, s.kids, s.merged
       FROM event_state s
       JOIN event_content c ON c.uid = s.uid
       JOIN sources src ON src.id = s.source_id
@@ -1087,11 +1087,20 @@ def _stored_event(row: sqlite3.Row) -> StoredEvent:
         ),
         warmup_for=row["warmup_for"],
     )
+    shown = overlay_mod.apply(source, applied)
+    if row["merged"]:
+        # Another team's notes, kit and arrival, as the carrier last wrote them.
+        # Laid over the feed's layer too, so a correction form opens on what
+        # the phone shows and does not read the merge as a fix.
+        layer = json.loads(row["merged"])
+        merge = dict(body=layer["body"], kit=layer["kit"], arrive_at=(
+            datetime.fromisoformat(layer["arrive_at"]) if layer["arrive_at"] else None))
+        shown, source = replace(shown, **merge), replace(source, **merge)
     return StoredEvent(
-        # The source layer with the applied overlay on top, which is what the
-        # last accepted write put on the calendar. Composed here, once, so
-        # `/calendar`, the digest and the API cannot each sum it differently.
-        event=overlay_mod.apply(source, applied),
+        # The source layer with the applied overlay and any merge on top, which
+        # is what the last accepted write put on the calendar. Composed here,
+        # once, so `/calendar`, the digest and the API cannot each sum it differently.
+        event=shown,
         source_id=row["source_id"],
         activity_id=row["activity_id"],
         child_id=row["child_id"],

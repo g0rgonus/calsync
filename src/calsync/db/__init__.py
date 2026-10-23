@@ -79,8 +79,9 @@ ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # v17: the kids the last write was for, comma-joined; NULL is the team's
     # only kid. A different set now (an absence, a kid added) is a rewrite.
     ("event_state", "kids", "TEXT"),
-    # v18: fingerprint of the merge of several teams' copies last written for
-    # this event (`correlate.py`); NULL when it was written from one source.
+    # v18: the body, kit and arrival last laid over this event from several
+    # teams' copies, as JSON (`correlate.Merged.layer`); NULL when it was
+    # written from one source.
     ("event_state", "merged", "TEXT"),
     # v5 adds `event_content`, which is a new table rather than new columns, so
     # `schema.sql`'s CREATE TABLE IF NOT EXISTS covers it and nothing belongs

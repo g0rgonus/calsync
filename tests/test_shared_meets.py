@@ -491,3 +491,56 @@ def test_the_merge_hold_ignores_a_stored_past_season(env, past):
     conn.close()
     assert report.status == "held" and report.held_kind == "merge"
     assert on_calendar(env) == 6
+
+
+def reader(env, tmp_path):
+    token = tmp_path / "read.json"
+    token.write_text(json.dumps({"api_token": "tok"}))
+    token.chmod(0o600)
+    return ReadClient(api_app.create_app(env["path"], secrets=SecretStore(
+        path=token, environ={}), clock=lambda: NOW), token="tok")
+
+
+TIMED = {"start": "2026-11-14T09:00:00", "end": "2026-11-14T12:00:00"}
+
+
+def timed_teams(env, herons_min, otters_min):
+    """Two live teams at one timed meet, each with its own warm-up length."""
+    herons, hk = team(env, "Herons", "jesse")
+    otters, ok = team(env, "Otters", "nadia")
+    conn = db.connect(env["path"])
+    for source, minutes in ((herons, herons_min), (otters, otters_min)):
+        conn.execute("UPDATE activities SET warmup_minutes = ? WHERE id = "
+                     "(SELECT activity_id FROM sources WHERE id = ?)", (minutes, source))
+    conn.commit()
+    conn.close()
+    push(env, herons, hk, notes="Bring a towel\nParking on Quay St", **TIMED)
+    live(env, herons)
+    push(env, otters, ok, notes="Bring a towel\nNadia swims 200 IM", **TIMED)
+    live(env, otters)
+    return herons, otters
+
+
+def test_readers_show_the_merged_notes_and_earliest_arrival(env, tmp_path):
+    timed_teams(env, 45, 90)
+    carrier_uid = "in-herons.harbor@inbound.calsync"
+    read = reader(env, tmp_path)
+    listed = [e for e in read.get("/v1/events?from=2026-11-01&to=2026-11-30")["json"]["events"]
+              if not e["uid"].startswith("calsync-warmup-")]
+    assert [e["uid"] for e in listed] == [carrier_uid]
+    assert "Nadia swims 200 IM" in listed[0]["notes"] and "Parking on Quay St" in listed[0]["notes"]
+    assert listed[0]["arrive_at"].startswith("2026-11-14T07:30")
+    one = read.get(f"/v1/events/{carrier_uid}")["json"]["event"]
+    assert "Nadia swims 200 IM" in one["notes"]
+    # The receipt still holds only the carrier's own source.
+    conn = db.connect(env["path"])
+    assert "Nadia swims" not in conn.execute(
+        "SELECT body FROM event_content WHERE uid = ?", (carrier_uid,)).fetchone()[0]
+    conn.close()
+
+
+def test_the_console_fix_page_opens_on_the_merged_notes(env):
+    two_teams(env)
+    carrier_uid = calendar(env)[0]["uid"]
+    page = env["console"].get(f"/events/fix?uid={carrier_uid}&back=/calendar")["body"]
+    assert "Nadia swims 200 IM" in page

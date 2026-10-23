@@ -8,7 +8,6 @@ event is dropped. The rule is in `docs/MATCHING.md`, "One meet, two teams".
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 import unicodedata
@@ -76,12 +75,22 @@ def usable(rows) -> bool:
 
 @dataclass(frozen=True)
 class Merged:
-    kids: tuple[str, ...]          # child ids, sorted for a stable fingerprint
+    kids: tuple[str, ...]          # child ids, sorted
     body: str
     url: str | None
     kit: str | None
     arrive_at: datetime | None
-    fingerprint: str
+
+    @property
+    def layer(self) -> str:
+        """What was laid over the carrier's own content, as canonical JSON.
+
+        Stored as the receipt (`event_state.merged`): equality says whether the
+        phone is current, and readers lay it over the stored content.
+        """
+        return json.dumps({"body": self.body, "kit": self.kit,
+                           "arrive_at": self.arrive_at.isoformat() if self.arrive_at else None},
+                          sort_keys=True)
 
 
 def merge(members) -> Merged:
@@ -109,7 +118,4 @@ def merge(members) -> Merged:
 
     body, kit = "\n".join(lines), " / ".join(kits) or None
     arrive = min(arrivals) if arrivals else None
-    fingerprint = hashlib.sha256(json.dumps(
-        [kids, body, lead["url"], kit, arrive.isoformat() if arrive else None],
-        sort_keys=True).encode()).hexdigest()
-    return Merged(tuple(kids), body, lead["url"], kit, arrive, fingerprint)
+    return Merged(tuple(kids), body, lead["url"], kit, arrive)
