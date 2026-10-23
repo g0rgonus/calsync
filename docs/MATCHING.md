@@ -198,6 +198,56 @@ approval, so a false negative in the list costs nothing. That's the right
 asymmetry: the list is a cheap extra floor under a human decision, not a
 classifier anyone depends on.
 
+## 3b. One meet, two teams
+
+Built (`correlate.py`). Kids on different teams who go to the same meet get one
+event. Two events from different non-staged sources are one occurrence
+when all of these hold:
+
+- same sport, and the same local start and end date in the event's zone;
+- both all-day, or both timed with equal start and end (timed never matches
+  all-day);
+- same `detail` and `opponent` after casefolding, dropping punctuation and
+  collapsing whitespace (none equals empty);
+- a game: practices and warm-ups never correlate, nor does anything cancelled,
+  outside the sync window, held for review or off (withheld, every kid absent);
+- venue: if the group names more than one resolved venue, or more than one
+  non-empty field, nobody merges. An unresolved venue has no opinion;
+- the same collection: the merged event lives on the carrier's calendar only,
+  so under a `{child}` or `{activity}` template copies bound for different
+  calendars stay separate.
+
+Merging is its own step after each team's sync (`merging.publish`), reading
+only the database. A sync stores its candidates (the event after the person's
+overlay, with the team's kids before absences); the step groups them, and the
+lowest source id carries. The merged event (`merged.<carrier uid>`) is written
+under a hidden companion source of the carrier team and shows the union of kids
+in birth order, each team's notes with duplicate lines said once, every
+distinct kit, and the earliest arrival (its warm-up starts there too).
+`event_state.merged` records the layer laid over the carrier's own content,
+which readers apply.
+
+The order is the safety. A team's copy is taken down only after the merged event
+was accepted by the calendar and `merged_members` recorded it. When a group ends
+(a team cancels, retires, is withheld or marked out), each remaining team's own
+copy is restored first and the merged event is cancelled only once those are
+back; if one cannot be restored the merged event stays. Dropped copies stay in
+their team's diff and are never stored as withheld. A group-end is not held by a
+guard: every end replaces the merged event with the members' own copies. A group
+keeps the merged uid its members already have, so a team joining or leaving never
+re-creates the event or undoes a withhold. One merge step runs at a time
+(`merge_lease`, held by token and renewed between groups); a run that finds it
+held asks the holder to go again. A split group's held uid goes to the group with
+the member it was made from, and no two groups ever share one. A team
+leaving a group that lives on gets its own copy back the same way. A held poll
+keeps its stored candidates; a paused team keeps its candidates, because its copy
+is still on the calendar.
+A source with two events under one key, or a group the rules split, writes
+everyone's own. Withhold and per-kid absence work on the merged uid (the
+absence is recorded on that kid's own team copy), and a fix is made on the kid's
+own team event. The read API leaves a claimed copy out of the lists, and a read
+of it gives `cancelled: false` and `merged_into`.
+
 ## 4. After setup: flag duplicates, never block or delete
 
 Once setup is done, everything without a `sync_state` row is human and stays

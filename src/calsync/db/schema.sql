@@ -12,6 +12,16 @@ CREATE TABLE IF NOT EXISTS schema_version (
 );
 
 -- Instance settings: radicale_url, collection_template, title_template, ...
+-- One merge step at a time across the poller, console and inbound processes. A
+-- lease rather than a transaction, because the step calls the calendar server.
+CREATE TABLE IF NOT EXISTS merge_lease (
+    id          INTEGER PRIMARY KEY CHECK (id = 1),
+    held_until  TEXT NOT NULL DEFAULT '',
+    token       TEXT NOT NULL DEFAULT '',     -- which run holds it
+    rerun       INTEGER NOT NULL DEFAULT 0    -- a skipped run asked the holder to go again
+);
+INSERT OR IGNORE INTO merge_lease (id) VALUES (1);
+
 CREATE TABLE IF NOT EXISTS settings (
     key         TEXT PRIMARY KEY,
     value       TEXT NOT NULL,
@@ -408,3 +418,33 @@ CREATE TABLE IF NOT EXISTS event_absences (
     set_at    TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (uid, child_id)
 );
+
+-- One row per game a source has on, keyed so teams going to the same meet land
+-- together (`correlate.py`). Replaced whole at every sync of the source, and
+-- read by `merging.publish`, which never fetches. `content` is the event after
+-- the person's overlay (`repo.content_of` plus its identity), enough to rebuild
+-- it; `kids` is the team's kids before absences, which publish reads live.
+CREATE TABLE IF NOT EXISTS shared_candidates (
+    uid        TEXT PRIMARY KEY,
+    source_id  TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+    key        TEXT NOT NULL,
+    kids       TEXT NOT NULL,
+    kid_order  INTEGER NOT NULL,
+    body       TEXT,
+    url        TEXT,
+    kit        TEXT,
+    arrive_at  TEXT,
+    venue      TEXT,
+    field      TEXT,
+    content    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS shared_candidates_key ON shared_candidates(key);
+
+-- Which team copies a merged event stands in for. A copy is taken off the
+-- calendar only once its row is here and the merged event is accepted.
+CREATE TABLE IF NOT EXISTS merged_members (
+    member_uid TEXT PRIMARY KEY,
+    merged_uid TEXT NOT NULL,
+    source_id  TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS merged_members_merged ON merged_members(merged_uid);

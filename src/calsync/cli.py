@@ -29,7 +29,7 @@ from . import db, repo
 from .secrets import SecretError, SecretStore
 from .settings import Settings, set_setting
 from . import (
-    digest, enrichment, matrix, polling, retire, seasonend, targeting,
+    digest, enrichment, matrix, merging, polling, retire, seasonend, targeting,
 )
 from .sync import sync_source
 from .targets import build
@@ -396,8 +396,13 @@ def cmd_retire(args) -> int:
 
     secrets = _secrets(args)
     now = _now(getattr(args, "now", None))
-    report = retire.retire_source(conn, source, _target(conn, args, secrets), now=now)
+    target = _target(conn, args, secrets)
+    report = retire.retire_source(conn, source, target, now=now)
     print(report.line())
+    if report.ok:
+        # Its meets go back to the other teams' own copies.
+        for error in merging.publish(conn, target, now=now, secrets=secrets).errors:
+            print(f"warning: {error}", file=sys.stderr)
     if not report.ok:
         print("\nnothing was disabled: some events could not be removed, so the",
               file=sys.stderr)
@@ -408,6 +413,23 @@ def cmd_retire(args) -> int:
         retire.forget_source(conn, args.source, now=now)
         print(f"forgot {args.source}; its row is gone")
     return 0
+
+
+def cmd_unmerge(args) -> int:
+    """End every merged meet before rolling back to a version without merging."""
+    conn = db.open_db(args.db)
+    secrets = _secrets(args)
+    target = _target(conn, args, secrets)
+    report = merging.unmerge(conn, target, now=_now(getattr(args, "now", None)),
+                             secrets=secrets)
+    if report.skipped:
+        print("error: a merge step is running; stop the poller and try again",
+              file=sys.stderr)
+        return 1
+    for error in report.errors:
+        print(f"error: {error}", file=sys.stderr)
+    print(f"{report.ended} merged event(s) ended")
+    return 1 if report.errors else 0
 
 
 def cmd_digest(args) -> int:
@@ -760,6 +782,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_retire.add_argument("--forget", action="store_true",
                           help="also drop the source row, once nothing is left live")
     p_retire.set_defaults(fn=cmd_retire)
+
+    p_unmerge = sub.add_parser(
+        "unmerge", help="end every merged meet before rolling back to 0.21.0")
+    target_args(p_unmerge)
+    p_unmerge.add_argument("--now", help="ISO timestamp to treat as now")
+    p_unmerge.set_defaults(fn=cmd_unmerge)
 
     p_digest = sub.add_parser("digest", help="what is on in the next day")
     p_digest.add_argument("--send", action="store_true",

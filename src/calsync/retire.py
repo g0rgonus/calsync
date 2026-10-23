@@ -133,6 +133,9 @@ def retire_source(conn, source: repo.Source, target, *, now: datetime) -> Retire
     if report.ok:
         repo.set_enabled(conn, source.id, False)
         report.disabled = True
+        # A retired team no longer goes to any meet; `merging.publish` (run by
+        # the caller) hands its meets back to the other teams.
+        repo.clear_candidates(conn, source.id)
         repo.record_poll_run(
             conn, source_id=source.id, status="ok",
             detail=f"retired: {report.cancelled} events cancelled, polling stopped",

@@ -247,7 +247,8 @@ GET  /v1/placements?from=                              # built
 **Where calsync last put each event, and whether it is off the calendar on
 purpose** — `live`, or `withheld`, `cancelled` (calsync deleted it, or the feed
 marked it `STATUS:CANCELLED` and the delete may still be landing) or `approved`
-(a person confirmed a held removal; the delete may still be landing). No
+(a person confirmed a held removal; the delete may still be landing) or
+`merged` (another team's source writes this meet for both kids). No
 content: a uid, a collection and a state.
 
 It exists so **one confirmation is enough**. The Mac mirror reads Radicale and
@@ -280,7 +281,11 @@ as written (`docs/deployment/proxy.md`); everything else here — documents, pro
 tasks, amendments — is a design contract with no code behind it, because none
 of its consumers exist yet. Cancellation still writes a tombstone rather than
 purging, so a deletion propagates instead of leaving a stale event on every
-device that already synced it; that is what `cancelled: true` on a read means.
+device that already synced it; that is what `cancelled: true` on a read means. A copy that another team's
+source writes for both kids is not cancelled: `GET /v1/events` leaves it out
+(the merged event lists every kid in `children`), and `GET /v1/events/{uid}`
+returns it with `cancelled: false` and `merged_into` set to the uid that carries
+it. `merged_into` is null on every other event.
 
 ```json
 {

@@ -64,7 +64,14 @@ ENDPOINTS: dict[tuple[str, str], dict] = {
     },
     ("GET", "/v1/events/<uid:path>"): {
         "summary": "One event by uid, unbounded by date.",
-        "returns": {"event": "as in /v1/events", "sources": "freshness"},
+        "returns": {
+            "event": "as in /v1/events",
+            "sources": "freshness",
+            "merged_into": "on `event`: the uid that writes this copy for every "
+                           "kid when another team's source carries the meet; "
+                           "such a copy is `cancelled: false`, and /v1/events "
+                           "leaves it out",
+        },
     },
     ("GET", "/v1/placements"): {
         "summary": "Where calsync last put each event, and whether it is off "
@@ -79,7 +86,8 @@ ENDPOINTS: dict[tuple[str, str], dict] = {
                      "'cancelled' (calsync deleted it, or the feed marked it "
                      "cancelled and the delete may still be landing), "
                      "'approved' (a person confirmed its removal; the delete "
-                     "may still be landing)",
+                     "may still be landing), 'merged' (another team's source "
+                     "writes this meet for both kids)",
         },
         "notes": [
             "For a reader of the calendar server to tell a deliberate absence "

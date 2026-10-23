@@ -42,7 +42,7 @@ from zoneinfo import ZoneInfo
 
 from bottle import Bottle, HTTPResponse, request, response
 
-from .. import db, notify, onboarding, repo, retire, routing, sources, targeting, warmup
+from .. import db, merging, notify, onboarding, repo, retire, routing, sources, targeting, warmup
 from .. import withheld as withheld_mod
 from ..api.app import _QuietHandler, _Threaded, _event_json, events_body
 from ..secrets import SecretError, SecretStore
@@ -358,6 +358,8 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
             out["held"] = report.held
         if report.errors:
             out["errors"] = report.errors
+        if report.merge_errors:
+            out["merge_errors"] = report.merge_errors
         return out
 
     def parts_index(conn, source: repo.Source) -> dict[str, list[str]]:
@@ -1023,16 +1025,23 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
                            f"event:{uid}", {"status": status, "note": change.get("note")})
             conn.commit()
             source = repo.get_source(conn, state.source_id)
-            if status is None:
+            if status is None and source.kind == "merged":
+                # Written by the merge step, never synced: it has no feed.
+                result = {"sync": publish_merges(conn)}
+            elif status is None:
                 result = {"sync": (sync(source) if source.enabled else
                           {"status": "deferred", "detail": "the team is paused; the "
                            "event comes back when it resumes"})}
             else:
                 unreachable = None
+                merge_errors: list[str] = []
+                merge_notes: list[str] = []
                 try:
                     target = write_target or targeting.build_target(conn, secrets=secrets)
                     withheld_mod.enforce(conn, state.source_id, target)
                     conn.commit()
+                    merged = merging.publish_safely(conn, target, now=clock(), secrets=secrets)
+                    merge_errors, merge_notes = merged.errors, merged.notes
                 except (SecretError, TargetError) as exc:
                     unreachable = exc
             event_alert(conn, caller, state, status, change.get("note"))
@@ -1043,19 +1052,50 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
                 result = {"detail": "off the calendar" if off else
                           f"saved; the calendar could not be reached ({unreachable}), so "
                           "the next sync removes it" if unreachable else
-                          "saved; removing it failed, so a later sync retries"}
+                          "saved; removing it failed, so a later sync retries",
+                          **({"merge_errors": merge_errors} if merge_errors else {}),
+                          **({"merge_notes": merge_notes} if merge_notes else {})}
         audit(state.source_id, "POST admin/events/status", uid, str(status))
         return _dump({"uid": uid, "status": status, "on_calendar": not off, **result})
+
+    def publish_merges(conn) -> dict:
+        """Run the merge step now (it reads the database, no feed), and say how it went."""
+        try:
+            target = write_target or targeting.build_target(conn, secrets=secrets)
+            report = merging.publish_safely(conn, target, now=clock(), secrets=secrets)
+        except (SecretError, TargetError) as exc:
+            return {"status": "deferred",
+                    "detail": f"stored; the calendar could not be reached ({exc}), "
+                              "so the next poll applies it"}
+        return {"status": "error" if report.errors else "ok",
+                **({"errors": report.errors} if report.errors else {}),
+                **({"notes": report.notes} if report.notes else {})}
 
     def set_kid_absent(conn, caller, state, child_id: str, absent: bool, note):
         """One kid of a shared team not going to one event, or going again.
 
         The title drops or regains the kid at once; the event comes off only
-        when nobody is left, through the same `withheld.enforce`.
+        when nobody is left, through the same `withheld.enforce`. On a merged
+        event the absence is recorded on that kid's own team copy, and the merge
+        step redraws the event without them.
         """
+        shown, members = state, []
+        if repo.get_source(conn, state.source_id).kind == "merged":
+            members = repo.members_of(conn, state.uid)
+            kids_here = sorted({k for m in members for k in (m["kids"] or "").split(",") if k})
+            holder = next((m for m in members
+                           if child_id in (m["kids"] or "").split(",")), None)
+            if holder is None:
+                raise Problem(422, "invalid", "nothing was changed",
+                              errors=[{"field": "child", "code": "not_on_team",
+                                       "detail": "that kid is not on a team at this meet",
+                                       "candidates": kids_here}])
+            state = repo.event_state(conn, holder["member_uid"])
         source = repo.get_source(conn, state.source_id)
         activity = repo.get_activity(conn, source.activity_id)
         kids = {c.id: c for c in repo.team_children(conn, activity)}
+        if shown is not state:
+            kids = {k: None for k in kids_here}
         if child_id not in kids:
             raise Problem(422, "invalid", "nothing was changed",
                           errors=[{"field": "child", "code": "not_on_team",
@@ -1071,28 +1111,35 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
             repo.log_admin(conn, caller.label, "kid_absent" if absent else "kid_back",
                            f"event:{state.uid}", {"child": child_id, "note": note})
             conn.commit()
+            merge_errors: list[str] = []
+            merge_notes: list[str] = []
             try:
                 target = write_target or targeting.build_target(conn, secrets=secrets)
                 withheld_mod.enforce(conn, source.id, target)
                 conn.commit()
+                merged = merging.publish_safely(conn, target, now=clock(), secrets=secrets)
+                merge_errors, merge_notes = merged.errors, merged.notes
             except (SecretError, TargetError):
                 pass
             result = sync(source) if source.enabled else {"status": "deferred"}
             when = (datetime.fromisoformat(state.shown_starts_at)
                     .astimezone(ZoneInfo(activity.tz)).strftime("%a %-d %b %H:%M"))
-            name = kids[child_id].name
+            name = repo.get_child(conn, child_id).name
             alert(conn, f"{caller.label} marked {name} "
                         + ("not attending " if absent else "going to ")
                         + f"{activity.name} on {when}" + (f": {note}" if note else "") + ".")
         else:
-            result = None
-        away = repo.absences(conn, source.id).get(state.uid, set())
-        fresh = repo.event_state(conn, state.uid)
-        return _dump({"uid": state.uid, "child": child_id,
+            result, merge_errors = None, []
+        away = set().union(*repo.absences_of(
+            conn, [state.uid, *(m["member_uid"] for m in members)]).values())
+        fresh = repo.event_state(conn, shown.uid)
+        return _dump({"uid": shown.uid, "child": child_id,
                       "status": "not_attending" if absent else None,
                       "going": [k for k in kids if k not in away],
                       "on_calendar": not fresh.cancelled,
-                      **({"sync": result} if result else {"detail": "no change"})})
+                      **({"sync": result} if result else {"detail": "no change"}),
+                      **({"merge_errors": merge_errors} if merge_errors else {}),
+                      **({"merge_notes": merge_notes} if merge_notes else {})})
 
     def alert(conn, message: str) -> None:
         """Push an admin change that can affect a live calendar.

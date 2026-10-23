@@ -423,6 +423,22 @@ Decisions that span several files and are easy to undo by accident:
   copy; splitting a pushed team clones its source and pushed events for the kid
   (`repo.clone_team`), while a feed stays with its team because feed uids are
   global.
+- **Teams at one meet write it once, as a step after every sync**
+  (`correlate.py`, `merging.py`, `docs/MATCHING.md`). A team's sync only stores its
+  `shared_candidates` (the event after the person's overlay, kids before
+  absences) and then calls `merging.publish`, which reads the database alone and
+  writes the merged events under a hidden companion source (`merged-<carrier>`,
+  kind `merged`; `list_sources` skips it and nothing may sync it). The order is
+  the safety: a member copy comes off (`merged_members`, `withheld.enforce`) only
+  after its merged replacement was accepted and recorded, and a merged event is
+  cancelled only after the members' own copies are restored. Dropped copies stay
+  in the team's diff and are never stored as withheld; only a person sets that
+  flag. A group-end is not guarded: it always restores the members' copies first.
+  A group keeps its merged uid as teams join or leave, so a person's withhold
+  survives. One merge step runs at a time (`merge_lease`, held by token): a run that finds it
+  busy asks the holder to go again, so a change made mid-run still lands at once.
+  A held poll keeps its stored candidates, and the read API reports a claimed
+  copy as `merged_into`, not cancelled.
 - **The title is a render, not data.** `Event` deliberately has no `summary`
   field; the display title is composed at write time from a configurable template
   (`normalize/title.py`). Nothing downstream parses it back, so conventions can
