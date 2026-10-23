@@ -478,6 +478,13 @@ def sync_source(
                 merged_kids[r["uid"]] = sorted(
                     (repo.get_child(conn, i) for i in merged.kids),
                     key=lambda c: (c.birth_order, c.name))
+    # The merged arrival is the earliest team's, so the carrier's warm-up starts
+    # there too (an all-day game has none, and a team without warm-ups has none to move).
+    by_uid = {e.uid: e for e in events}
+    for uid, merged in merges.items():
+        block = by_uid.get(warmup.uid_for(uid))
+        if block is not None and merged.arrive_at:
+            block.starts_at = merged.arrive_at
     # Dropped like a withheld event, and never stored as one: only a person sets
     # `event_state.withheld`, and this copy returns the moment the group ends.
     base_off, off = off, off | dropped

@@ -220,14 +220,17 @@ when all of these hold:
 The lowest source id writes the event; the others drop their copy the way a
 withheld event is dropped, without ever setting the flag. The carrier shows the
 union of kids in birth order, each team's notes with duplicate lines said once,
-every distinct kit, and the earliest arrival. A source with two events under one
+every distinct kit, and the earliest arrival (the carrier's warm-up starts
+there too). Readers show the same text: `event_state.merged` records the layer
+laid over the carrier's own content. A source with two events under one
 key, or a group the rules split, writes everyone's own.
 
 A paused carrier keeps carrying (its event is still on the calendar); retiring
 clears its candidates and syncs the other teams so one takes over. A withhold
 or a kid marked out on any copy re-runs the real sync, which also syncs the
 others. Many copies dropped at once (past the disappearance thresholds, two or
-more) hold the poll as kind `merge`, leave the copies written and wait for a
+more, measured against the in-window tracked games) hold the poll as kind
+`merge`, leave the copies written and wait for a
 person to confirm the set. The read API leaves a dropped copy out of the
 lists, and a read of it gives `cancelled: false` and `merged_into`.
 

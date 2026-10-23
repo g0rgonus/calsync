@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from icalendar import Calendar
@@ -544,3 +544,14 @@ def test_the_console_fix_page_opens_on_the_merged_notes(env):
     carrier_uid = calendar(env)[0]["uid"]
     page = env["console"].get(f"/events/fix?uid={carrier_uid}&back=/calendar")["body"]
     assert "Nadia swims 200 IM" in page
+
+
+def test_the_carriers_warmup_starts_at_the_earliest_arrival(env):
+    timed_teams(env, 45, 90)
+    blocks = [e for e in calendar(env) if e["uid"].startswith("calsync-warmup-")]
+    assert [b["uid"] for b in blocks] == ["calsync-warmup-in-herons.harbor@inbound.calsync"]
+    conn = db.connect(env["path"])
+    row = conn.execute("SELECT shown_starts_at FROM event_state WHERE uid = ?",
+                       (blocks[0]["uid"],)).fetchone()
+    conn.close()
+    assert datetime.fromisoformat(row[0]) == datetime(2026, 11, 14, 14, 0, tzinfo=timezone.utc) - timedelta(minutes=90)
