@@ -25,7 +25,7 @@ from bottle import Bottle, redirect, request, response, static_file, template
 from .. import __version__
 from .. import config as config_mod
 from .. import (
-    db, dormancy, enrichment, matrix, notify, overlay as overlay_mod,
+    db, dormancy, enrichment, matrix, merging, notify, overlay as overlay_mod,
     repo, retire,
     sources, targeting,
     warmup, withheld as withheld_mod, zones,
@@ -48,7 +48,7 @@ from ..routing import slugify
 from ..secrets import SecretError, SecretStore
 from ..settings import Settings, check_setting, set_setting
 from ..targets import TargetError
-from ..sync import NoTarget as _NoTarget, sync_partners, sync_source
+from ..sync import NoTarget as _NoTarget, sync_source
 from . import fix as fix_mod
 from . import gate
 
@@ -580,8 +580,7 @@ def create_app(
                                   f"retired: {exc}") from exc
                 # A partial retire leaves events only that team's sync can remove.
                 if report.ok:
-                    sync_partners(conn, other.id, report.freed_keys, target, now=clock(),
-                                  secrets=secrets)
+                    merging.publish(conn, target, now=clock(), secrets=secrets)
                     repo.revoke_team_key(conn, other.id, actor="console")
                     repo.log_admin(conn, "console", "team_retired", f"team:{other.id}",
                                    {"merged_into": source_id})
@@ -682,9 +681,9 @@ def create_app(
                     conn, secrets=secrets
                 )
                 report = retire.retire_source(conn, source, target, now=clock())
-                # Its teams at the same meets take the events over.
-                sync_partners(conn, source.id, report.freed_keys, target, now=clock(),
-                              secrets=secrets)
+                if report.ok:
+                    # Its meets go back to the other teams' own copies.
+                    merging.publish(conn, target, now=clock(), secrets=secrets)
             except (SecretError, TargetError) as exc:
                 raise Refused(f"could not reach the calendar: {exc}") from exc
 
@@ -821,11 +820,6 @@ def create_app(
         if problems:
             redirect(f"/sources/{source_id}?err=" + _q("; ".join(problems)))
         report = reports[0]
-        if not report.confirmed and report.held_kind == "merge":
-            redirect(f"/sources/{source_id}?err=" + _q(
-                "the teams changed since that page loaded, so nothing was "
-                "taken off. Here are the copies now — look again."
-            ))
         if not report.confirmed and report.held_kind == "disappearance":
             redirect(f"/sources/{source_id}?err=" + _q(
                 "the feed changed since that page loaded, so nothing was "
@@ -1139,6 +1133,14 @@ def create_app(
             state = repo.event_state(conn, uid)
             if state is None:
                 raise Refused("calsync has no record of writing that event")
+            if repo.get_source(conn, state.source_id).kind == "merged":
+                # The kid's own team holds the absence; the merge step redraws.
+                holder = next((m for m in repo.members_of(conn, uid)
+                               if child_id in (m["kids"] or "").split(",")), None)
+                if holder is None:
+                    raise Refused("that kid is not on a team at this meet")
+                uid = holder["member_uid"]
+                state = repo.event_state(conn, uid)
             source = _require_source(conn, state.source_id)
             activity = repo.get_activity(conn, source.activity_id)
             if child_id not in {c.id for c in repo.team_children(conn, activity)}:
@@ -1154,6 +1156,7 @@ def create_app(
                 target = write_target or targeting.build_target(conn, secrets=secrets)
                 withheld_mod.enforce(conn, source.id, target)
                 conn.commit()
+                merging.publish(conn, target, now=clock(), secrets=secrets)
             except (SecretError, TargetError):
                 pass
         _, problems = _sync_now([source.id]) if source.enabled else ([], [])
@@ -1213,20 +1216,17 @@ def create_app(
 
             try:
                 target = write_target or targeting.build_target(conn, secrets=secrets)
-                source = _require_source(conn, state.source_id)
-                if source.enabled and repo.in_shared_group(conn, uid):
-                    # The merged event is written from every team's copy, so
-                    # this is a real sync (which syncs the others too).
-                    sync_source(conn, source, target, now=clock(), secrets=secrets)
                 report = withheld_mod.enforce(conn, state.source_id, target)
+                conn.commit()
+                # A copy taken off may end a group; a merged event taken off
+                # keeps its members dropped.
+                merging.publish(conn, target, now=clock(), secrets=secrets)
             except (SecretError, TargetError) as exc:
                 raise Refused(
                     f"the decision is saved, but the calendar could not be "
                     f"reached to act on it, so the event is still there for now "
                     f"and the next sync will remove it: {exc}"
                 ) from exc
-            # What came off, not what `enforce` found: for a merged meet the
-            # sync above already took it down and `enforce` has nothing left.
             removed = was - on_calendar()
             conn.commit()
 
@@ -1258,10 +1258,20 @@ def create_app(
             state = repo.event_state(conn, uid)
             if state is None:
                 raise Refused("calsync has no record of writing that event")
-            source = _require_source(conn, state.source_id)
+            source = repo.get_source(conn, state.source_id)
             repo.set_withheld(conn, uid, None)
             conn.commit()
             enabled = source.enabled
+            if source.kind == "merged":
+                # Written by the merge step; a companion has no feed to sync.
+                try:
+                    target = write_target or targeting.build_target(conn, secrets=secrets)
+                    merged = merging.publish(conn, target, now=clock(), secrets=secrets)
+                except (SecretError, TargetError) as exc:
+                    raise Refused(f"cleared, but the calendar could not be reached: {exc}"
+                                  ) from exc
+                redirect(_back_to("/calendar") + ("err=" if merged.errors else "ok=") + _q(
+                    "; ".join(merged.errors[:3]) or "Put back."))
 
         if not enabled:
             # Same refusal `POST /sources/<id>/sync` makes: syncing a retired
@@ -1299,6 +1309,11 @@ def create_app(
         found = fix_mod.subject(conn, uid)
         if found is None:
             raise Refused("calsync has no record of writing that event")
+        if found.source_kind == "merged":
+            raise Refused(
+                "that is one event written for several teams, so fix it on the "
+                "kid's own team event, and it carries over."
+            )
         if found.item.cancelled and any(
             o.status == "orphaned" for o in found.overrides.values()
         ):
@@ -2400,7 +2415,7 @@ def _flash():
 
 def _require_source(conn, source_id: str):
     source = repo.get_source(conn, source_id)
-    if source is None:
+    if source is None or source.kind == "merged":
         raise Refused(f"there is no source called {source_id!r}")
     return source
 

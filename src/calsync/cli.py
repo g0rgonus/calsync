@@ -29,9 +29,9 @@ from . import db, repo
 from .secrets import SecretError, SecretStore
 from .settings import Settings, set_setting
 from . import (
-    digest, enrichment, matrix, polling, retire, seasonend, targeting,
+    digest, enrichment, matrix, merging, polling, retire, seasonend, targeting,
 )
-from .sync import sync_partners, sync_source
+from .sync import sync_source
 from .targets import build
 from .targets.http import HttpTransport
 
@@ -399,11 +399,9 @@ def cmd_retire(args) -> int:
     target = _target(conn, args, secrets)
     report = retire.retire_source(conn, source, target, now=now)
     print(report.line())
-    if report.freed_keys:
-        # Its teams at the same meets take the events over.
-        _, errors, _ = sync_partners(conn, source.id, report.freed_keys, target, now=now,
-                                  secrets=secrets)
-        for error in errors:
+    if report.ok:
+        # Its meets go back to the other teams' own copies.
+        for error in merging.publish(conn, target, now=now, secrets=secrets).errors:
             print(f"warning: {error}", file=sys.stderr)
     if not report.ok:
         print("\nnothing was disabled: some events could not be removed, so the",
