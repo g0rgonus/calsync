@@ -423,17 +423,19 @@ Decisions that span several files and are easy to undo by accident:
   copy; splitting a pushed team clones its source and pushed events for the kid
   (`repo.clone_team`), while a feed stays with its team because feed uids are
   global.
-- **Teams at one meet write it once** (`correlate.py`, `docs/MATCHING.md`). The
-  lowest source id carries; every other team's copy is dropped like a withheld
-  event — kept in the diff, never stored in `event_state.withheld` — and the
-  carrier renders the union of kids and notes from a copy, while `event_content`
-  keeps what its own source said and `event_state.merged` records the layer laid
-  over it, which readers apply (`repo._stored_event`). A sync that changes a source's
-  `shared_candidates` syncs its partners once (`follow`, `sync.sync_partners`).
-  Copies must share a collection to merge; a paused carrier keeps carrying and
-  retiring hands over (`RetireReport.freed_keys`); status changes on a grouped
-  event run the real sync; a mass drop is held as kind `merge` and confirmed by
-  fingerprint, against the same tracked set as the disappearance guard; the read API reports a dropped copy as `merged_into`, not cancelled.
+- **Teams at one meet write it once, as a step after every sync**
+  (`correlate.py`, `merging.py`, `docs/MATCHING.md`). A team's sync only stores its
+  `shared_candidates` (the event after the person's overlay, kids before
+  absences) and then calls `merging.publish`, which reads the database alone and
+  writes the merged events under a hidden companion source (`merged-<carrier>`,
+  kind `merged`; `list_sources` skips it and nothing may sync it). The order is
+  the safety: a member copy comes off (`merged_members`, `withheld.enforce`) only
+  after its merged replacement was accepted and recorded, and a merged event is
+  cancelled only after the members' own copies are restored. Dropped copies stay
+  in the team's diff and are never stored as withheld; only a person sets that
+  flag. A mass group-end is held by the companion's disappearance guard, a held
+  poll keeps its stored candidates, and the read API reports a claimed copy as
+  `merged_into`, not cancelled.
 - **The title is a render, not data.** `Event` deliberately has no `summary`
   field; the display title is composed at write time from a configurable template
   (`normalize/title.py`). Nothing downstream parses it back, so conventions can

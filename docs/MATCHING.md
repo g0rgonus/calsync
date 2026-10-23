@@ -217,22 +217,29 @@ when all of these hold:
   so under a `{child}` or `{activity}` template copies bound for different
   calendars stay separate.
 
-The lowest source id writes the event; the others drop their copy the way a
-withheld event is dropped, without ever setting the flag. The carrier shows the
-union of kids in birth order, each team's notes with duplicate lines said once,
-every distinct kit, and the earliest arrival (the carrier's warm-up starts
-there too). Readers show the same text: `event_state.merged` records the layer
-laid over the carrier's own content. A source with two events under one
-key, or a group the rules split, writes everyone's own.
+Merging is its own step after each team's sync (`merging.publish`), reading
+only the database. A sync stores its candidates (the event after the person's
+overlay, with the team's kids before absences); the step groups them, and the
+lowest source id carries. The merged event (`merged.<carrier uid>`) is written
+under a hidden companion source of the carrier team and shows the union of kids
+in birth order, each team's notes with duplicate lines said once, every
+distinct kit, and the earliest arrival (its warm-up starts there too).
+`event_state.merged` records the layer laid over the carrier's own content,
+which readers apply.
 
-A paused carrier keeps carrying (its event is still on the calendar); retiring
-clears its candidates and syncs the other teams so one takes over. A withhold
-or a kid marked out on any copy re-runs the real sync, which also syncs the
-others. Many copies dropped at once (past the disappearance thresholds, two or
-more, measured against the in-window tracked games) hold the poll as kind
-`merge`, leave the copies written and wait for a
-person to confirm the set. The read API leaves a dropped copy out of the
-lists, and a read of it gives `cancelled: false` and `merged_into`.
+The order is the safety. A team's copy is taken down only after the merged event
+was accepted by the calendar and `merged_members` recorded it. When a group ends
+(a team cancels, retires, is withheld or marked out), each remaining team's own
+copy is restored first and the merged event is cancelled only once those are
+back; if one cannot be restored the merged event stays. Dropped copies stay in
+their team's diff and are never stored as withheld. A mass group-end is held by
+the companion's disappearance guard; a held poll keeps its stored candidates; a
+paused team keeps its candidates, because its copy is still on the calendar.
+A source with two events under one key, or a group the rules split, writes
+everyone's own. Withhold and per-kid absence work on the merged uid (the
+absence is recorded on that kid's own team copy), and a fix is made on the kid's
+own team event. The read API leaves a claimed copy out of the lists, and a read
+of it gives `cancelled: false` and `merged_into`.
 
 ## 4. After setup: flag duplicates, never block or delete
 

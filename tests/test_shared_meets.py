@@ -19,9 +19,10 @@ from calsync.settings import set_setting
 from calsync.inbound import app as inbound_app
 from calsync.inbound import events as inbound
 from calsync.secrets import SecretStore
+from calsync import merging
 from calsync import sync as sync_module
-from calsync.sync import NoTarget, sync_partners, sync_source
-from calsync.targets import build
+from calsync.sync import NoTarget, sync_source
+from calsync.targets import TargetError, build
 
 from calsync.api import app as api_app
 from calsync.web import app as web_app
@@ -37,6 +38,34 @@ STATUS = "/inbound/v1/admin/events/status"
 MEET = {"type": "game", "label": "Harbor Invitational", "start": "2026-11-14",
         "end": "2026-11-15", "location": "Wrenfield Aquatic Center"}
 DAY = "2026-11-14"
+HERONS_UID = "in-herons.harbor@inbound.calsync"
+OTTERS_UID = "in-otters.harbor@inbound.calsync"
+MERGED = f"merged.{HERONS_UID}"
+
+
+class Recording:
+    """The calendar, remembering writes in order and refusing the ones it is told to."""
+
+    def __init__(self, inner):
+        self.inner, self.calls, self.fail = inner, [], ()
+
+    def upsert(self, event, previous=None):
+        if event.uid.startswith(self.fail):
+            raise TargetError(f"refused {event.uid}")
+        self.calls.append(("upsert", event.uid))
+        return self.inner.upsert(event, previous)
+
+    def cancel(self, ref):
+        if ref.remote_id.startswith(self.fail):
+            raise TargetError(f"refused {ref.remote_id}")
+        self.calls.append(("cancel", ref.remote_id))
+        return self.inner.cancel(ref)
+
+    def __getattr__(self, name):
+        return getattr(self.inner, name)
+
+    def at(self, kind, uid):
+        return self.calls.index((kind, uid))
 
 
 @pytest.fixture
@@ -46,7 +75,8 @@ def env(tmp_path):
     conn.executescript(
         """
         INSERT INTO children (id, name, initial, birth_order)
-             VALUES ('jesse', 'Jesse', 'J', 1), ('nadia', 'Nadia', 'N', 2);
+             VALUES ('jesse', 'Jesse', 'J', 1), ('nadia', 'Nadia', 'N', 2),
+                    ('sam', 'Sam', 'S', 3);
         """
     )
     repo.issue_admin_key(conn, "Grok Bot", inbound.hash_key(ADMIN_KEY))
@@ -57,7 +87,7 @@ def env(tmp_path):
     secrets_file.write_text(json.dumps({"pushover_token": "t", "pushover_user": "u"}))
     secrets_file.chmod(0o600)
     secrets = SecretStore(path=secrets_file, environ={})
-    target = build("ics_file", directory=tmp_path / "out")
+    target = Recording(build("ics_file", directory=tmp_path / "out"))
     api = ApiClient(inbound_app.create_app(
         path, secrets=secrets, clock=lambda: NOW, log=lambda line: None,
         write_target=target, notify_sender=lambda c, s, message, **kw: None),
@@ -117,27 +147,84 @@ def state(env, uid):
         conn.close()
 
 
-def test_two_teams_at_one_meet_make_one_event_for_both(env):
-    two_teams(env)
+
+
+def uids(env, day=DAY):
+    return sorted(e["uid"] for e in calendar(env, day))
+
+
+def conn_for(env):
+    return db.connect(env["path"])
+
+
+def run_publish(env, **kw):
+    conn = conn_for(env)
+    try:
+        return merging.publish(conn, env["target"], now=NOW, secrets=env["secrets"], **kw)
+    finally:
+        conn.close()
+
+
+def delete_meet(env, source, key, ext="harbor"):
+    r = env["api"].call("DELETE", f"/inbound/v1/sources/{source}/events/{ext}",
+                        headers={"X-Calsync-Key": key})
+    assert r["status"] in (200, 204), r
+
+
+def test_two_teams_at_one_meet_make_one_event_and_the_old_copies_go(env):
+    herons, hk = team(env, "Herons", "jesse")
+    otters, ok = team(env, "Otters", "nadia")
+    push(env, herons, hk, notes="Bring a towel\nParking on Quay St")
+    push(env, otters, ok, notes="Bring a towel\nNadia swims 200 IM")
+    live(env, herons)
+    env["target"].calls.clear()
+    live(env, otters)
     (event,) = calendar(env)
+    assert event["uid"] == MERGED
     assert "J+N" in event["title"] and "Harbor Invitational" in event["title"]
     lines = event["body"].splitlines()
     assert lines.count("Bring a towel") == 1
     assert "Parking on Quay St" in lines and "Nadia swims 200 IM" in lines
+    # The merged event is accepted before either copy is taken down.
+    calls = env["target"].calls
+    cancels = [i for i, (kind, _) in enumerate(calls) if kind == "cancel"]
+    assert {calls[i][1] for i in cancels} == {HERONS_UID, OTTERS_UID}
+    assert env["target"].at("upsert", MERGED) < min(cancels)
 
 
-def test_a_second_push_after_the_first_was_written_converges_without_a_duplicate(env):
+def test_the_merged_event_lives_under_a_hidden_companion_and_nothing_is_withheld(env):
+    two_teams(env)
+    conn = conn_for(env)
+    row = conn.execute("SELECT source_id, merged, kids, withheld FROM event_state "
+                       "WHERE uid = ?", (MERGED,)).fetchone()
+    assert row["source_id"] == "merged-in-herons" and row["kids"] == "jesse,nadia"
+    assert json.loads(row["merged"])["body"]
+    assert conn.execute("SELECT COUNT(*) FROM event_state WHERE withheld IS NOT NULL"
+                        ).fetchone()[0] == 0
+    members = conn.execute("SELECT member_uid, merged_uid FROM merged_members "
+                           "ORDER BY member_uid").fetchall()
+    assert [(m[0], m[1]) for m in members] == [(HERONS_UID, MERGED), (OTTERS_UID, MERGED)]
+    conn.close()
+
+
+def test_a_second_team_arriving_later_converges_in_that_one_push(env):
     herons, hk = team(env, "Herons", "jesse")
     otters, ok = team(env, "Otters", "nadia")
     push(env, herons, hk)
     live(env, herons)
-    assert [e["title"] for e in calendar(env)] == [calendar(env)[0]["title"]]
-    assert "J+N" not in calendar(env)[0]["title"]
+    assert uids(env) == [HERONS_UID]
     push(env, otters, ok)
     live(env, otters)
+    assert uids(env) == [MERGED]
+
+
+def test_changing_one_teams_notes_rewrites_the_merged_event_from_its_sync_alone(env):
+    (herons, hk), (otters, ok) = two_teams(env)
+    env["target"].calls.clear()
+    push(env, otters, ok, notes="Bring a towel\nNadia swims 100 free")
     (event,) = calendar(env)
-    assert "J+N" in event["title"]
-    assert event["uid"].startswith("in-herons.")
+    assert "Nadia swims 100 free" in event["body"] and "200 IM" not in event["body"]
+    assert env["target"].calls == [("upsert", MERGED)]
 
 
 def test_a_lower_id_joining_later_takes_over_and_the_old_copy_goes(env):
@@ -148,8 +235,383 @@ def test_a_lower_id_joining_later_takes_over_and_the_old_copy_goes(env):
     push(env, herons, hk)
     live(env, herons)
     (event,) = calendar(env)
-    assert "J+N" in event["title"] and event["uid"].startswith("in-herons.")
-    assert state(env, event["uid"].replace("in-herons.", "in-otters.")).cancelled
+    assert "J+N" in event["title"] and event["uid"] == MERGED
+    assert state(env, OTTERS_UID).cancelled
+
+
+def test_a_team_cancelling_its_meet_restores_the_others_copy_before_the_merged_one_goes(env):
+    (herons, hk), (otters, ok) = two_teams(env)
+    env["target"].calls.clear()
+    delete_meet(env, otters, ok)
+    (event,) = calendar(env)
+    assert event["uid"] == HERONS_UID
+    assert "Jesse" in event["title"] and "Nadia" not in event["title"]
+    assert "Nadia swims 200 IM" not in event["body"]
+    assert env["target"].at("upsert", HERONS_UID) < env["target"].at("cancel", MERGED)
+    conn = conn_for(env)
+    assert conn.execute("SELECT COUNT(*) FROM merged_members").fetchone()[0] == 0
+    conn.close()
+
+
+def test_the_carrier_cancelling_hands_the_meet_back_to_the_other_team(env):
+    (herons, hk), (otters, ok) = two_teams(env)
+    env["target"].calls.clear()
+    delete_meet(env, herons, hk)
+    (event,) = calendar(env)
+    assert event["uid"] == OTTERS_UID
+    assert "Nadia" in event["title"] and "Jesse" not in event["title"]
+    assert env["target"].at("upsert", OTTERS_UID) < env["target"].at("cancel", MERGED)
+
+
+def test_a_group_end_keeps_the_merged_event_if_a_copy_cannot_be_restored(env):
+    (herons, hk), (otters, ok) = two_teams(env)
+    env["target"].fail = ("in-herons.",)
+    delete_meet(env, otters, ok)
+    assert uids(env) == [MERGED]               # nobody's event is missing
+    conn = conn_for(env)
+    assert HERONS_UID in [r[0] for r in conn.execute("SELECT member_uid FROM merged_members")]
+    conn.close()
+    env["target"].fail = ()
+    report = run_publish(env)
+    assert not report.errors
+    assert uids(env) == [HERONS_UID]
+
+
+def test_a_failed_merged_write_leaves_both_copies_on_the_calendar(env):
+    herons, hk = team(env, "Herons", "jesse")
+    otters, ok = team(env, "Otters", "nadia")
+    push(env, herons, hk)
+    push(env, otters, ok)
+    live(env, herons)
+    env["target"].fail = ("merged.",)
+    live(env, otters)
+    assert uids(env) == [HERONS_UID, OTTERS_UID]
+    conn = conn_for(env)
+    assert conn.execute("SELECT COUNT(*) FROM merged_members").fetchone()[0] == 0
+    conn.close()
+    env["target"].fail = ()
+    assert not run_publish(env).errors
+    assert uids(env) == [MERGED]
+
+
+def test_a_failed_merged_cancel_leaves_a_duplicate_not_a_gap(env):
+    (herons, hk), (otters, ok) = two_teams(env)
+    env["target"].fail = ("merged.",)
+    delete_meet(env, otters, ok)
+    assert uids(env) == sorted([HERONS_UID, MERGED])
+    env["target"].fail = ()
+    assert not run_publish(env).errors
+    assert uids(env) == [HERONS_UID]
+
+
+def test_publish_never_fetches(env):
+    (herons, hk), (otters, ok) = two_teams(env)
+
+    def boom(url):
+        raise AssertionError("publish fetched")
+
+    conn = conn_for(env)
+    conn.execute("UPDATE shared_candidates SET body = 'New note' WHERE source_id = ?", (otters,))
+    conn.commit()
+    conn.close()
+    report = run_publish(env, fetcher=boom)
+    assert not report.errors and report.written == 1
+    assert "New note" in calendar(env)[0]["body"]
+
+
+def meets(env, source, key, n):
+    for i in range(1, n + 1):
+        push(env, source, key, ext=f"g{i}", label=f"Gala {i}",
+             start=f"2026-12-{3 * i:02d}", end=f"2026-12-{3 * i + 1:02d}")
+
+
+def on_calendar(env) -> int:
+    return len(list(env["out"].rglob("*.ics")))
+
+
+def five_merged(env):
+    herons, hk = team(env, "Herons", "jesse")
+    otters, ok = team(env, "Otters", "nadia")
+    for source, key in ((herons, hk), (otters, ok)):
+        meets(env, source, key, 5)
+        live(env, source)
+    assert on_calendar(env) == 5
+    return herons, otters
+
+
+def test_a_mass_group_end_is_held_and_the_members_stay_dropped(env):
+    herons, otters = five_merged(env)
+    conn = conn_for(env)
+    conn.execute("DELETE FROM shared_candidates WHERE source_id = ?", (otters,))
+    conn.commit()
+    conn.close()
+    env["target"].calls.clear()
+    report = run_publish(env)
+    assert any("held" in e for e in report.errors) and report.ended == 0
+    assert [c for c in env["target"].calls if c[0] == "cancel"] == []
+    assert on_calendar(env) == 5
+    conn = conn_for(env)
+    assert conn.execute("SELECT COUNT(*) FROM merged_members").fetchone()[0] == 10
+    assert conn.execute("SELECT COUNT(*) FROM event_state WHERE cancelled = 0 "
+                        "AND source_id LIKE 'merged-%'").fetchone()[0] == 5
+    conn.close()
+
+
+def test_withholding_the_merged_event_takes_it_off_and_keeps_the_members_dropped(env):
+    two_teams(env)
+    r = env["api"].call("POST", STATUS, {"uid": MERGED, "status": "not_attending"})
+    assert r["status"] == 200 and r["json"]["on_calendar"] is False, r["json"]
+    assert calendar(env) == []
+    conn = conn_for(env)
+    assert [r[0] for r in conn.execute(
+        "SELECT uid FROM event_state WHERE withheld IS NOT NULL")] == [MERGED]
+    # A poll of either team must not put its own copy back.
+    for source in ("in-herons", "in-otters"):
+        sync_source(conn, repo.get_source(conn, source), env["target"], now=NOW,
+                    secrets=env["secrets"])
+    conn.close()
+    assert calendar(env) == []
+    r = env["api"].call("POST", STATUS, {"uid": MERGED, "status": None})
+    assert r["status"] == 200, r["json"]
+    assert uids(env) == [MERGED]
+
+
+def test_the_console_withholds_and_restores_a_merged_event(env):
+    two_teams(env)
+    r = env["console"].post("/events/withhold", {"uid": MERGED, "reason": "cancelled"})
+    assert r["status"] in (302, 303), r
+    assert "1 event(s) off the calendar" in unquote(r["headers"]["Location"])
+    assert calendar(env) == []
+    r = env["console"].post("/events/restore", {"uid": MERGED})
+    assert r["status"] in (302, 303), r
+    assert uids(env) == [MERGED]
+
+
+def test_a_kid_marked_out_of_the_merged_event_leaves_its_title(env):
+    two_teams(env)
+    r = env["api"].call("POST", STATUS, {"uid": MERGED, "status": "not_attending",
+                                         "child": "nadia"})
+    assert r["status"] == 200, r["json"]
+    (event,) = calendar(env)
+    assert "Jesse" in event["title"] and "Nadia" not in event["title"]
+    assert "Nadia swims 200 IM" not in event["body"]
+    conn = conn_for(env)
+    assert conn.execute("SELECT child_id FROM event_absences WHERE uid = ?",
+                        (OTTERS_UID,)).fetchone()[0] == "nadia"
+    conn.close()
+
+
+def test_a_kid_who_is_not_a_member_is_refused(env):
+    two_teams(env)
+    r = env["api"].call("POST", STATUS, {"uid": MERGED, "status": "not_attending",
+                                         "child": "sam"})
+    assert r["status"] == 422, r["json"]
+    assert uids(env) == [MERGED]
+
+
+def test_the_console_kid_route_works_on_a_merged_event_and_refuses_a_stranger(env):
+    two_teams(env)
+    r = env["console"].post("/events/withhold", {"uid": MERGED, "reason": "not_attending",
+                                                 "child": "sam"})
+    assert r["status"] >= 400 and "not on a team" in r["body"]
+    r = env["console"].post("/events/withhold", {"uid": MERGED, "reason": "not_attending",
+                                                 "child": "nadia"})
+    assert r["status"] in (302, 303), r
+    (event,) = calendar(env)
+    assert "Nadia" not in event["title"]
+    # Nadia's team was the whole of her side of the meet, so the group ended;
+    # putting her back goes through her own team's copy.
+    env["console"].post("/events/restore", {"uid": OTTERS_UID, "child": "nadia"})
+    assert uids(env) == [MERGED]
+
+
+def test_withholding_a_members_copy_leaves_the_other_kids_event(env):
+    two_teams(env)
+    r = env["api"].call("POST", STATUS, {"uid": HERONS_UID, "status": "cancelled"})
+    assert r["status"] == 200, r["json"]
+    (event,) = calendar(env)
+    assert event["uid"] == OTTERS_UID
+    assert "Nadia" in event["title"] and "Jesse" not in event["title"]
+
+
+def test_a_held_member_poll_keeps_its_candidates_and_a_confirmed_one_refreshes_them(env):
+    (herons, hk), _ = two_teams(env)
+    for i in range(1, 6):
+        push(env, herons, hk, ext=f"g{i}", label=f"Gala {i}",
+             start=f"2026-12-{3 * i:02d}", end=f"2026-12-{3 * i + 1:02d}")
+    conn = conn_for(env)
+    stored = repo.source_candidates(conn, herons)
+    payload = json.loads(repo.inbound_payload(conn, herons))
+    payload["items"] = [i for i in payload["items"] if i["external_id"] == "g1"]
+    raw = json.dumps(payload).encode()
+    source = repo.get_source(conn, herons)
+    report = sync_source(conn, source, env["target"], now=NOW, raw=raw)
+    assert report.status == "held" and report.held_fingerprint
+    assert repo.source_candidates(conn, herons) == stored
+    assert MERGED in uids(env)
+    done = sync_source(conn, source, env["target"], now=NOW, raw=raw,
+                       confirm_held=report.held_fingerprint)
+    assert done.status == "ok"
+    assert [r["uid"] for r in repo.source_candidates(conn, herons)] == [
+        r["uid"] for r in stored if r["uid"].startswith("in-herons.g1")]
+    conn.close()
+
+
+def test_a_paused_member_keeps_the_group(env):
+    (herons, hk), (otters, ok) = two_teams(env)
+    conn = conn_for(env)
+    conn.execute("UPDATE sources SET enabled = 0 WHERE id = ?", (herons,))
+    conn.commit()
+    sync_source(conn, repo.get_source(conn, otters), env["target"], now=NOW,
+                secrets=env["secrets"])
+    assert repo.merged_away(conn) == {HERONS_UID, OTTERS_UID}
+    assert len(repo.source_candidates(conn, herons)) == 1
+    conn.close()
+    assert uids(env) == [MERGED]
+
+
+def test_retiring_the_carrier_gives_the_other_team_its_own_copy_back(env):
+    (herons, hk), (otters, ok) = two_teams(env)
+    env["target"].calls.clear()
+    r = env["console"].post(f"/sources/{herons}/retire", {})
+    assert r["status"] in (302, 303), r
+    (event,) = calendar(env)
+    assert event["uid"] == OTTERS_UID
+    assert "Nadia" in event["title"] and "Jesse" not in event["title"]
+    assert env["target"].at("upsert", OTTERS_UID) < env["target"].at("cancel", MERGED)
+    conn = conn_for(env)
+    assert repo.source_candidates(conn, herons) == []
+    conn.close()
+
+
+def test_a_new_carrier_is_written_before_the_old_merged_event_goes(env):
+    herons, hk = team(env, "Herons", "jesse")
+    otters, ok = team(env, "Otters", "nadia")
+    pike, pk = team(env, "Pike", "sam")
+    for source, key in ((herons, hk), (otters, ok), (pike, pk)):
+        push(env, source, key)
+        live(env, source)
+    (event,) = calendar(env)
+    assert event["uid"] == MERGED and "Kids" in event["title"]
+    env["target"].calls.clear()
+    env["console"].post(f"/sources/{herons}/retire", {})
+    (event,) = calendar(env)
+    assert event["uid"] == f"merged.{OTTERS_UID}" and "N+S" in event["title"]
+    assert env["target"].at("upsert", f"merged.{OTTERS_UID}") < env["target"].at("cancel", MERGED)
+
+
+def test_a_claimed_copy_with_no_row_gets_a_cancelled_placeholder(env):
+    two_teams(env)
+    conn = conn_for(env)
+    conn.execute("DELETE FROM event_state WHERE uid = ?", (OTTERS_UID,))
+    conn.commit()
+    sync_source(conn, repo.get_source(conn, "in-otters"), env["target"], now=NOW,
+                secrets=env["secrets"])
+    row = conn.execute("SELECT cancelled, withheld FROM event_state WHERE uid = ?",
+                       (OTTERS_UID,)).fetchone()
+    conn.close()
+    assert tuple(row) == (1, None)
+    assert uids(env) == [MERGED]
+
+
+def test_a_merge_failure_never_changes_the_teams_status(env):
+    (herons, hk), (otters, ok) = two_teams(env)
+    env["target"].fail = ("merged.",)
+    conn = conn_for(env)
+    # The other team's notes moved, so this sync's publish has a write to make.
+    conn.execute("UPDATE shared_candidates SET body = 'New note' WHERE source_id = ?", (herons,))
+    conn.commit()
+    report = sync_source(conn, repo.get_source(conn, otters), env["target"], now=NOW,
+                         secrets=env["secrets"])
+    assert report.status == "ok" and not report.errors and report.merge_errors
+    assert conn.execute("SELECT last_error FROM sources WHERE id = ?", (otters,)
+                        ).fetchone()[0] is None
+    conn.close()
+
+
+def test_a_merge_step_that_raises_is_reported_apart_from_the_team(env, monkeypatch):
+    (herons, hk), (otters, ok) = two_teams(env)
+
+    def boom(*a, **k):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(merging, "publish", boom)
+    conn = conn_for(env)
+    report = sync_source(conn, repo.get_source(conn, otters), env["target"], now=NOW,
+                         secrets=env["secrets"])
+    conn.close()
+    assert report.status == "ok" and report.merge_errors == ["boom"]
+
+
+def test_companions_are_hidden_and_never_synced(env):
+    two_teams(env)
+    conn = conn_for(env)
+    assert [s.id for s in repo.list_sources(conn, enabled_only=False)] == [
+        "in-herons", "in-otters"]
+    ids = [s.id for s in repo.list_sources(conn, enabled_only=False, include_merged=True)]
+    assert ids == ["in-herons", "in-otters", "merged-in-herons"]
+    assert repo.get_source(conn, "merged-in-herons").kind == "merged"
+    reports = sync_module.sync_all(conn, env["target"], now=NOW, secrets=env["secrets"])
+    assert [r.source_id for r in reports] == ["in-herons", "in-otters"]
+    with pytest.raises(AssertionError):
+        sync_source(conn, repo.get_source(conn, "merged-in-herons"), env["target"], now=NOW)
+    conn.close()
+    teams = env["api"].call("GET", TEAMS)["json"]
+    assert "merged-in-herons" not in json.dumps(teams)
+    assert "merged-in-herons" not in env["console"].get("/")["body"]
+    assert env["console"].get("/sources/merged-in-herons")["status"] >= 400
+
+
+def test_the_fix_page_points_a_merged_event_back_to_the_kids_own_team(env):
+    two_teams(env)
+    r = env["console"].get(f"/events/fix?uid={MERGED}&back=/calendar")
+    assert "own team" in unquote(r["headers"].get("Location", "")) + r["body"]
+
+
+def test_a_correction_on_a_members_copy_flows_into_the_merged_event(env):
+    two_teams(env)
+    conn = conn_for(env)
+    row = conn.execute("SELECT content FROM shared_candidates WHERE uid = ?",
+                       (HERONS_UID,)).fetchone()
+    conn.close()
+    assert json.loads(row[0])["uid"] == HERONS_UID and json.loads(row[0])["venue_name"]
+
+
+def test_placements_report_claimed_copies_as_merged(env):
+    two_teams(env)
+    conn = conn_for(env)
+    states = {p["uid"]: p["state"] for p in repo.placements(conn, since="2000-01-01")}
+    conn.close()
+    assert states == {MERGED: "live", HERONS_UID: "merged", OTTERS_UID: "merged"}
+
+
+def test_a_dry_run_writes_nothing(env):
+    herons, hk = team(env, "Herons", "jesse")
+    push(env, herons, hk)
+    live(env, herons)
+    conn = conn_for(env)
+    conn.execute("DELETE FROM shared_candidates")
+    conn.commit()
+    report = sync_source(conn, repo.get_source(conn, herons), NoTarget(), now=NOW,
+                         secrets=env["secrets"], dry_run=True)
+    assert report.status == "ok"
+    for table in ("shared_candidates", "merged_members"):
+        assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+    assert repo.companions(conn) == []
+    conn.close()
+
+
+def test_a_dry_run_leaves_a_merged_group_alone(env):
+    (herons, hk), (otters, ok) = two_teams(env)
+    conn = conn_for(env)
+    before = [conn.execute(f"SELECT * FROM {t}").fetchall() for t in
+              ("shared_candidates", "merged_members", "event_state")]
+    sync_source(conn, repo.get_source(conn, otters), NoTarget(), now=NOW,
+                secrets=env["secrets"], dry_run=True)
+    after = [conn.execute(f"SELECT * FROM {t}").fetchall() for t in
+             ("shared_candidates", "merged_members", "event_state")]
+    conn.close()
+    assert [[tuple(r) for r in t] for t in before] == [[tuple(r) for r in t] for t in after]
 
 
 def test_practices_never_merge(env):
@@ -189,127 +651,18 @@ def test_timed_never_matches_all_day(env):
     assert len(calendar(env)) == 2
 
 
-def test_a_team_that_cancels_leaves_the_other_titled_for_its_kid(env):
-    (herons, hk), (otters, ok) = two_teams(env)
-    assert env["api"].call("DELETE", f"/inbound/v1/sources/{otters}/events/harbor",
-                           headers={"X-Calsync-Key": ok})["status"] in (200, 204)
-    (event,) = calendar(env)
-    assert "Jesse" in event["title"] and "Nadia" not in event["title"]
-    assert "Nadia swims 200 IM" not in event["body"]
-
-
-def test_the_carrier_cancelling_hands_the_event_to_the_other(env):
-    (herons, hk), (otters, ok) = two_teams(env)
-    assert env["api"].call("DELETE", f"/inbound/v1/sources/{herons}/events/harbor",
-                           headers={"X-Calsync-Key": hk})["status"] in (200, 204)
-    (event,) = calendar(env)
-    assert "Nadia" in event["title"] and "Jesse" not in event["title"]
-    assert event["uid"].startswith("in-otters.")
-
-
-def test_a_kid_marked_out_of_their_copy_leaves_the_merged_title(env):
-    (herons, hk), (otters, ok) = two_teams(env)
-    uid = calendar(env)[0]["uid"]
-    r = env["api"].call("POST", STATUS, {"uid": uid, "status": "not_attending",
-                                         "child": "jesse"})
-    assert r["status"] == 200, r["json"]
-    # Jesse was Herons' only kid, so that copy is off and Otters carries alone.
-    (event,) = calendar(env)
-    assert "Nadia" in event["title"] and "Jesse" not in event["title"]
-
-
 def test_a_staged_source_never_joins_a_group(env):
     herons, hk = team(env, "Herons", "jesse")
     otters, ok = team(env, "Otters", "nadia")
     push(env, herons, hk)
     live(env, herons)
     push(env, otters, ok)                      # still staged
-    conn = db.connect(env["path"])
+    conn = conn_for(env)
     assert repo.source_candidates(conn, otters) == []
-    assert "J+N" not in calendar(env)[0]["title"]
     conn.close()
-    sources = [s for s in repo.list_sources(db.connect(env["path"])) if s.id == otters]
-    assert sources[0].staging_collection
-
-
-def test_a_paused_carrier_keeps_carrying(env):
-    (herons, hk), (otters, ok) = two_teams(env)
-    conn = db.connect(env["path"])
-    conn.execute("UPDATE sources SET enabled = 0 WHERE id = ?", (herons,))
-    conn.commit()
-    assert repo.merged_away(conn) == {r["uid"] for r in repo.source_candidates(conn, otters)}
-    # The partner syncs while the carrier is paused: its event stays dropped.
-    sync_source(conn, repo.get_source(conn, otters), env["target"], now=NOW,
-                secrets=env["secrets"])
-    conn.close()
-    (event,) = calendar(env)
-    assert "J+N" in event["title"] and event["uid"].startswith("in-herons.")
-
-
-def test_retiring_the_carrier_hands_the_meet_to_the_other_team(env):
-    (herons, hk), (otters, ok) = two_teams(env)
-    r = env["console"].post(f"/sources/{herons}/retire", {})
-    assert r["status"] in (302, 303), r
-    (event,) = calendar(env)
-    assert event["uid"].startswith("in-otters.")
-    assert "Nadia" in event["title"] and "Jesse" not in event["title"]
-    conn = db.connect(env["path"])
-    assert repo.source_candidates(conn, herons) == []
-    conn.close()
-
-
-def test_placements_report_the_non_carrier_as_merged(env):
-    two_teams(env)
-    conn = db.connect(env["path"])
-    states = {p["uid"].split(".")[0]: p["state"]
-              for p in repo.placements(conn, since="2000-01-01")}
-    conn.close()
-    assert states == {"in-herons": "live", "in-otters": "merged"}
-
-
-def test_a_dry_run_writes_no_candidates(env):
-    herons, hk = team(env, "Herons", "jesse")
-    push(env, herons, hk)
-    live(env, herons)
-    conn = db.connect(env["path"])
-    conn.execute("DELETE FROM shared_candidates")
-    conn.commit()
-    source = repo.get_source(conn, herons)
-    report = sync_source(conn, source, NoTarget(), now=NOW, secrets=env["secrets"],
-                         dry_run=True)
-    assert report.status == "ok"
-    assert conn.execute("SELECT COUNT(*) FROM shared_candidates").fetchone()[0] == 0
-    conn.close()
-
-
-def test_dropping_a_copy_trips_no_guard_and_is_not_a_person_withholding(env):
-    (herons, hk), (otters, ok) = two_teams(env)
-    conn = db.connect(env["path"])
-    source = repo.get_source(conn, otters)
-    report = sync_source(conn, source, env["target"], now=NOW, secrets=env["secrets"])
-    assert report.status == "ok" and report.held is None and not report.errors
-    rows = conn.execute("SELECT uid, withheld, cancelled FROM event_state").fetchall()
-    assert all(r["withheld"] is None for r in rows)
-    conn.close()
-    assert len(calendar(env)) == 1
-
-
-def test_a_partner_is_synced_once_when_the_group_changes(env):
-    herons, hk = team(env, "Herons", "jesse")
-    otters, ok = team(env, "Otters", "nadia")
-    push(env, herons, hk)
-    live(env, herons)
-    push(env, otters, ok)
-    conn = db.connect(env["path"])
-    conn.execute("UPDATE sources SET staging_collection = NULL WHERE id = ?", (otters,))
-    conn.commit()
-    report = sync_source(conn, repo.get_source(conn, otters), env["target"], now=NOW,
-                         secrets=env["secrets"])
-    assert report.partners_synced == [herons]
-    again = sync_source(conn, repo.get_source(conn, otters), env["target"], now=NOW,
-                        secrets=env["secrets"])
-    assert again.partners_synced == []
-    conn.close()
+    herons_event = next(e for e in calendar(env) if e["uid"] == HERONS_UID)
+    assert "J+N" not in herons_event["title"]
+    assert MERGED not in uids(env)
 
 
 def test_names_match_after_normalising_and_practices_have_no_key():
@@ -325,174 +678,15 @@ def test_names_match_after_normalising_and_practices_have_no_key():
     assert correlate.key(mk(warmup_for="x"), "swimming", "c") is None
 
 
-def test_a_held_poll_does_not_reshape_the_group(env):
-    (herons, hk), _ = two_teams(env)
-    for i in range(1, 6):
-        push(env, herons, hk, ext=f"g{i}", label=f"Gala {i}",
-             start=f"2026-12-{3 * i:02d}", end=f"2026-12-{3 * i + 1:02d}")
-    conn = db.connect(env["path"])
-    stored = repo.source_candidates(conn, herons)
-    payload = json.loads(repo.inbound_payload(conn, herons))
-    payload["items"] = [i for i in payload["items"] if i["external_id"] == "g1"]
-    report = sync_source(conn, repo.get_source(conn, herons), env["target"], now=NOW,
-                         raw=json.dumps(payload).encode())
-    assert report.status == "held"
-    assert repo.source_candidates(conn, herons) == stored
-    conn.close()
-    (event,) = calendar(env)
-    assert "J+N" in event["title"]
-
-
 @pytest.mark.parametrize("template", ["{child}-{type}", "{activity}-{type}"])
 def test_copies_bound_for_different_calendars_are_not_merged(env, template):
-    conn = db.connect(env["path"])
+    conn = conn_for(env)
     set_setting(conn, "collection_template", template)
     conn.close()
     two_teams(env)
     events = calendar(env)
     assert len(events) == 2
     assert all("J+N" not in e["title"] for e in events)
-
-
-def test_the_read_api_does_not_call_a_dropped_copy_cancelled(env, tmp_path):
-    two_teams(env)
-    token = tmp_path / "read.json"
-    token.write_text(json.dumps({"api_token": "tok"}))
-    token.chmod(0o600)
-    read = ReadClient(api_app.create_app(env["path"], secrets=SecretStore(
-        path=token, environ={}), clock=lambda: NOW), token="tok")
-    herons_uid = calendar(env)[0]["uid"]
-    otters_uid = herons_uid.replace("in-herons.", "in-otters.")
-
-    listed = read.get("/v1/events?from=2026-11-01&to=2026-11-30")["json"]
-    assert [e["uid"] for e in listed["events"]] == [herons_uid]
-    assert [c["id"] for c in listed["events"][0]["children"]] == ["jesse", "nadia"]
-    household = env["api"].get("/inbound/v1/calendar?from=2026-11-01&to=2026-11-30")["json"]
-    assert [e["uid"] for e in household["events"]] == [herons_uid]
-
-    dropped = read.get(f"/v1/events/{otters_uid}")["json"]["event"]
-    assert dropped["cancelled"] is False and dropped["merged_into"] == herons_uid
-    carrier = read.get(f"/v1/events/{herons_uid}")["json"]["event"]
-    assert carrier["merged_into"] is None
-
-
-def meets(env, source, key, n):
-    for i in range(1, n + 1):
-        push(env, source, key, ext=f"g{i}", label=f"Gala {i}",
-             start=f"2026-12-{3 * i:02d}", end=f"2026-12-{3 * i + 1:02d}")
-
-
-def on_calendar(env) -> int:
-    return len(list(env["out"].rglob("*.ics")))
-
-
-def otters_first(env, shared, total):
-    """Otters has `total` meets live; Herons then goes live with the first `shared`."""
-    herons, hk = team(env, "Herons", "jesse")
-    otters, ok = team(env, "Otters", "nadia")
-    meets(env, otters, ok, total)
-    live(env, otters)
-    assert on_calendar(env) == total
-    meets(env, herons, hk, shared)
-    live(env, herons)
-    return herons, otters
-
-
-def test_a_mass_merge_is_held_until_a_person_confirms_it(env):
-    herons, otters = otters_first(env, shared=5, total=5)
-    conn = db.connect(env["path"])
-    report = sync_source(conn, repo.get_source(conn, otters), env["target"], now=NOW,
-                         secrets=env["secrets"])
-    assert report.status == "held" and report.held_kind == "merge"
-    assert len(report.held_cancellations) == 5 and report.held_fingerprint
-    assert on_calendar(env) == 10               # nothing deleted; both copies stand
-    assert conn.execute("SELECT COUNT(*) FROM event_state WHERE withheld IS NOT NULL"
-                        ).fetchone()[0] == 0
-    stale = sync_source(conn, repo.get_source(conn, otters), env["target"], now=NOW,
-                        secrets=env["secrets"], confirm_held="not-that-set")
-    assert stale.status == "held" and on_calendar(env) == 10
-    done = sync_source(conn, repo.get_source(conn, otters), env["target"], now=NOW,
-                       secrets=env["secrets"], confirm_held=report.held_fingerprint)
-    assert done.status == "ok" and done.held is None
-    conn.close()
-    assert on_calendar(env) == 5
-
-
-def test_the_console_shows_a_held_merge_in_its_own_words(env):
-    herons, otters = otters_first(env, shared=5, total=5)
-    page = env["console"].get(f"/sources/{otters}")["body"]
-    assert "another team" in page and "confirm-cancellations" in page
-    assert "Gone from the feed" not in page
-    fingerprint = re.search(r'name="held" value="([0-9a-f]+)"', page).group(1)
-    r = env["console"].post(f"/sources/{otters}/confirm-cancellations", {"held": fingerprint})
-    assert r["status"] in (302, 303)
-    assert on_calendar(env) == 5
-
-
-def test_a_single_merged_copy_is_not_held(env):
-    herons, otters = otters_first(env, shared=1, total=10)
-    conn = db.connect(env["path"])
-    report = sync_source(conn, repo.get_source(conn, otters), env["target"], now=NOW,
-                         secrets=env["secrets"])
-    conn.close()
-    assert report.status == "ok" and report.held is None
-    assert on_calendar(env) == 10
-
-
-def test_marking_the_dropped_copys_kid_out_reaches_the_merged_event(env):
-    two_teams(env)
-    carrier_uid = calendar(env)[0]["uid"]
-    dropped_uid = carrier_uid.replace("in-herons.", "in-otters.")
-    r = env["api"].call("POST", STATUS, {"uid": dropped_uid, "status": "not_attending",
-                                         "child": "nadia"})
-    assert r["status"] == 200, r["json"]
-    (event,) = calendar(env)
-    assert "Jesse" in event["title"] and "Nadia" not in event["title"]
-    assert "Nadia swims 200 IM" not in event["body"]
-
-
-def test_withholding_the_carriers_copy_leaves_the_other_kids_event(env):
-    two_teams(env)
-    carrier_uid = calendar(env)[0]["uid"]
-    r = env["api"].call("POST", STATUS, {"uid": carrier_uid, "status": "cancelled"})
-    assert r["status"] == 200, r["json"]
-    (event,) = calendar(env)
-    assert event["uid"].startswith("in-otters.")
-    assert "Nadia" in event["title"] and "Jesse" not in event["title"]
-
-
-def test_the_console_withhold_and_kid_routes_resync_a_merged_event(env):
-    two_teams(env)
-    carrier_uid = calendar(env)[0]["uid"]
-    dropped_uid = carrier_uid.replace("in-herons.", "in-otters.")
-    r = env["console"].post("/events/withhold", {"uid": dropped_uid, "reason": "not_attending",
-                                                 "child": "nadia"})
-    assert r["status"] in (302, 303), r
-    (event,) = calendar(env)
-    assert "Nadia" not in event["title"]
-    env["console"].post("/events/restore", {"uid": dropped_uid, "child": "nadia"})
-    assert "J+N" in calendar(env)[0]["title"]
-    r = env["console"].post("/events/withhold", {"uid": carrier_uid, "reason": "cancelled"})
-    assert r["status"] in (302, 303), r
-    (event,) = calendar(env)
-    assert event["uid"].startswith("in-otters.") and "Jesse" not in event["title"]
-
-
-@pytest.mark.parametrize("past", [30, 0])
-def test_the_merge_hold_ignores_a_stored_past_season(env, past):
-    herons, otters = otters_first(env, shared=3, total=3)
-    conn = db.connect(env["path"])
-    conn.executemany(
-        "INSERT INTO event_state (uid, source_id, collection, content_hash, starts_at, "
-        "shown_starts_at) VALUES (?, ?, 'x', 'h', ?, ?)",
-        [(f"old-{i}", otters, f"2025-01-{i % 28 + 1:02d}T10:00:00+00:00",
-          f"2025-01-{i % 28 + 1:02d}T10:00:00+00:00") for i in range(past)])
-    conn.commit()
-    report = sync_source(conn, repo.get_source(conn, otters), env["target"], now=NOW,
-                         secrets=env["secrets"])
-    conn.close()
-    assert report.status == "held" and report.held_kind == "merge"
-    assert on_calendar(env) == 6
 
 
 def reader(env, tmp_path):
@@ -503,132 +697,50 @@ def reader(env, tmp_path):
         path=token, environ={}), clock=lambda: NOW), token="tok")
 
 
+def test_the_read_api_leaves_claimed_copies_out_and_points_them_at_the_merged_event(env, tmp_path):
+    two_teams(env)
+    read = reader(env, tmp_path)
+    listed = read.get("/v1/events?from=2026-11-01&to=2026-11-30")["json"]
+    assert [e["uid"] for e in listed["events"]] == [MERGED]
+    assert [c["id"] for c in listed["events"][0]["children"]] == ["jesse", "nadia"]
+    household = env["api"].get("/inbound/v1/calendar?from=2026-11-01&to=2026-11-30")["json"]
+    assert [e["uid"] for e in household["events"]] == [MERGED]
+    for uid in (HERONS_UID, OTTERS_UID):
+        copy = read.get(f"/v1/events/{uid}")["json"]["event"]
+        assert copy["cancelled"] is False and copy["merged_into"] == MERGED
+    merged = read.get(f"/v1/events/{MERGED}")["json"]["event"]
+    assert merged["merged_into"] is None
+    assert "Nadia swims 200 IM" in merged["notes"] and "Parking on Quay St" in merged["notes"]
+    conn = conn_for(env)
+    assert "Nadia swims" not in conn.execute(
+        "SELECT body FROM event_content WHERE uid = ?", (MERGED,)).fetchone()[0]
+    conn.close()
+
+
 TIMED = {"start": "2026-11-14T09:00:00", "end": "2026-11-14T12:00:00"}
 
 
-def timed_teams(env, herons_min, otters_min):
-    """Two live teams at one timed meet, each with its own warm-up length."""
+def test_the_merged_warmup_starts_at_the_earliest_arrival(env, tmp_path):
     herons, hk = team(env, "Herons", "jesse")
     otters, ok = team(env, "Otters", "nadia")
-    conn = db.connect(env["path"])
-    for source, minutes in ((herons, herons_min), (otters, otters_min)):
+    conn = conn_for(env)
+    for source, minutes in ((herons, 45), (otters, 90)):
         conn.execute("UPDATE activities SET warmup_minutes = ? WHERE id = "
                      "(SELECT activity_id FROM sources WHERE id = ?)", (minutes, source))
     conn.commit()
     conn.close()
-    push(env, herons, hk, notes="Bring a towel\nParking on Quay St", **TIMED)
-    live(env, herons)
-    push(env, otters, ok, notes="Bring a towel\nNadia swims 200 IM", **TIMED)
-    live(env, otters)
-    return herons, otters
-
-
-def test_readers_show_the_merged_notes_and_earliest_arrival(env, tmp_path):
-    timed_teams(env, 45, 90)
-    carrier_uid = "in-herons.harbor@inbound.calsync"
+    for source, key in ((herons, hk), (otters, ok)):
+        push(env, source, key, **TIMED)
+        live(env, source)
+    warm = f"calsync-warmup-{MERGED}"
+    assert uids(env) == sorted([MERGED, warm])
+    conn = conn_for(env)
+    row = conn.execute("SELECT shown_starts_at FROM event_state WHERE uid = ?", (warm,)).fetchone()
+    conn.close()
+    assert datetime.fromisoformat(row[0]) == (
+        datetime(2026, 11, 14, 14, 0, tzinfo=timezone.utc) - timedelta(minutes=90))
     read = reader(env, tmp_path)
-    listed = [e for e in read.get("/v1/events?from=2026-11-01&to=2026-11-30")["json"]["events"]
-              if not e["uid"].startswith("calsync-warmup-")]
-    assert [e["uid"] for e in listed] == [carrier_uid]
-    assert "Nadia swims 200 IM" in listed[0]["notes"] and "Parking on Quay St" in listed[0]["notes"]
-    assert listed[0]["arrive_at"].startswith("2026-11-14T07:30")
-    one = read.get(f"/v1/events/{carrier_uid}")["json"]["event"]
-    assert "Nadia swims 200 IM" in one["notes"]
-    # The receipt still holds only the carrier's own source.
-    conn = db.connect(env["path"])
-    assert "Nadia swims" not in conn.execute(
-        "SELECT body FROM event_content WHERE uid = ?", (carrier_uid,)).fetchone()[0]
-    conn.close()
-
-
-def test_the_console_fix_page_opens_on_the_merged_notes(env):
-    two_teams(env)
-    carrier_uid = calendar(env)[0]["uid"]
-    page = env["console"].get(f"/events/fix?uid={carrier_uid}&back=/calendar")["body"]
-    assert "Nadia swims 200 IM" in page
-
-
-def test_the_carriers_warmup_starts_at_the_earliest_arrival(env):
-    timed_teams(env, 45, 90)
-    blocks = [e for e in calendar(env) if e["uid"].startswith("calsync-warmup-")]
-    assert [b["uid"] for b in blocks] == ["calsync-warmup-in-herons.harbor@inbound.calsync"]
-    conn = db.connect(env["path"])
-    row = conn.execute("SELECT shown_starts_at FROM event_state WHERE uid = ?",
-                       (blocks[0]["uid"],)).fetchone()
-    conn.close()
-    assert datetime.fromisoformat(row[0]) == datetime(2026, 11, 14, 14, 0, tzinfo=timezone.utc) - timedelta(minutes=90)
-
-
-
-def test_the_carrier_converges_when_a_partners_resync_changes_its_text(env, monkeypatch):
-    (herons, hk), (otters, ok) = two_teams(env)
-    conn = db.connect(env["path"])
-
-    def edit(source, old, new):
-        conn.execute("UPDATE inbound_events SET state = replace(state, ?, ?) "
-                     "WHERE source_id = ?", (old, new, source))
-        conn.commit()
-
-    real = sync_partners
-
-    def partner_text_moves_first(*args, **kwargs):
-        edit(otters, "200 IM", "100 free")
-        return real(*args, **kwargs)
-
-    edit(herons, "Quay St", "Elm St")
-    monkeypatch.setattr(sync_module, "sync_partners", partner_text_moves_first)
-    sync_source(conn, repo.get_source(conn, herons), env["target"], now=NOW,
-                secrets=env["secrets"])
-    conn.close()
-    (event,) = calendar(env)
-    assert "Elm St" in event["body"] and "Nadia swims 100 free" in event["body"]
-    assert "200 IM" not in event["body"]
-
-
-def test_the_console_counts_what_a_withheld_merged_meet_took_off(env):
-    two_teams(env)
-    carrier_uid = calendar(env)[0]["uid"]
-    r = env["console"].post("/events/withhold", {"uid": carrier_uid, "reason": "cancelled"})
-    assert r["status"] in (302, 303), r
-    assert "1 event(s) off the calendar" in unquote(r["headers"]["Location"])
-
-
-def test_a_stale_merge_confirmation_uses_merge_wording(env):
-    herons, otters = otters_first(env, shared=5, total=5)
-    page = env["console"].get(f"/sources/{otters}")["body"]
-    assert "Takes off exactly this list" in page and "Cancels exactly" not in page
-    r = env["console"].post(f"/sources/{otters}/confirm-cancellations", {"held": "stale"})
-    said = unquote(r["headers"]["Location"])
-    assert "the teams changed" in said and "feed" not in said and "missing" not in said
-
-
-def test_a_dry_run_counts_the_copies_it_would_drop(env):
-    herons, hk = team(env, "Herons", "jesse")
-    otters, ok = team(env, "Otters", "nadia")
-    push(env, otters, ok)
-    live(env, otters)
-    push(env, herons, hk)
-    conn = db.connect(env["path"])
-    conn.execute("UPDATE sources SET staging_collection = NULL WHERE id = ?", (herons,))
-    conn.commit()
-    # Herons stores its candidate without syncing otters, so otters' copy still stands.
-    sync_source(conn, repo.get_source(conn, herons), env["target"], now=NOW,
-                secrets=env["secrets"], follow=False)
-    report = sync_source(conn, repo.get_source(conn, otters), NoTarget(), now=NOW,
-                         secrets=env["secrets"], dry_run=True)
-    conn.close()
-    assert report.cancelled == 1
-
-
-def test_a_failing_partner_makes_the_sync_an_error(env, monkeypatch):
-    (herons, hk), (otters, ok) = two_teams(env)
-    monkeypatch.setattr(sync_module, "sync_partners",
-                        lambda *a, **k: ([otters], [f"{otters}: boom"], set()))
-    conn = db.connect(env["path"])
-    conn.execute("UPDATE inbound_events SET state = replace(state, 'Quay St', 'Elm St') "
-                 "WHERE source_id = ?", (herons,))
-    conn.commit()
-    report = sync_source(conn, repo.get_source(conn, herons), env["target"], now=NOW,
-                         secrets=env["secrets"])
-    conn.close()
-    assert report.status == "error" and report.errors
+    one = read.get(f"/v1/events/{MERGED}")["json"]["event"]
+    assert one["arrive_at"].startswith("2026-11-14T07:30")
+    # Both old copies and both old warm-ups are gone from the calendar.
+    assert state(env, f"calsync-warmup-{HERONS_UID}").cancelled
