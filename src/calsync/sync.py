@@ -550,7 +550,10 @@ def sync_source(
     if dry_run:
         report.created = len(_kept(delta.created))
         report.updated = len(_kept(delta.updated))
-        report.cancelled = len(delta.cancelled) + len(delta.called_off)
+        # Copies another team now writes come off like a delete, held ones excepted.
+        coming_off = sum(1 for u, st in states.items()
+                         if not st.cancelled and withheld.is_withheld(u, dropped))
+        report.cancelled = len(delta.cancelled) + len(delta.called_off) + coming_off
         report.called_off = len(delta.called_off)
         report.withheld = len(delta.created) + len(delta.updated) \
             - report.created - report.updated
@@ -806,6 +809,8 @@ def sync_source(
             target, now=now, secrets=secrets, fetcher=fetcher)
         report.partners_synced.extend(synced)
         report.errors.extend(errors)
+        if errors:
+            report.status = "error"
         # A partner whose own text moved on its re-sync leaves this carrier's
         # merge stale; one more run, with no follow, brings it level.
         if any(source.id == correlate.carrier(r["source_id"] for r in rows)

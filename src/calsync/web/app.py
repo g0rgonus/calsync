@@ -821,7 +821,12 @@ def create_app(
         if problems:
             redirect(f"/sources/{source_id}?err=" + _q("; ".join(problems)))
         report = reports[0]
-        if not report.confirmed and report.held_kind in ("disappearance", "merge"):
+        if not report.confirmed and report.held_kind == "merge":
+            redirect(f"/sources/{source_id}?err=" + _q(
+                "the teams changed since that page loaded, so nothing was "
+                "taken off. Here are the copies now — look again."
+            ))
+        if not report.confirmed and report.held_kind == "disappearance":
             redirect(f"/sources/{source_id}?err=" + _q(
                 "the feed changed since that page loaded, so nothing was "
                 "cancelled. Here is what is missing now — look again."

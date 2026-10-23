@@ -90,11 +90,18 @@
     <button class="btn" type="submit">These are gone — take them off the calendar</button>
 %   end
   </form>
+%   if report.held_kind == 'merge':
+  <p class="note">
+    Takes off exactly this list. If the teams' meets change before you press
+    it, nothing is taken off and this list is shown again.
+  </p>
+%   else:
   <p class="note">
     Cancels exactly this list, past ones included, which is what the poll would
     have done had the guard not tripped. If the feed changes before you press
     it, nothing is cancelled and this list is shown again.
   </p>
+%   end
 </div>
 %   end
 % end

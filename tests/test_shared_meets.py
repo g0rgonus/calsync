@@ -591,3 +591,44 @@ def test_the_console_counts_what_a_withheld_merged_meet_took_off(env):
     r = env["console"].post("/events/withhold", {"uid": carrier_uid, "reason": "cancelled"})
     assert r["status"] in (302, 303), r
     assert "1 event(s) off the calendar" in unquote(r["headers"]["Location"])
+
+
+def test_a_stale_merge_confirmation_uses_merge_wording(env):
+    herons, otters = otters_first(env, shared=5, total=5)
+    page = env["console"].get(f"/sources/{otters}")["body"]
+    assert "Takes off exactly this list" in page and "Cancels exactly" not in page
+    r = env["console"].post(f"/sources/{otters}/confirm-cancellations", {"held": "stale"})
+    said = unquote(r["headers"]["Location"])
+    assert "the teams changed" in said and "feed" not in said and "missing" not in said
+
+
+def test_a_dry_run_counts_the_copies_it_would_drop(env):
+    herons, hk = team(env, "Herons", "jesse")
+    otters, ok = team(env, "Otters", "nadia")
+    push(env, otters, ok)
+    live(env, otters)
+    push(env, herons, hk)
+    conn = db.connect(env["path"])
+    conn.execute("UPDATE sources SET staging_collection = NULL WHERE id = ?", (herons,))
+    conn.commit()
+    # Herons stores its candidate without syncing otters, so otters' copy still stands.
+    sync_source(conn, repo.get_source(conn, herons), env["target"], now=NOW,
+                secrets=env["secrets"], follow=False)
+    report = sync_source(conn, repo.get_source(conn, otters), NoTarget(), now=NOW,
+                         secrets=env["secrets"], dry_run=True)
+    conn.close()
+    assert report.cancelled == 1
+
+
+def test_a_failing_partner_makes_the_sync_an_error(env, monkeypatch):
+    (herons, hk), (otters, ok) = two_teams(env)
+    monkeypatch.setattr(sync_module, "sync_partners",
+                        lambda *a, **k: ([otters], [f"{otters}: boom"], set()))
+    conn = db.connect(env["path"])
+    conn.execute("UPDATE inbound_events SET state = replace(state, 'Quay St', 'Elm St') "
+                 "WHERE source_id = ?", (herons,))
+    conn.commit()
+    report = sync_source(conn, repo.get_source(conn, herons), env["target"], now=NOW,
+                         secrets=env["secrets"])
+    conn.close()
+    assert report.status == "error" and report.errors
