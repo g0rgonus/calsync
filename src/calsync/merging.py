@@ -86,7 +86,7 @@ def _desired(conn, rows: list[dict]) -> list[_Group]:
             key=lambda c: (c.birth_order, c.name)))
         groups.append(_Group("", lead, members, merged, kids))
     _assign_uids(groups, repo.all_members(conn))
-    return sorted((g for g in groups if g.uid), key=lambda g: g.uid)
+    return sorted(groups, key=lambda g: g.uid)
 
 
 def _assign_uids(groups: list[_Group], members: dict) -> None:
@@ -176,15 +176,17 @@ def _leased(conn, run, *, rerun: bool) -> MergeReport:
     """Run while holding the lease; a run that finds it held asks the holder to go again.
 
     Asking, then trying once more, leaves no gap: either the holder sees the request
-    after releasing, or it has already released and the second try succeeds.
+    after releasing, or it has already released and the second try succeeds. Taking
+    the lease clears the request in the same statement, so no run can clear a
+    request it then fails to act on.
     """
     token = uuid.uuid4().hex
 
-    def take() -> bool:
+    def take(rerun_only: bool = False) -> bool:
         # Wall time, not the sync's clock: the lease is about processes, not the schedule.
         wall = datetime.now(timezone.utc)
         return repo.take_merge_lease(conn, token=token, now=wall.isoformat(),
-                                     until=(wall + LEASE).isoformat())
+                                     until=(wall + LEASE).isoformat(), rerun_only=rerun_only)
 
     def keep() -> None:
         until = (datetime.now(timezone.utc) + LEASE).isoformat()
@@ -198,9 +200,8 @@ def _leased(conn, run, *, rerun: bool) -> MergeReport:
         if not take():
             return MergeReport(skipped=True)
     report = MergeReport()
-    if rerun:
-        repo.clear_merge_rerun(conn)   # this run reads everything asked for so far
-    for _ in range(3):   # bounded: a steady stream of requests cannot hold a run forever
+    passes = 3   # bounded: a steady stream of requests cannot hold a run forever
+    for n in range(passes):
         try:
             part = run(keep)
         except _LeaseLost:
@@ -210,9 +211,9 @@ def _leased(conn, run, *, rerun: bool) -> MergeReport:
         report.written += part.written
         report.ended += part.ended
         report.errors.extend(part.errors)
-        # A request made during the run goes again; if another run has the lease
-        # by now, it started after this one's writes and covers the request itself.
-        if not (rerun and repo.clear_merge_rerun(conn) and take()):
+        # The last pass never takes the lease again: a request still pending stays
+        # set for the next merge step instead of holding the lease to its expiry.
+        if not rerun or n == passes - 1 or not take(rerun_only=True):
             break
     return report
 
@@ -224,6 +225,12 @@ def _publish(conn, target, *, now: datetime, secrets: SecretStore | None = None,
     report = MergeReport()
     settings = Settings.load(conn)
     groups = _desired(conn, _members(conn))
+    waiting = [g for g in groups if not g.uid]
+    if waiting:
+        # Its members keep their own copies; the uid it needs frees up this run.
+        report.errors.append(f"{len(waiting)} group(s) wait for a free merged uid until "
+                             "the next merge step")
+    groups = [g for g in groups if g.uid]
     # Created on demand, committed before anything is written under it.
     # An existing merged event stays with the companion that holds it.
     needed = {}

@@ -964,7 +964,7 @@ def test_a_change_made_during_a_run_is_merged_by_that_run_going_again(env, monke
     assert not run_publish(env).skipped
     assert len(calls) == 2
     conn = conn_for(env)
-    assert not repo.clear_merge_rerun(conn)   # nothing left pending
+    assert not repo.merge_rerun_pending(conn)   # nothing left pending
     conn.close()
 
 def test_a_crashing_merge_step_is_reported_and_the_change_still_stands(env, monkeypatch):
@@ -1002,3 +1002,101 @@ def test_a_split_group_never_shares_a_merged_uid(env):
     assert len(by_uid) == 2 and MERGED in by_uid, by_uid
     assert "J+N" in by_uid[MERGED]
     assert run_publish(env).written == 0             # settled, not flipping
+
+
+def test_the_last_pass_frees_the_lease_and_leaves_a_pending_request_for_later(env, monkeypatch):
+    two_teams(env)
+    calls = []
+    real = merging._publish
+
+    def run(conn, target, **kw):
+        calls.append(1)
+        repo.request_merge_rerun(conn)        # every pass is asked for another
+        return real(conn, target, **kw)
+
+    monkeypatch.setattr(merging, "_publish", run)
+    run_publish(env)
+    assert len(calls) == 3
+    conn = conn_for(env)
+    assert repo.merge_rerun_pending(conn)     # not swallowed by the last pass
+    assert repo.take_merge_lease(conn, token="next", now="2000-01-01", until="2000-01-02")
+    conn.close()
+
+
+def test_a_run_that_cannot_take_the_lease_leaves_a_request_for_the_holder(env):
+    conn = conn_for(env)
+    assert repo.take_merge_lease(conn, token="c", now="2000-01-01", until="9999-01-01")
+    repo.request_merge_rerun(conn)            # made during C's run
+    assert not repo.take_merge_lease(conn, token="a", now="2000-01-01", until="9999-01-01",
+                                     rerun_only=True)
+    assert repo.merge_rerun_pending(conn)     # still there for C to see
+    repo.release_merge_lease(conn, token="c")
+    assert repo.take_merge_lease(conn, token="c", now="2000-01-01", until="9999-01-01",
+                                 rerun_only=True)
+    assert not repo.merge_rerun_pending(conn)
+    conn.close()
+
+
+OLD_V18 = (
+    "DROP TABLE merge_lease;"
+    "CREATE TABLE merge_lease (id INTEGER PRIMARY KEY CHECK (id = 1),"
+    " held_until TEXT NOT NULL DEFAULT '');"
+    "INSERT INTO merge_lease (id) VALUES (1);"
+    "DROP TABLE shared_candidates;"
+    "CREATE TABLE shared_candidates (uid TEXT PRIMARY KEY, source_id TEXT NOT NULL,"
+    " key TEXT NOT NULL, kids TEXT NOT NULL, kid_order INTEGER NOT NULL, body TEXT,"
+    " url TEXT, kit TEXT, arrive_at TEXT, venue TEXT, field TEXT);"
+    "INSERT INTO shared_candidates (uid, source_id, key, kids, kid_order)"
+    " VALUES ('old.uid', 'in-herons', 'k', 'jesse', 1);"
+)
+
+
+def test_a_database_from_an_earlier_v18_build_opens_and_is_tidied(env):
+    conn = conn_for(env)
+    conn.executescript(OLD_V18)
+    conn.commit()
+    conn.close()
+    db.open_db(env["path"]).close()           # what every service does at startup
+    two_teams(env)
+    conn = conn_for(env)
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(merge_lease)")}
+    assert {"token", "rerun"} <= cols
+    assert conn.execute("SELECT 1 FROM shared_candidates WHERE uid = 'old.uid'").fetchone() is None
+    conn.execute("UPDATE event_state SET merged = 'abc123' WHERE uid = ?", (MERGED,))
+    conn.commit()
+    conn.close()
+    db.open_db(env["path"]).close()
+    assert state(env, MERGED).merged is None
+    assert [e["uid"] for e in calendar(env)] == [MERGED]
+
+
+def test_a_group_with_no_free_uid_waits_and_says_so(env, monkeypatch):
+    lead = {"uid": "x", "source_id": "a"}
+    group = merging._Group("", lead, [lead, {"uid": "y", "source_id": "b"}], None, ())
+    # Both fresh uids are held by members of other merged events, so none is free.
+    merging._assign_uids([group], {"merged.x": [("p", "s")], "merged.y": [("q", "t")]})
+    assert group.uid == ""
+    two_teams(env)
+    monkeypatch.setattr(merging, "_desired", lambda conn, rows: [group])
+    report = run_publish(env)
+    assert any("wait for a free merged uid" in e for e in report.errors)
+
+
+def test_a_request_made_while_another_run_takes_over_is_not_lost(env, monkeypatch):
+    two_teams(env)
+    real_release = repo.release_merge_lease
+    seen = []
+
+    def release(conn, *, token):
+        real_release(conn, token=token)
+        if not seen:
+            seen.append(token)
+            # Between A's release and A's next take: C takes the lease, B asks again.
+            assert repo.take_merge_lease(conn, token="c", now="2000-01-01", until="9999-01-01")
+            repo.request_merge_rerun(conn)
+
+    monkeypatch.setattr(repo, "release_merge_lease", release)
+    run_publish(env)
+    conn = conn_for(env)
+    assert repo.merge_rerun_pending(conn)     # left for C, which holds the lease
+    conn.close()

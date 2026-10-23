@@ -2408,11 +2408,18 @@ def companion_id(carrier_source_id: str) -> str:
     return f"merged-{carrier_source_id}"
 
 
-def take_merge_lease(conn: sqlite3.Connection, *, token: str, now: str, until: str) -> bool:
-    """Claim the merge step until ``until``; False while another run holds it."""
+def take_merge_lease(conn: sqlite3.Connection, *, token: str, now: str, until: str,
+                     rerun_only: bool = False) -> bool:
+    """Claim the merge step until ``until``; False while another run holds it.
+
+    Taking it clears any rerun request in the same statement: the run that takes
+    it reads everything asked for so far. ``rerun_only`` takes it only if a request
+    is pending, so a request is never cleared by a run that then fails to take it.
+    """
     taken = conn.execute(
-        "UPDATE merge_lease SET held_until = ?, token = ? WHERE id = 1 AND "
-        "(held_until = '' OR held_until < ?)", (until, token, now)).rowcount
+        "UPDATE merge_lease SET held_until = ?, token = ?, rerun = 0 WHERE id = 1 AND "
+        "(held_until = '' OR held_until < ?)" + (" AND rerun = 1" if rerun_only else ""),
+        (until, token, now)).rowcount
     conn.commit()
     return taken == 1
 
@@ -2437,11 +2444,8 @@ def request_merge_rerun(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def clear_merge_rerun(conn: sqlite3.Connection) -> bool:
-    """Take a pending rerun request; True if there was one."""
-    taken = conn.execute("UPDATE merge_lease SET rerun = 0 WHERE id = 1 AND rerun = 1").rowcount
-    conn.commit()
-    return taken == 1
+def merge_rerun_pending(conn: sqlite3.Connection) -> bool:
+    return bool(conn.execute("SELECT rerun FROM merge_lease WHERE id = 1").fetchone()[0])
 
 
 def carrier_of(conn: sqlite3.Connection, source_id: str) -> str:

@@ -83,6 +83,11 @@ ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # teams' copies, as JSON (`correlate.Merged.layer`); NULL when it was
     # written from one source.
     ("event_state", "merged", "TEXT"),
+    # v18, for a database from an earlier build of it: candidates gained their
+    # content, and the merge lease its holder token and rerun request.
+    ("shared_candidates", "content", "TEXT NOT NULL DEFAULT ''"),
+    ("merge_lease", "token", "TEXT NOT NULL DEFAULT ''"),
+    ("merge_lease", "rerun", "INTEGER NOT NULL DEFAULT 0"),
     # v5 adds `event_content`, which is a new table rather than new columns, so
     # `schema.sql`'s CREATE TABLE IF NOT EXISTS covers it and nothing belongs
     # here. Existing rows backfill themselves: the sync loop treats missing
@@ -330,6 +335,11 @@ def _migrate_once(conn: sqlite3.Connection) -> None:
         for table, column, decl in ADDED_COLUMNS:
             if column not in _columns(conn, table):
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+        # An earlier v18 build stored a fingerprint here and candidates without
+        # content; readers expect JSON, and every sync rebuilds its candidates.
+        conn.execute("UPDATE event_state SET merged = NULL "
+                     "WHERE merged IS NOT NULL AND merged NOT LIKE '{%'")
+        conn.execute("DELETE FROM shared_candidates WHERE content = ''")
         conn.execute(
             "UPDATE event_state SET shown_starts_at = starts_at "
             "WHERE shown_starts_at IS NULL"
