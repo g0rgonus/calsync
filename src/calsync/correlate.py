@@ -40,8 +40,11 @@ def key(event: Event, sport: str, collection: str) -> str | None:
     when = ("day",) if event.all_day else (
         "timed", event.starts_at.astimezone(timezone.utc).isoformat(),
         event.ends_at.astimezone(timezone.utc).isoformat())
+    # A game never merges with a non-game: the carrier's kind decides the warm-up.
+    # Marked on non-games only, so a live merged meet's stored key stays the same.
     return json.dumps([sport, collection, start.date().isoformat(), end.date().isoformat(), *when,
-                       _name(event.detail), _name(event.opponent)])
+                       _name(event.detail), _name(event.opponent),
+                       *([] if event.is_game else ["practice"])])
 
 
 def carrier(source_ids) -> str:

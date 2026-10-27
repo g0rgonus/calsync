@@ -697,6 +697,19 @@ def test_names_match_after_normalising_and_only_warmups_have_no_key():
     assert correlate.key(replace(mk(detail="A"), is_game=False), "swimming", "c") is not None
 
 
+def test_a_game_never_shares_a_key_with_a_non_game_and_a_games_key_is_unchanged():
+    from calsync.models import Event
+    game = Event(uid="u", activity_id="a", starts_at=datetime(2026, 11, 14, 5, tzinfo=timezone.utc),
+                 ends_at=datetime(2026, 11, 15, 5, tzinfo=timezone.utc), is_game=True,
+                 tz="America/New_York", all_day=True, detail="A")
+    # One calendar for both kinds: a `{type}` template would keep them apart anyway.
+    assert correlate.key(game, "swimming", "c") != \
+        correlate.key(replace(game, is_game=False), "swimming", "c")
+    # Byte-for-byte what 0.22.0 stored, so a live merged meet's group holds on upgrade.
+    assert correlate.key(game, "swimming", "c") == json.dumps(
+        ["swimming", "c", "2026-11-14", "2026-11-15", "day", "a", ""])
+
+
 @pytest.mark.parametrize("template", ["{child}-{type}", "{activity}-{type}"])
 def test_copies_bound_for_different_calendars_are_not_merged(env, template):
     conn = conn_for(env)

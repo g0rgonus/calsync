@@ -205,7 +205,8 @@ practice get one event. Everyday practices rarely line up; the practice case is
 for team events (a fundraiser dinner, a social) every team posts. Two events from different non-staged sources are one occurrence
 when all of these hold:
 
-- same sport, and the same local start and end date in the event's zone;
+- same sport, both games or both not, and the same local start and end date
+  in the event's zone;
 - both all-day, or both timed with equal start and end (timed never matches
   all-day);
 - same `detail` and `opponent` after casefolding, dropping punctuation and
