@@ -201,7 +201,8 @@ classifier anyone depends on.
 ## 3b. One meet or practice, two teams
 
 Built (`correlate.py`). Kids on different teams who go to the same meet or
-practice get one event. Two events from different non-staged sources are one occurrence
+practice get one event. Everyday practices rarely line up; the practice case is
+for team events (a fundraiser dinner, a social) every team posts. Two events from different non-staged sources are one occurrence
 when all of these hold:
 
 - same sport, and the same local start and end date in the event's zone;
