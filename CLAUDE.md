@@ -423,7 +423,7 @@ Decisions that span several files and are easy to undo by accident:
   copy; splitting a pushed team clones its source and pushed events for the kid
   (`repo.clone_team`), while a feed stays with its team because feed uids are
   global.
-- **Teams at one meet write it once, as a step after every sync**
+- **Teams at one meet or practice write it once, as a step after every sync**
   (`correlate.py`, `merging.py`, `docs/MATCHING.md`). A team's sync only stores its
   `shared_candidates` (the event after the person's overlay, kids before
   absences) and then calls `merging.publish`, which reads the database alone and

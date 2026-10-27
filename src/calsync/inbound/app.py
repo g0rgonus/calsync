@@ -1088,7 +1088,7 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
             if holder is None:
                 raise Problem(422, "invalid", "nothing was changed",
                               errors=[{"field": "child", "code": "not_on_team",
-                                       "detail": "that kid is not on a team at this meet",
+                                       "detail": "that kid is not on a team at this event",
                                        "candidates": kids_here}])
             state = repo.event_state(conn, holder["member_uid"])
         source = repo.get_source(conn, state.source_id)

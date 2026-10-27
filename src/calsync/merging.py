@@ -1,4 +1,4 @@
-"""Teams at one meet write it once, as a step after every sync.
+"""Teams at one meet or practice write it once, as a step after every sync.
 
 `publish` reads only the database: each team's sync stored its candidates
 (`shared_candidates`), and the merged events live under a hidden companion
