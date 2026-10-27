@@ -30,6 +30,8 @@ ADMIN_KEY = "csk_test-admin-key-for-a-tool-000000000000"
 TEAMS = "/inbound/v1/admin/teams"
 STATUS = "/inbound/v1/admin/events/status"
 PRACTICE = {**contract.PRACTICE, "location": "Wrenfield Aquatic Center"}
+# Same night, later slot: a team on it never merges with one on PRACTICE.
+LATER = {**PRACTICE, "start": "2026-10-20T19:30:00", "end": "2026-10-20T21:00:00"}
 
 
 @pytest.fixture
@@ -69,8 +71,8 @@ def team(env, name, children, idem=None):
     return r["json"]["source_id"], r["json"]["team_key"]
 
 
-def live(env, source, key):
-    assert env["api"].put(f"/inbound/v1/sources/{source}/events/tue-swim", PRACTICE,
+def live(env, source, key, practice=PRACTICE):
+    assert env["api"].put(f"/inbound/v1/sources/{source}/events/tue-swim", practice,
                           key=key)["status"] == 201
     assert env["api"].call("POST", f"{TEAMS}/{source}/live")["status"] == 200
 
@@ -149,7 +151,8 @@ def test_merging_adds_the_kid_and_retires_their_own_copy(env):
     live(env, herons, herons_key)
     copy, copy_key = team(env, "Herons", ["nadia"])
     live(env, copy, copy_key)
-    assert sorted(titles(env)["2026-10-20"]) == ["Jesse 🏊 Swim", "Nadia 🏊 Swim"]
+    # The same practice on two teams is already one event (`merging.py`).
+    assert titles(env)["2026-10-20"] == ["J+N 🏊 Swim"]
 
     r = env["console"].post(f"/sources/{herons}/kids", {"child": "nadia", "retire": copy})
     assert r["status"] == 303 and "retired" in r["headers"]["Location"]
@@ -164,14 +167,14 @@ def test_only_the_added_kids_own_copy_can_be_retired(env):
     copy, copy_key = team(env, "Herons", ["nadia"])
     live(env, copy, copy_key)
     otters, otters_key = team(env, "Otters", ["jesse"])
-    live(env, otters, otters_key)
+    live(env, otters, otters_key, LATER)
     page = env["console"].get(f"/sources/{herons}")["body"]
     assert f"and retire Nadia's Herons ({copy})" in page and otters not in page
 
     r = env["console"].post(f"/sources/{herons}/kids", {"child": "nadia", "retire": otters})
     assert r["status"] >= 400
     assert env["api"].get(f"/inbound/v1/sources/{otters}", key=otters_key)["status"] == 200
-    assert len(titles(env)["2026-10-20"]) == 3
+    assert len(titles(env)["2026-10-20"]) == 2
 
 
 def test_a_partial_retire_keeps_the_other_teams_key(env):
@@ -188,7 +191,8 @@ def test_a_partial_retire_keeps_the_other_teams_key(env):
     herons, herons_key = team(env, "Herons", ["jesse"])
     live(env, herons, herons_key)
     copy, copy_key = team(env, "Herons", ["nadia"])
-    live(env, copy, copy_key)
+    # Unmerged, so the retire has a copy of its own to fail to take down.
+    live(env, copy, copy_key, LATER)
     console = ConsoleClient(web_app.create_app(
         env["path"], secrets=env["secrets"], clock=lambda: NOW,
         write_target=Refusing(env["target"])))
@@ -204,8 +208,8 @@ def test_splitting_a_pushed_team_gives_the_kid_their_events_back(env):
     page = env["console"].post(f"/sources/{source}/kids/split", {"child": "nadia"})
     assert page["status"] == 200
     new_key = re.search(r"csk_[A-Za-z0-9_-]{20,}", page["body"]).group(0)
-    assert sorted(titles(env)["2026-10-20"]) == ["Jesse 🏊 Swim",
-                                                 "Nadia 🏊 Swim"]
+    # Her new team has the same practices, so they stay one event until they differ.
+    assert titles(env)["2026-10-20"] == ["J+N 🏊 Swim"]
     teams = env["api"].get(TEAMS)["json"]["teams"]
     nadias = next(t for t in teams if t["children"] == ["nadia"])
     assert env["api"].get(f"/inbound/v1/sources/{nadias['source_id']}",
@@ -221,7 +225,7 @@ def test_splitting_keeps_the_kids_absences_off_their_new_team(env):
                                {"child": "nadia"})["status"] == 200
     by_day = titles(env)
     assert by_day["2026-10-20"] == ["Jesse 🏊 Swim"]
-    assert sorted(by_day["2026-10-27"]) == ["Jesse 🏊 Swim", "Nadia 🏊 Swim"]
+    assert by_day["2026-10-27"] == ["J+N 🏊 Swim"]
 
 
 def test_splitting_a_staged_team_keeps_the_copy_staged(env):

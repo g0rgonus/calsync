@@ -1148,7 +1148,7 @@ def create_app(
                 holder = next((m for m in repo.members_of(conn, uid)
                                if child_id in (m["kids"] or "").split(",")), None)
                 if holder is None:
-                    raise Refused("that kid is not on a team at this meet")
+                    raise Refused("that kid is not on a team at this event")
                 uid = holder["member_uid"]
                 state = repo.event_state(conn, uid)
             source = _require_source(conn, state.source_id)

@@ -406,7 +406,7 @@ def sync_source(
         if original is not None and original is not event:
             original.arrive_at = event.arrive_at
 
-    # --- other teams at the same meet (`correlate.py`) ---------------------
+    # --- other teams at the same meet or practice (`correlate.py`) ---------
     # What this team could take to a meet, after the person's overlay. Kids are
     # the team's, before absences: `merging.publish` reads those live.
     mine: dict[str, dict] = {}

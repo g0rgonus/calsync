@@ -248,7 +248,7 @@ GET  /v1/placements?from=                              # built
 purpose** — `live`, or `withheld`, `cancelled` (calsync deleted it, or the feed
 marked it `STATUS:CANCELLED` and the delete may still be landing) or `approved`
 (a person confirmed a held removal; the delete may still be landing) or
-`merged` (another team's source writes this meet for both kids). No
+`merged` (another team's source writes this event for both kids). No
 content: a uid, a collection and a state.
 
 It exists so **one confirmation is enough**. The Mac mirror reads Radicale and

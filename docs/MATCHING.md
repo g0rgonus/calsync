@@ -198,10 +198,10 @@ approval, so a false negative in the list costs nothing. That's the right
 asymmetry: the list is a cheap extra floor under a human decision, not a
 classifier anyone depends on.
 
-## 3b. One meet, two teams
+## 3b. One meet or practice, two teams
 
-Built (`correlate.py`). Kids on different teams who go to the same meet get one
-event. Two events from different non-staged sources are one occurrence
+Built (`correlate.py`). Kids on different teams who go to the same meet or
+practice get one event. Two events from different non-staged sources are one occurrence
 when all of these hold:
 
 - same sport, and the same local start and end date in the event's zone;
@@ -209,7 +209,7 @@ when all of these hold:
   all-day);
 - same `detail` and `opponent` after casefolding, dropping punctuation and
   collapsing whitespace (none equals empty);
-- a game: practices and warm-ups never correlate, nor does anything cancelled,
+- not a warm-up (a merged game makes its own), nor anything cancelled,
   outside the sync window, held for review or off (withheld, every kid absent);
 - venue: if the group names more than one resolved venue, or more than one
   non-empty field, nobody merges. An unresolved venue has no opinion;

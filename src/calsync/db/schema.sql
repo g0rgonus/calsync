@@ -419,7 +419,7 @@ CREATE TABLE IF NOT EXISTS event_absences (
     PRIMARY KEY (uid, child_id)
 );
 
--- One row per game a source has on, keyed so teams going to the same meet land
+-- One row per event a source has on, keyed so teams going to the same one land
 -- together (`correlate.py`). Replaced whole at every sync of the source, and
 -- read by `merging.publish`, which never fetches. `content` is the event after
 -- the person's overlay (`repo.content_of` plus its identity), enough to rebuild

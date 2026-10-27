@@ -1,9 +1,9 @@
-"""One occurrence, many teams: when kids on different teams go to the same meet.
+"""One occurrence, many teams: when kids on different teams go to the same meet or practice.
 
 Pure: no database, no clock. `sync.py` stores each source's candidates
 (`shared_candidates`), groups them by :func:`key`, and has the lowest source id
 write the event for everybody; the rest drop their copy the way a withheld
-event is dropped. The rule is in `docs/MATCHING.md`, "One meet, two teams".
+event is dropped. The rule is in `docs/MATCHING.md`, "One meet or practice, two teams".
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ def key(event: Event, sport: str, collection: str) -> str | None:
     ``collection`` is where the copy would be written: the merged event lives
     on the carrier's calendar only, so copies bound for different ones never merge.
     """
-    if not event.is_game or event.is_warmup or event.cancelled:
+    if event.is_warmup or event.cancelled:
         return None
     zone = ZoneInfo(event.tz)
     start, end = event.starts_at.astimezone(zone), event.ends_at.astimezone(zone)

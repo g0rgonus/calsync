@@ -2360,7 +2360,7 @@ def keys_revoked_together(conn: sqlite3.Connection, at: str) -> list[ApiKey]:
 
 # --- shared meets ---------------------------------------------------------------
 #
-# Several teams' copies of one meet (`correlate.py`). Each sync stores its
+# Several teams' copies of one meet or practice (`correlate.py`). Each sync stores its
 # candidates; `merging.publish` reads them, writes the merged event under a
 # companion source, and only then takes the member copies down.
 

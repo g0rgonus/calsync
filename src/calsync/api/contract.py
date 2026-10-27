@@ -87,7 +87,7 @@ ENDPOINTS: dict[tuple[str, str], dict] = {
                      "cancelled and the delete may still be landing), "
                      "'approved' (a person confirmed its removal; the delete "
                      "may still be landing), 'merged' (another team's source "
-                     "writes this meet for both kids)",
+                     "writes this event for both kids)",
         },
         "notes": [
             "For a reader of the calendar server to tell a deliberate absence "

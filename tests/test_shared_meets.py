@@ -1,4 +1,4 @@
-"""Kids on different teams at one meet: one event, titled and described for both.
+"""Kids on different teams at one meet or practice: one event, titled and described for both.
 
 Driven through the inbound API against one calendar on disk, like
 test_shared_teams.py, so a title is an assertion about what a phone would show.
@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import replace
 from urllib.parse import unquote
 from datetime import datetime, timedelta, timezone
 
@@ -615,13 +616,29 @@ def test_a_dry_run_leaves_a_merged_group_alone(env):
     assert [[tuple(r) for r in t] for t in before] == [[tuple(r) for r in t] for t in after]
 
 
-def test_practices_never_merge(env):
+PRACTICE = {"type": "practice", "label": "Swim", "start": "2026-11-14T17:30:00",
+            "end": "2026-11-14T19:00:00"}
+
+
+def test_two_teams_at_one_practice_make_one_event(env):
     herons, hk = team(env, "Herons", "jesse")
     otters, ok = team(env, "Otters", "nadia")
     for source, key in ((herons, hk), (otters, ok)):
-        push(env, source, key, type="practice", label="Swim")
+        push(env, source, key, PRACTICE)
         live(env, source)
-    assert len(calendar(env)) == 2
+    # No warm-up: a practice never has one, merged or not.
+    (event,) = calendar(env)
+    assert event["uid"] == MERGED and "J+N" in event["title"]
+
+
+def test_practices_at_different_times_stay_two_events(env):
+    herons, hk = team(env, "Herons", "jesse")
+    otters, ok = team(env, "Otters", "nadia")
+    push(env, herons, hk, PRACTICE)
+    push(env, otters, ok, PRACTICE, start="2026-11-14T19:00:00", end="2026-11-14T20:30:00")
+    live(env, herons)
+    live(env, otters)
+    assert uids(env) == [HERONS_UID, OTTERS_UID]
 
 
 def test_a_different_venue_keeps_two_events(env):
@@ -666,7 +683,7 @@ def test_a_staged_source_never_joins_a_group(env):
     assert MERGED not in uids(env)
 
 
-def test_names_match_after_normalising_and_practices_have_no_key():
+def test_names_match_after_normalising_and_only_warmups_have_no_key():
     from calsync.models import Event, Venue  # noqa: F401
     mk = lambda **kw: Event(  # noqa: E731
         uid="u", activity_id="a", starts_at=datetime(2026, 11, 14, 5, tzinfo=timezone.utc),
@@ -677,6 +694,7 @@ def test_names_match_after_normalising_and_practices_have_no_key():
     assert correlate.key(mk(detail="A"), "swimming", "c") != correlate.key(mk(detail="A"), "diving", "c")
     assert correlate.key(mk(detail="A"), "swimming", "c") != correlate.key(mk(detail="A"), "swimming", "d")
     assert correlate.key(mk(warmup_for="x"), "swimming", "c") is None
+    assert correlate.key(replace(mk(detail="A"), is_game=False), "swimming", "c") is not None
 
 
 @pytest.mark.parametrize("template", ["{child}-{type}", "{activity}-{type}"])
