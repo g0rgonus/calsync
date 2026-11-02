@@ -33,7 +33,7 @@ KINDS = ("caldav", "ics_file")
 #: `targets/google.py` is a complete, tested payload builder — event ids,
 #: extendedProperties, calendar-to-calendar moves. What is missing is the OAuth
 #: token exchange, tracked at
-#: https://github.com/g0rgonus/calsync/issues/1.
+#: https://github.com/g0rgonus/calsync/issues/8.
 #:
 #: It used to be offered with a note saying it could not work yet. That was the
 #: wrong call: an entry in a dropdown reads as a supported choice however the
@@ -48,7 +48,7 @@ WITHDRAWN = {
     "google": (
         "the Google target is not available yet. Its payload builder is complete "
         "and tested, but nothing implements Google's OAuth token exchange — "
-        "https://github.com/g0rgonus/calsync/issues/1. Set target_kind to "
+        "https://github.com/g0rgonus/calsync/issues/8. Set target_kind to "
         "'caldav' in the meantime."
     ),
 }
