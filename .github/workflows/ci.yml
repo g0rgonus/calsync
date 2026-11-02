@@ -33,7 +33,8 @@ jobs:
           python-version: '3.11'    # the floor in pyproject
       - run: pip install -e '.[dev]' pip-audit
       - run: pytest -q
-      - run: pip-audit --skip-editable
+      # The project's declared dependencies, not the runner's own setuptools and pip.
+      - run: pip-audit .
       # The Swift tests read a committed copy of this serializer's output; fail when it goes stale.
       - name: The Mac mirror's fixture matches the serializer
         run: |
