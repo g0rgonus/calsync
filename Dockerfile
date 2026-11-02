@@ -2,7 +2,7 @@
 #
 # Stdlib-heavy by design (sqlite3, urllib), so this needs almost nothing beyond
 # Python and two pure-Python wheels.
-FROM python:3.12-slim
+FROM python:3.15-slim
 
 # Not root: the only writable paths are the data volume and the secrets mount,
 # and neither needs privilege.
