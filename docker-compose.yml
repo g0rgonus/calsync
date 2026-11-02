@@ -35,7 +35,7 @@ x-health: &health
 
 services:
   radicale:
-    image: tomsquest/docker-radicale:3.9.0.0
+    image: tomsquest/docker-radicale:386.3.0.6.3
     restart: unless-stopped
     # As the account the image ships, rather than root: its entrypoint only
     # drops privileges when told to run radicale directly, and the command below
