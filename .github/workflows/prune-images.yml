@@ -1,0 +1,58 @@
+name: prune-images
+
+on:
+  schedule:
+    - cron: '17 4 * * 1'      # Mondays
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: List what would go; delete nothing
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Untagged versions older than KEEP_DAYS go, unless a tagged image still uses them: a multi-arch
+  # image's platform manifests and its attestations are untagged versions of their own.
+  prune:
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    env:
+      PACKAGES: calsync         # one GHCR package per image
+      KEEP_DAYS: '30'
+      DRY_RUN: ${{ inputs.dry-run && 'true' || 'false' }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - run: |
+          set -euo pipefail
+          OWNER=$GITHUB_REPOSITORY_OWNER
+          KIND=$([ "$(gh api "users/$OWNER" -q .type)" = Organization ] && echo orgs || echo users)
+          CUTOFF=$(date -u -d "$KEEP_DAYS days ago" +%Y-%m-%dT%H:%M:%SZ)
+          raw() { docker buildx imagetools inspect --raw "ghcr.io/$OWNER/$1" </dev/null; }
+          for PKG in $PACKAGES; do
+            API="$KIND/$OWNER/packages/container/$PKG/versions"
+            gh api --paginate "$API" -q '.[] | [.id, .name, (.metadata.container.tags | join(",")), .updated_at] | @tsv' > versions.tsv
+            # Kept: every version that survives (tagged, or newer than the cutoff) and every
+            # manifest one of those lists, since a rebuild can reuse an older platform manifest.
+            awk -F'\t' -v c="$CUTOFF" '$3 != "" || $4 >= c { print $2 }' versions.tsv > survivors.txt
+            { cat survivors.txt
+              while read -r digest; do raw "$PKG@$digest" | jq -r '.manifests[]?.digest'; done < survivors.txt
+            } | sort -u > keep.txt
+            awk -F'\t' -v c="$CUTOFF" '$3 == "" && $4 < c { print $1 "\t" $2 }' versions.tsv |
+              while IFS=$'\t' read -r id digest; do
+                grep -qxF "$digest" keep.txt && continue
+                # A build attestation points at its image through `subject`.
+                subject=$(raw "$PKG@$digest" | jq -r '.subject.digest // empty')
+                [ -n "$subject" ] && grep -qxF "$subject" keep.txt && continue
+                echo "$PKG $digest"
+                [ "$DRY_RUN" = true ] || gh api -X DELETE "$API/$id" --silent
+              done
+          done

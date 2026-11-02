@@ -12,6 +12,10 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      # Radicale's image also carries build-number tags that sort above every release.
+      - dependency-name: tomsquest/docker-radicale
+        versions: [">= 100"]
   - package-ecosystem: docker
     directory: /
     schedule:
