@@ -36,15 +36,16 @@ jobs:
           OWNER=$GITHUB_REPOSITORY_OWNER
           KIND=$([ "$(gh api "users/$OWNER" -q .type)" = Organization ] && echo orgs || echo users)
           CUTOFF=$(date -u -d "$KEEP_DAYS days ago" +%Y-%m-%dT%H:%M:%SZ)
-          raw() { docker buildx imagetools inspect --raw "ghcr.io/$OWNER/$1"; }
+          raw() { docker buildx imagetools inspect --raw "ghcr.io/$OWNER/$1" </dev/null; }
           for PKG in $PACKAGES; do
             API="$KIND/$OWNER/packages/container/$PKG/versions"
             gh api --paginate "$API" -q '.[] | [.id, .name, (.metadata.container.tags | join(",")), .updated_at] | @tsv' > versions.tsv
-            # Kept: every tagged version, and every manifest a tagged index lists.
-            { awk -F'\t' '$3 != "" { print $2 }' versions.tsv
-              cut -f3 versions.tsv | tr ',' '\n' | grep . | sort -u | while read -r tag; do
-                raw "$PKG:$tag" | jq -r '.manifests[]?.digest'
-              done; } | sort -u > keep.txt
+            # Kept: every version that survives (tagged, or newer than the cutoff) and every
+            # manifest one of those lists, since a rebuild can reuse an older platform manifest.
+            awk -F'\t' -v c="$CUTOFF" '$3 != "" || $4 >= c { print $2 }' versions.tsv > survivors.txt
+            { cat survivors.txt
+              while read -r digest; do raw "$PKG@$digest" | jq -r '.manifests[]?.digest'; done < survivors.txt
+            } | sort -u > keep.txt
             awk -F'\t' -v c="$CUTOFF" '$3 == "" && $4 < c { print $1 "\t" $2 }' versions.tsv |
               while IFS=$'\t' read -r id digest; do
                 grep -qxF "$digest" keep.txt && continue
