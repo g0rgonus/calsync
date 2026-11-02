@@ -183,8 +183,10 @@ a reviewer can point at the line a change breaks.
     saved (`onboarding.templatise`).
 32. **The console has no login and guards writes with `Sec-Fetch-Site`**, never
     an `Origin`-vs-`Host` comparison, which any host-rewriting proxy turns into
-    an outage. The read API is a separate app behind a bearer token. Don't merge
-    the two or give either the other's posture.
+    an outage. Its referrer policy stays `same-origin`: under `no-referrer` a
+    browser sends `Origin: null`, and the fallback for browsers without
+    `Sec-Fetch-Site` rejects every write. The read API is a separate app behind a
+    bearer token. Don't merge the two or give either the other's posture.
 33. **Console form fields are read through `_field()`** (`web/app.py`). Bottle
     decodes form values as latin-1, and a plain `.get` mangles every emoji and
     accented name.

@@ -58,7 +58,7 @@ def test_ics_file_without_a_directory_says_which_flag_is_missing(conn, secrets):
 
 
 def test_google_is_not_offered_as_a_destination():
-    """Withdrawn until the OAuth exchange exists (issues/1).
+    """Withdrawn until the OAuth exchange exists (issues/8).
 
     It used to be offered with a note saying it could not work yet. An entry in
     a dropdown reads as a supported choice however the caption is worded, so the
@@ -92,7 +92,7 @@ def test_choosing_google_says_why_it_cannot_be_used_yet(conn, secrets):
     message = str(raised.value)
     assert "unknown target kind" not in message
     assert "OAuth" in message, "does not say what is actually missing"
-    assert "issues/1" in message, "does not point at where this is tracked"
+    assert "issues/8" in message, "does not point at where this is tracked"
 
 
 def test_a_stored_google_setting_gets_the_same_explanation(conn, secrets):
