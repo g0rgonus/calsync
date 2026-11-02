@@ -319,7 +319,8 @@ Radicale, Matrix, Pushover, iCloud) are not people or places; leave them.
 - A first-time contributor's pull request runs CI once a maintainer approves the
   run. It runs the tests and builds the image, and never publishes.
 - A maintainer can publish a pull request as `:dev` by approving its
-  `publish-dev` job. Only branches in this repo can be published.
+  `publish-dev` job. Only branches in this repo can be published. The run
+  summary prints the image's digest, for pinning that exact build.
 - calsync uses SemVer. A change that should ship bumps `__version__` in
   `src/calsync/__init__.py` and adds its `## [X.Y.Z]` section to `CHANGELOG.md`
   in the same pull request; CI fails a bump without one. `__version__` is the
@@ -335,7 +336,9 @@ Radicale, Matrix, Pushover, iCloud) are not people or places; leave them.
   | `latest` | a release that is the highest version |
   | `main` | every merge to `main`, for testing |
   | `dev` | a maintainer approves a pull request's `publish-dev` |
-  | `sha-<short>` | every published build |
+
+  There are no per-commit tags. A weekly job prunes untagged images older than
+  30 days, keeping everything a tagged image uses.
 
   Release images carry a build provenance attestation:
   `gh attestation verify oci://ghcr.io/g0rgonus/calsync:X.Y.Z -R g0rgonus/calsync`.
