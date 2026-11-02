@@ -134,7 +134,7 @@ services:
 
   feeds:
     profiles: ["demo"]
-    image: python:3.12-slim
+    image: python:3.15-slim
     restart: unless-stopped
     command: ["python", "/demo/feeds.py", "--port", "8000"]
     volumes:
