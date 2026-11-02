@@ -1,0 +1,380 @@
+import AppKit
+import Foundation
+import OSLog
+import UserNotifications
+import CalsyncMirrorCore
+import CalsyncMirrorEventKit
+
+/// The menu bar app.
+///
+/// A second front end over `SyncRunner`, not a second implementation. Every
+/// decision — what to write, what to delete, when to withhold — happens in
+/// `CalsyncMirrorCore` exactly as it does for the CLI, and is tested there
+/// without a Mac. What lives here is a status item, a timer, and a menu.
+///
+/// It deliberately cannot resolve anything of calsync's. Status, pause, sync
+/// now and links out are all about *this machine*; answering a question or
+/// approving an answer happens in the console, by a person, because that is
+/// where the review gate is. The one decision it does take is
+/// this machine's own: confirming deletions *its* guard withheld from *its*
+/// calendars, which nothing on the server can see. Without it the guard's
+/// "pending confirmation" had no answer, and a cancellation confirmed in the
+/// console sat on the family's Macs as a duplicate until it slid into the past.
+/// Where a background app says what it did.
+///
+/// Both, deliberately. `print` lands in the launchd log file, which is where
+/// somebody who read `install.sh` will look. `Logger` goes to the unified log,
+/// which is the only one that survives being launched some other way — by
+/// `open`, or from Login Items — and is retrievable after the fact with
+/// `log show --predicate 'subsystem == "com.dadalorian.calsync-mirror"'`.
+/// An app that runs at login and keeps no record is one you cannot debug from
+/// the outside, and this one runs unattended for weeks at a time.
+enum Log {
+    static let logger = Logger(subsystem: "com.dadalorian.calsync-mirror", category: "sync")
+
+    static let stamp: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        return formatter
+    }()
+
+    static func say(_ message: String) {
+        print("[\(stamp.string(from: Date()))] \(message)")
+        fflush(stdout)
+        logger.log("\(message, privacy: .public)")
+    }
+}
+
+final class AppDelegate: NSObject, NSApplicationDelegate {
+
+    var statusItem: NSStatusItem!
+    var config: Config?
+    var timer: Timer?
+    var outcome: SyncOutcome = .never
+    var review: ReviewCounts?
+    /// What the last run held back, kept so the menu can put the list in front
+    /// of somebody. Replaced by every run, so a stale list is never confirmed.
+    var held: [HeldDeletions] = []
+    var syncing = false
+    /// So a held run or a long outage is announced once, not every interval.
+    var announced: String?
+    /// Held across openings: closing a window must not throw away the one
+    /// object that owns it, and reopening should be the same window.
+    var settings: SettingsWindow?
+
+    let formatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm"
+        return formatter
+    }()
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        statusItem.menu = NSMenu()
+        statusItem.menu?.delegate = self
+
+        do {
+            config = try Config.load(from: Config.defaultPath)
+        } catch {
+            let message = "no usable config at \(Config.defaultPath.path) — run "
+                + "`calsync-mirror --init`"
+            Log.say("ERROR \(message): \(error)")
+            outcome = .failed(message, at: Date())
+        }
+
+        UNUserNotificationCenter.current().requestAuthorization(
+            options: [.alert]) { _, _ in }
+
+        Log.say("Calsync Mirror \(Build.version) started; "
+            + "syncing every \(config?.syncIntervalMinutes ?? 15)m")
+        refresh()
+        scheduleTimer()
+        Task { await syncNow() }
+    }
+
+    func scheduleTimer() {
+        timer?.invalidate()
+        let minutes = Double(config?.syncIntervalMinutes ?? 15)
+        timer = Timer.scheduledTimer(
+            withTimeInterval: max(60, minutes * 60), repeats: true
+        ) { [weak self] _ in
+            Task { await self?.syncNow() }
+        }
+    }
+
+    // MARK: - Syncing
+
+    @MainActor
+    func syncNow(confirm: Set<String> = []) async {
+        guard let config, !syncing else { return }
+        syncing = true
+        refresh()
+        // Cleared explicitly rather than by `defer`, which runs *after* the
+        // last `refresh()` below and so left the icon spinning until something
+        // else happened to redraw it.
+
+        let runner = SyncRunner(config: config, store: CalendarStore())
+        let summary = await runner.run(confirm: confirm)
+
+        if summary.paused {
+            Log.say("paused; nothing done")
+        } else {
+            // `lines` already carries the errors in place, next to the pair
+            // they belong to. Logging `errors` as well printed each one twice.
+            for line in summary.lines { Log.say(line) }
+            Log.say("run: \(summary.created) created, \(summary.updated) updated, "
+                + "\(summary.deleted) deleted, \(summary.unchanged) unchanged"
+                + (summary.offline ? " (offline)" : ""))
+        }
+
+        // A paused run did nothing and must not overwrite what the last real
+        // run reported — otherwise pausing makes the menu look like it synced.
+        if !summary.paused {
+            outcome = summary.outcome
+            held = summary.held
+        }
+        if !confirm.isEmpty {
+            Log.say(summary.confirmed > 0
+                ? "confirmed: \(summary.confirmed) held deletion(s) applied"
+                : "confirmation did not apply — the held list changed; nothing deleted")
+        }
+
+        if let client = ReviewClient(config: config) {
+            review = try? await client.fetch()
+        }
+        syncing = false
+        refresh()
+        announce()
+    }
+
+    /// One notification per distinct condition, not one per interval.
+    ///
+    /// Same shape as `enrichment.review`'s notify-once fingerprint, for the same
+    /// reason: this runs every fifteen minutes, and a push each time is muted by
+    /// lunchtime — which is worse than no push at all.
+    func announce() {
+        let status = currentStatus()
+        guard status.needsAttention else { announced = nil; return }
+        let fingerprint = status.title + (status.detail ?? "")
+        guard fingerprint != announced else { return }
+        announced = fingerprint
+
+        let content = UNMutableNotificationContent()
+        content.title = status.title
+        content.body = status.detail ?? ""
+        UNUserNotificationCenter.current().add(
+            UNNotificationRequest(identifier: UUID().uuidString,
+                                  content: content, trigger: nil))
+    }
+
+    // MARK: - Presentation
+
+    func currentStatus() -> MenuStatus {
+        StatusPresenter.status(
+            outcome: outcome,
+            pause: Pause.load(),
+            health: Health.load(),
+            review: review,
+            now: Date(),
+            warnAfterHours: config?.offlineWarnAfterHours ?? 48,
+            formatter: formatter)
+    }
+
+    func refresh() {
+        let status = syncing
+            ? MenuStatus(symbol: "arrow.triangle.2.circlepath", title: "Syncing…",
+                         detail: nil, needsAttention: false)
+            : currentStatus()
+
+        let image = NSImage(systemSymbolName: status.symbol,
+                            accessibilityDescription: status.title)
+        image?.isTemplate = true
+        statusItem.button?.image = image
+        statusItem.button?.toolTip = status.title
+    }
+
+    func item(_ title: String, _ action: Selector?, key: String = "") -> NSMenuItem {
+        let entry = NSMenuItem(title: title, action: action, keyEquivalent: key)
+        entry.target = self
+        return entry
+    }
+
+    func buildMenu() {
+        guard let menu = statusItem.menu else { return }
+        menu.removeAllItems()
+        let status = currentStatus()
+
+        let header = NSMenuItem(title: status.title, action: nil, keyEquivalent: "")
+        header.isEnabled = false
+        menu.addItem(header)
+        for line in status.detailLines() {
+            let detail = NSMenuItem(title: "  " + line, action: nil, keyEquivalent: "")
+            detail.isEnabled = false
+            menu.addItem(detail)
+        }
+        menu.addItem(.separator())
+
+        menu.addItem(item(syncing ? "Syncing…" : "Sync Now", #selector(doSync), key: "s"))
+        if !held.isEmpty, !syncing {
+            let count = held.reduce(0) { $0 + $1.events.count }
+            menu.addItem(item("Review \(count) Withheld Deletion\(count == 1 ? "" : "s")…",
+                              #selector(reviewHeld)))
+        }
+
+        let pause = Pause.load()
+        if pause.isActive(at: Date()) {
+            menu.addItem(item("Resume", #selector(doResume)))
+        } else {
+            let submenu = NSMenu()
+            for duration in Pause.Duration.allCases {
+                let entry = NSMenuItem(
+                    title: duration.label, action: #selector(doPause), keyEquivalent: "")
+                entry.target = self
+                entry.representedObject = duration.rawValue
+                submenu.addItem(entry)
+            }
+            let parent = NSMenuItem(title: "Pause", action: nil, keyEquivalent: "")
+            menu.addItem(parent)
+            menu.setSubmenu(submenu, for: parent)
+        }
+
+        menu.addItem(.separator())
+        if let review, !review.isQuiet {
+            let entry = NSMenuItem(title: "Review: \(review.summary)",
+                                   action: #selector(openConsole), keyEquivalent: "")
+            entry.target = self
+            menu.addItem(entry)
+        }
+        let console = item("Open Console…", #selector(openConsole))
+        if config?.consoleReviewURL == nil {
+            // It used to be here and silently do nothing, which is the worst of
+            // the three options — the console URL is derived from `apiURL`, and
+            // without one there is nowhere to go. Say so, with Settings on the
+            // next line.
+            console.action = nil
+            console.isEnabled = false
+            menu.addItem(console)
+            let why = NSMenuItem(
+                title: "  needs a calsync API address", action: nil, keyEquivalent: "")
+            why.isEnabled = false
+            menu.addItem(why)
+        } else {
+            menu.addItem(console)
+        }
+        menu.addItem(item("Settings…", #selector(openSettings), key: ","))
+        menu.addItem(.separator())
+        let version = NSMenuItem(
+            title: "Calsync Mirror \(Build.version)", action: nil,
+            keyEquivalent: "")
+        version.isEnabled = false
+        menu.addItem(version)
+        menu.addItem(item("Quit", #selector(quit), key: "q"))
+    }
+
+    // MARK: - Actions
+
+    @objc func doSync() { Task { await syncNow() } }
+
+    /// Put the held list in front of a person, and delete it only on a yes.
+    ///
+    /// The list shown is the one the last run held. What is confirmed is its
+    /// fingerprint, and the run that acts on it reads Radicale again — if the
+    /// set has changed in between, nothing is deleted and the new list is
+    /// offered instead.
+    @objc func reviewHeld() {
+        let sets = held
+        guard !sets.isEmpty else { return }
+        let stamp = PlanReport.stamp
+        var lines: [String] = []
+        for set in sets {
+            lines.append("From \(set.calendar):")
+            for event in set.events.prefix(30) {
+                lines.append("  \(stamp.string(from: event.start))  \(event.title)")
+            }
+            if set.events.count > 30 { lines.append("  …and \(set.events.count - 30) more") }
+        }
+        let count = sets.reduce(0) { $0 + $1.events.count }
+
+        let alert = NSAlert()
+        alert.messageText = "Delete \(count) event\(count == 1 ? "" : "s") no longer in Radicale?"
+        alert.informativeText = lines.joined(separator: "\n") + "\n\n"
+            + "These vanished from the calendar server in one go, so they were "
+            + "held rather than deleted. Delete them only if that was deliberate — "
+            + "a cancellation confirmed in the calsync console looks exactly like this. "
+            + "If the list has changed by the time this runs, nothing is deleted."
+        alert.addButton(withTitle: "Delete \(count)")
+        alert.addButton(withTitle: "Keep Them")
+        alert.alertStyle = .warning
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let fingerprints = Set(sets.map(\.fingerprint))
+        Task { await syncNow(confirm: fingerprints) }
+    }
+
+    @objc func doPause(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let duration = Pause.Duration(rawValue: raw) else { return }
+        Pause.starting(duration, at: Date()).save()
+        refresh()
+    }
+
+    @objc func doResume() {
+        Pause.none.save()
+        refresh()
+        Task { await syncNow() }
+    }
+
+    @objc func openConsole() {
+        guard let url = config?.consoleReviewURL else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    /// The window, not the file. `NSWorkspace.open` on a `.json` hands it to
+    /// whatever claimed the extension — Xcode, here — and the raw file is one
+    /// button inside the window for the times that is genuinely what you want.
+    @objc func openSettings() {
+        if settings == nil {
+            settings = SettingsWindow { [weak self] in self?.configChanged() }
+        }
+        settings?.show()
+    }
+
+    /// Pick up a saved config without a restart.
+    ///
+    /// Re-read from disk rather than taking the window's value: the file is the
+    /// record, and a config the app holds that differs from the one on disk is
+    /// the sort of divergence that only shows up as "it worked until I
+    /// restarted it". The timer is rescheduled because `syncIntervalMinutes`
+    /// may have moved, and a `Timer` already scheduled at the old interval
+    /// keeps that interval for ever otherwise.
+    func configChanged() {
+        let hadNothingToRunOn = config == nil
+        do {
+            config = try Config.load(from: Config.defaultPath)
+            // Launching without a usable config leaves that failure in
+            // `outcome`, and it is now historical. Cleared only in that case:
+            // a failure from an actual run is about the run, and saving a
+            // setting is not evidence it went away.
+            if hadNothingToRunOn { outcome = .never }
+            Log.say("config reloaded; syncing every \(config?.syncIntervalMinutes ?? 15)m")
+        } catch {
+            Log.say("ERROR could not re-read \(Config.defaultPath.path): \(error)")
+        }
+        scheduleTimer()
+        refresh()
+    }
+
+    @objc func quit() { NSApp.terminate(nil) }
+}
+
+extension AppDelegate: NSMenuDelegate {
+    func menuWillOpen(_ menu: NSMenu) { buildMenu() }
+}
+
+let app = NSApplication.shared
+let delegate = AppDelegate()
+app.delegate = delegate
+// Accessory, so there is no Dock icon and no menu bar of its own — this is a
+// status item, not a window.
+app.setActivationPolicy(.accessory)
+app.run()

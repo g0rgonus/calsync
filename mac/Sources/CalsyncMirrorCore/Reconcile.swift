@@ -1,0 +1,384 @@
+import Foundation
+
+/// An event already in the destination calendar, reduced to what planning needs.
+///
+/// A plain struct rather than an `EKEvent` so the whole decision layer — which
+/// is the part that can delete things — is testable without a calendar store,
+/// a permission prompt, or a Mac.
+public struct ExistingEvent: Equatable {
+    public var identifier: String
+    public var title: String
+    public var start: Date
+    public var end: Date
+    public var isAllDay: Bool
+    public var location: String?
+    public var notes: String?
+    /// The zone EventKit holds this event in. `nil` means a **floating**
+    /// event, which is the one value that must never be written for a timed
+    /// event — see `Reconcile.fields`.
+    public var timeZoneID: String?
+
+    public init(
+        identifier: String, title: String, start: Date, end: Date,
+        isAllDay: Bool = false, location: String? = nil, notes: String? = nil,
+        timeZoneID: String? = nil
+    ) {
+        self.identifier = identifier
+        self.title = title
+        self.start = start
+        self.end = end
+        self.isAllDay = isAllDay
+        self.location = location
+        self.notes = notes
+        self.timeZoneID = timeZoneID
+    }
+
+    /// Whose event this is. `nil` means a person made it, and this tool may
+    /// never write to it or delete it.
+    public var calsyncUID: String? { Marker.uid(inNotes: notes) }
+}
+
+/// What an EKEvent should look like once written.
+public struct DesiredFields: Equatable {
+    public var title: String
+    public var start: Date
+    public var end: Date
+    public var isAllDay: Bool
+    public var location: String?
+    public var notes: String
+    public var url: URL?
+    public var alarmOffsetSeconds: Double?
+    public var timeZoneID: String?
+}
+
+public struct PlannedCreate: Equatable {
+    public var uid: String
+    public var fields: DesiredFields
+}
+
+public struct PlannedUpdate: Equatable {
+    public var uid: String
+    public var existing: ExistingEvent
+    public var fields: DesiredFields
+}
+
+/// An event about to be created that lands on the same day, in the same
+/// calendar, as something a person entered.
+///
+/// Same day **plus time proximity**, and nothing beyond it. There is no scoring
+/// and no auto-match: clearing a season of hand-typed entries takes ten minutes
+/// and a fuzzy matcher takes a weekend to build and is used once. This reports,
+/// so the cleanup is guided rather than a hunt, and stops there.
+///
+/// The time window is what makes the report usable. On a family calendar "same
+/// day" means school drop-off, a swim practice and two pickups, and a report
+/// that names `School Drop-Off` as a possible duplicate of a soccer practice is
+/// one somebody learns to scroll past. ±60 minutes, because hand-entered events
+/// often encode *arrival* time rather than start time.
+public struct DuplicateWarning: Equatable {
+    public var desiredTitle: String
+    public var desiredStart: Date
+    public var existingTitle: String
+    public var existingIdentifier: String
+}
+
+public struct MirrorPlan: Equatable {
+    public var creates: [PlannedCreate] = []
+    public var updates: [PlannedUpdate] = []
+    public var unchanged: Int = 0
+    public var deletes: [ExistingEvent] = []
+    /// Set when the guard withheld deletions. `deletes` is empty when it is.
+    public var hold: HoldReason? = nil
+    /// What a disappearance hold withheld, and the fingerprint a person
+    /// confirms it by. Empty for an identity hold, which cannot be confirmed.
+    public var held: [ExistingEvent] = []
+    public var heldFingerprint: String? = nil
+    /// Deletions that went ahead because a person confirmed this exact set.
+    public var confirmed = false
+    /// Deletions calsync accounted for, by reason (`cancelled`, `withheld`,
+    /// `approved`). Not counted by the guard, and applied even when it
+    /// holds the rest: calsync's own record of a decision is independent of
+    /// whatever went wrong with this read.
+    public var accounted: [String: Int] = [:]
+    public var duplicates: [DuplicateWarning] = []
+
+    public var isEmpty: Bool {
+        creates.isEmpty && updates.isEmpty && deletes.isEmpty
+    }
+}
+
+public enum Reconcile {
+
+    /// How close two events must start before one is worth mentioning as a
+    /// possible copy of the other.
+    public static let duplicateWindow: TimeInterval = 60 * 60
+
+    /// EventKit stores to the second; a round-trip through iCloud can shift a
+    /// value by less. Comparing exactly would rewrite every event on every run.
+    static let dateTolerance: TimeInterval = 1.0
+
+    /// The zone a timed event falls back to when the VEVENT names none.
+    ///
+    /// It has to be *some* real zone, and which one barely matters — see
+    /// `fields` for why anything is better than nothing.
+    public static let fallbackZoneID = "UTC"
+
+    /// Translate a parsed VEVENT into the fields EventKit should hold.
+    ///
+    /// Two conversions matter.
+    ///
+    /// The all-day end: RFC 5545 DTEND on a DATE is **exclusive** — a
+    /// single-day event ends on the following day — while EventKit's `endDate`
+    /// for an all-day event is the last day *inclusive*. Copying the value
+    /// across unchanged turns every tournament day into a two-day event.
+    ///
+    /// The other is that **a timed event must never be left without a zone.**
+    /// calsync writes `DTSTART:…Z`, which names none, so before this every
+    /// timed event reached EventKit with `timeZone == nil` — and the start such
+    /// an event reports back is not stable across a change of device zone.
+    ///
+    /// Without one, every device zone change rewrote the whole calendar.
+    /// That is churn, not wrong times: the stored instants were correct.
+    ///
+    /// Any concrete zone settles it. A real zone from `TZID` would be nicer to
+    /// read in Calendar.app; `homeTimeZone` picks what is shown; UTC is the
+    /// floor.
+    ///
+    /// All-day events stay `nil` on purpose: they are floating *by
+    /// definition*, and pinning one to a zone is how a tournament day shows up
+    /// on the wrong date for a travelling parent.
+    public static func fields(
+        for event: ParsedEvent, calendar: Calendar = .current,
+        fallbackZoneID: String = Reconcile.fallbackZoneID
+    ) -> DesiredFields {
+        var end = event.end
+        if event.isAllDay {
+            let inclusive = calendar.date(byAdding: .day, value: -1, to: event.end) ?? event.end
+            end = inclusive < event.start ? event.start : inclusive
+        }
+        return DesiredFields(
+            title: event.summary,
+            start: event.start,
+            end: end,
+            isAllDay: event.isAllDay,
+            location: event.location,
+            notes: Marker.notes(body: event.description, uid: event.uid),
+            url: event.url.flatMap(URL.init(string:)),
+            // calsync already withholds an alarm on an all-day event, because
+            // "90 minutes before" local midnight fires at 22:30 the evening
+            // before for a time nobody knows yet. Belt and braces.
+            alarmOffsetSeconds: event.isAllDay ? nil : event.alarmOffsetSeconds,
+            timeZoneID: event.isAllDay ? nil : (event.timeZoneID ?? fallbackZoneID)
+        )
+    }
+
+    /// A field of a mirrored event that can disagree with Radicale.
+    ///
+    /// Named so the log can say *why* an event is being rewritten. "64 events
+    /// updated" is a fact nobody can act on; "64 events updated, start +3h" is
+    /// a diagnosis. Working out which of those it was, after the fact, took a
+    /// screenshot and a PROPFIND against the calendar server.
+    public enum EventField: Equatable {
+        case title, start, end, allDay, location, notes, timezone
+
+        public var label: String {
+            switch self {
+            case .title: return "title"
+            case .start: return "start"
+            case .end: return "end"
+            case .allDay: return "all-day"
+            case .location: return "location"
+            case .notes: return "notes"
+            case .timezone: return "timezone"
+            }
+        }
+    }
+
+    /// Everything about this event that no longer agrees with the feed.
+    ///
+    /// **The single definition of "changed".** `matches` is this being empty,
+    /// rather than a second list of comparisons beside it — two of those drift
+    /// the moment one is edited, and the visible symptom would be a log that
+    /// explains an update nobody made or stays silent about one that happened.
+    /// Same reasoning as `repo.source_freshness` on the calsync side.
+    public static func changedFields(
+        _ existing: ExistingEvent, _ desired: DesiredFields,
+        calendar: Calendar = .current
+    ) -> [EventField] {
+        // EventKit reads an all-day end back as 23:59:59, so all-day events
+        // compare by day.
+        let byDay = existing.isAllDay && desired.isAllDay
+        func sameDate(_ a: Date, _ b: Date) -> Bool {
+            byDay ? calendar.isDate(a, inSameDayAs: b)
+                  : abs(a.timeIntervalSince(b)) < dateTolerance
+        }
+        func sameText(_ a: String?, _ b: String?) -> Bool {
+            (a ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                == (b ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        // Resolved zones, never the strings. Foundation normalises aliases —
+        // `TimeZone(identifier: "UTC")` has the identifier `"GMT"` — so a
+        // string comparison would find a difference that no write can ever
+        // remove, and rewrite every event on every run. That is a worse
+        // failure than the floating one this comparison exists to catch.
+        func sameZone(_ a: String?, _ b: String?) -> Bool {
+            switch (a, b) {
+            case (nil, nil): return true
+            case (let x?, let y?): return TimeZone(identifier: x) == TimeZone(identifier: y)
+            default: return false
+            }
+        }
+        var changed: [EventField] = []
+        if existing.title != desired.title { changed.append(.title) }
+        if !sameDate(existing.start, desired.start) { changed.append(.start) }
+        if !sameDate(existing.end, desired.end) { changed.append(.end) }
+        if existing.isAllDay != desired.isAllDay { changed.append(.allDay) }
+        if !sameText(existing.location, desired.location) { changed.append(.location) }
+        if !sameText(existing.notes, desired.notes) { changed.append(.notes) }
+        if !sameZone(existing.timeZoneID, desired.timeZoneID) { changed.append(.timezone) }
+        return changed
+    }
+
+    static func matches(_ existing: ExistingEvent, _ desired: DesiredFields) -> Bool {
+        changedFields(existing, desired).isEmpty
+    }
+
+    /// Decide what to do, without doing any of it.
+    ///
+    /// - Parameters:
+    ///   - desired: every VEVENT read from one Radicale collection.
+    ///   - existing: every event currently in the destination calendar, within
+    ///     the same window.
+    ///   - now: events starting before this are never deletion candidates.
+    ///   - explain: why calsync took an event off the calendar, or
+    ///     `nil` if nothing accounts for it (`Placements.reason`). Only the
+    ///     unaccounted absences are evidence of a broken read, so only they
+    ///     count toward the guard.
+    ///   - confirmed: fingerprints of held sets a person has agreed to delete.
+    ///     One applies only if it names *exactly* this run's held set — the
+    ///     collection is read again between showing the list and acting on it,
+    ///     and agreeing that these events are gone is not agreeing to whatever
+    ///     is missing by then.
+    public static func plan(
+        desired: [ParsedEvent],
+        existing: [ExistingEvent],
+        now: Date,
+        explain: (String) -> String? = { _ in nil },
+        confirmed: Set<String> = [],
+        guardPolicy: DisappearanceGuard = DisappearanceGuard(),
+        calendar: Calendar = .current,
+        fallbackZoneID: String = Reconcile.fallbackZoneID
+    ) -> MirrorPlan {
+        var plan = MirrorPlan()
+
+        // A cancelled VEVENT is a tombstone, not something to put on a phone.
+        // calsync normally deletes outright, so this is the rarer path.
+        let live = desired.filter { !$0.cancelled }
+
+        var managed: [String: ExistingEvent] = [:]
+        var unmanaged: [ExistingEvent] = []
+        for item in existing {
+            if let uid = item.calsyncUID {
+                // A duplicate uid means a previous run wrote twice. Keep the
+                // earliest-created (stable identifier order) and let the other
+                // fall through to the deletion path as an orphan.
+                if managed[uid] == nil { managed[uid] = item } else { unmanaged.append(item) }
+            } else {
+                unmanaged.append(item)
+            }
+        }
+
+        var seen = Set<String>()
+        for event in live {
+            let fields = fields(
+                for: event, calendar: calendar, fallbackZoneID: fallbackZoneID)
+            seen.insert(event.uid)
+            if let match = managed[event.uid] {
+                if matches(match, fields) {
+                    plan.unchanged += 1
+                } else {
+                    plan.updates.append(
+                        PlannedUpdate(uid: event.uid, existing: match, fields: fields))
+                }
+            } else {
+                plan.creates.append(PlannedCreate(uid: event.uid, fields: fields))
+            }
+        }
+
+        // Deletion authority extends only to events carrying the marker, and
+        // only forward. A game played in April is history: nothing upstream
+        // will ever mention it again, and removing it would delete the record
+        // of a season the kids played (`retire.py` refuses this too).
+        let trackedFuture = managed.values.filter { $0.start >= now }
+        let missing = trackedFuture
+            .filter { !seen.contains($0.calsyncUID ?? "") }
+            .sorted { $0.start < $1.start }
+
+        // Split what calsync can account for from what it cannot. A person who
+        // confirmed a bulk removal in the console has already made this
+        // decision, and calsync records it before the first delete goes out —
+        // so a read of Radicale never shows an absence of that kind that the
+        // API does not yet explain. What is left is what a broken read makes.
+        var explained: [ExistingEvent] = []
+        var unexplained: [ExistingEvent] = []
+        for item in missing {
+            if let reason = explain(item.calsyncUID ?? "") {
+                explained.append(item)
+                plan.accounted[reason, default: 0] += 1
+            } else {
+                unexplained.append(item)
+            }
+        }
+
+        if let hold = guardPolicy.evaluate(
+            trackedFuture: trackedFuture.count - explained.count,
+            missing: unexplained.count, incoming: live.count
+        ) {
+            plan.deletes = explained
+            // Only a disappearance, and never off an empty read. An identity
+            // hold means the wrong collection answered; an empty one is the
+            // shape of a broken read, and a list of every event on the calendar
+            // is not something a person should be one click from deleting.
+            if case .disappearance = hold, !live.isEmpty {
+                let fingerprint = HeldSet.fingerprint(unexplained.compactMap(\.calsyncUID))
+                if confirmed.contains(fingerprint) {
+                    plan.deletes = missing
+                    plan.confirmed = true
+                } else {
+                    plan.hold = hold
+                    plan.held = unexplained
+                    plan.heldFingerprint = fingerprint
+                }
+            } else {
+                plan.hold = hold
+            }
+        } else {
+            plan.deletes = missing
+        }
+
+        // Reported only for events being created, since an update is already
+        // ours. An all-day event carries no time to compare, so it falls back
+        // to the day rather than counting as a miss.
+        for create in plan.creates {
+            for other in unmanaged where nearby(other, create.fields, calendar) {
+                plan.duplicates.append(
+                    DuplicateWarning(
+                        desiredTitle: create.fields.title,
+                        desiredStart: create.fields.start,
+                        existingTitle: other.title,
+                        existingIdentifier: other.identifier))
+            }
+        }
+
+        return plan
+    }
+
+    static func nearby(
+        _ existing: ExistingEvent, _ desired: DesiredFields, _ calendar: Calendar
+    ) -> Bool {
+        guard !existing.isAllDay, !desired.isAllDay else {
+            return calendar.isDate(existing.start, inSameDayAs: desired.start)
+        }
+        return abs(existing.start.timeIntervalSince(desired.start)) <= duplicateWindow
+    }
+}

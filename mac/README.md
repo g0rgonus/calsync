@@ -1,0 +1,413 @@
+# calsync-mirror
+
+Mirrors calsync's Radicale collections into the shared Apple calendars the
+family already has on their phones. Runs on one Mac, under launchd, every 15
+minutes.
+
+```text
+Radicale /games      ──┐                        ┌─→  Skywalker Kids
+                       ├─→  calsync-mirror  ────┤
+Radicale /practices  ──┘      (this tool)       └─→  Grandparents
+```
+
+## Why it is a separate program
+
+calsync's responsibility ends at Radicale: it holds no iCloud
+credential, and nothing but this tool writes to the family's calendars. Keeping
+it out of the Python package is what makes that true by construction rather than
+by discipline — there is no code path from a poller to an EKEventStore.
+
+## Install
+
+```bash
+./install.sh                     # build, install CLI + app, run at login
+calsync-mirror --check           # can it read Radicale? no calendar access needed
+calsync-mirror --dry-run         # what would it do? macOS prompts for Calendar here
+```
+
+Run those in that order. The dry run should be the first thing that touches the
+calendars: it is both the run that asks for permission and the one that prints
+the plan before anything is written. After that the menu bar app keeps it in
+step on its own, and the CLI is there for one-offs and debugging.
+
+## The menu bar app
+
+`Calsync Mirror.app` runs at login, syncs on its own timer, and is the surface
+for the three states that otherwise only reach a log file nobody opens:
+deletions withheld, a long outage, and events waiting on a human.
+
+```
+  ✓  In sync                    no changes, last checked 4m ago
+  ⏸  Paused until 08:00
+  ⃠  Radicale unreachable       last read 3h ago, nothing to do
+  !  Deletions withheld         6 of 21 tracked events vanished in one read
+  !  3 events held, 1 answer to approve
+```
+
+It **cannot resolve anything of calsync's**. Status, pause, Sync Now and links
+out are all about this machine; answering a question or approving an answer
+happens in the console, by a person, because that is where the review gate is.
+The menu links there rather than reimplementing
+it.
+
+**A bulk removal is decided once, in the console.** When calsync's guard holds
+a poll — usually a schedule rebuilt under fresh ids, with old and new copies on
+the calendar side by side — `GET /v1/review` counts it, and the menu says
+*Approval waiting in calsync* with a notification, pointing at the console's
+`/review`. Confirm there and this machine follows on its next run without
+asking: after reading Radicale it fetches `GET /v1/placements`, and an absence
+calsync accounts for — cancelled, withheld, or a removal a person approved — is
+not counted by the guard. A *move* to another collection is deliberately not
+on that list: a mistyped or swapped collection name in this machine's config
+looks identical, and must stay held. calsync records an
+approval before it sends the first delete, so there is no moment when Radicale
+is missing something the API cannot yet explain. Both need `apiURL` and
+`apiToken` in Settings; without them, nothing changes from before.
+
+The one decision the app does take is this machine's own: **Review Withheld
+Deletions…** appears when its guard holds what calsync *cannot* account for —
+a broken read, or no API to ask — lists exactly that, and deletes it on a yes.
+What is confirmed is the set's fingerprint, and the run that acts on it reads
+Radicale again: a list that has changed in between deletes nothing and is
+offered afresh.
+
+**Pause expires by default.** A pause you forget is the family's calendar going
+quietly stale for weeks — the same failure `persists_across_seasons` prevents on
+the calsync side, where switching something off in July means noticing in
+September. An indefinite pause is offered, because "I am about to reorganise
+this calendar by hand" is a real reason, but it is the option you choose rather
+than the one you land on, and past a day the menu says how long it has been.
+Resuming needs no catch-up: the reconciler re-derives everything from the
+calendar.
+
+**Notifications fire once per condition, not once per run** — the same
+notify-once fingerprint `enrichment.review` uses, for the same reason. The timer
+runs every fifteen minutes, and a push each time is muted by lunchtime, which is
+worse than no push at all.
+
+The CLI honours a pause too, so a stray one-off cannot write while the app is
+holding.
+
+### The review badge
+
+`GET /v1/review` on calsync's API reports how much is waiting on a human, and
+the menu shows it. Configure `apiURL` and `apiToken` to switch it on; without
+them there is simply no badge and the mirror is unaffected. The console URL is
+derived from the API URL rather than configured twice — the proxy puts both on
+one origin, so knowing one is knowing the other.
+
+That endpoint runs no dry run and fetches no feed, which is what makes it safe
+to poll on a timer.
+
+### Settings
+
+`Settings…` (⌘,) opens a window over `config.json` — the same file, edited in
+the one place somebody would think to look for it. The raw file is one button away, revealed in
+Finder rather than opened, since a `.json` usually opens in an editor nobody
+expects.
+
+Two of the fields it exposes were unreachable in practice. A destination
+calendar typed as text is a **silent no-op the moment it is misspelt** —
+`calendar(titled:)` throws once per run into a log nobody opens — so the
+calendar side of each pair is a picker populated from EventKit's writable
+calendars. And the console link does nothing at all until `apiURL` is set, which
+is a setting you could only reach by editing the file the menu could not open.
+
+What the window will not let you do is the interesting part:
+
+- **The guard cannot be widened past 0.5 or 25**, the same ceiling
+  `web/app.py:LIMITS` puts on the console's copy of these numbers. Narrowing is
+  free. A guard a settings window can switch off in two clicks is not a guard.
+- **Two collections cannot share one calendar.** Each run is planned against
+  the whole destination calendar, so the other collection's events look like
+  they vanished upstream — the two would take turns deleting each other's work,
+  in batches small enough for the disappearance guard to wave through.
+- **`onboarding` and `enrichment` are refused as destinations.** They hold
+  events calsync could not place, and a free-text collection box is the one
+  place a person could put one in front of the whole family.
+- **A half-configured API is refused.** An address with no token is a 401 every
+  interval; a token with no address is never sent anywhere.
+
+Every one of those is `ConfigDraft` in `CalsyncMirrorCore`, with tests, for the
+same reason the reconciler is: the rules a window enforces are worth asserting,
+and the window itself is boxes and where they sit.
+
+Without calendar access the pickers cannot be filled, so the window **says so**
+and keeps whatever is already configured rather than showing an empty menu and
+quietly saving nothing. Asking for access is a button, not something opening a
+window does to you.
+
+Saving is picked up without a restart: the app re-reads the file and reschedules
+its timer, since `syncIntervalMinutes` may have moved.
+
+While the window is open the app is `.regular` rather than `.accessory`, and
+goes back on close. An accessory app has no menu bar, which means ⌘V does
+nothing — in the API token field, which is the field you paste into.
+
+## Why a bundle and not an Xcode project
+
+What makes this a real app is the **bundle**: a proper name in the permission
+dialog instead of `calsync-mirror`, a bundle id (which notifications require),
+`LSUIElement` so there is no Dock icon. `install.sh` assembles it around the
+`swift build` output.
+
+An `.xcodeproj` is the usual way to produce one, and it is the right answer the
+moment this wants Developer ID signing or notarization. It is not the answer
+yet: Core, the CLI and the tests are a SwiftPM package regardless, so adding
+Xcode would mean two build systems to keep in step for a tool that runs on one
+Mac. Nothing is lost by waiting — the Swift code does not move when the
+project file arrives.
+
+The build is ad-hoc signed, so **macOS may ask for calendar access again after a
+rebuild**. That is the cost of not having a Developer ID, not a bug.
+
+Config lives in `~/.config/calsync-mirror/config.json` (mode 600, because it can
+hold a calendar password):
+
+```json
+{
+  "radicaleURL": "http://calsync.example:5232/calsync",
+  "pairs": [
+    {"collection": "games",     "calendar": "Skywalker Kids"},
+    {"collection": "practices", "calendar": "Grandparents"}
+  ],
+  "windowBackDays": 30,
+  "windowForwardDays": 365,
+  "syncIntervalMinutes": 15,
+  "homeTimeZone": "America/New_York",
+  "apiURL": "http://calsync.example/v1",
+  "apiToken": "…"
+}
+```
+
+Every field but `radicaleURL` and `pairs` is optional and defaults sensibly, so
+a config written by an older build keeps loading — a tool that refuses to start
+because it gained a setting stops syncing on upgrade.
+
+`radicaleURL` is the **principal**, not the server root — CalDAV collections live
+under a user and Radicale answers 403 at the root. If the deployment runs
+`CALSYNC_RADICALE_ANONYMOUS_READ=1`, no username or password is needed at all.
+
+`homeTimeZone` is the zone a timed event is filed under. calsync writes
+`DTSTART:...Z` and names no zone at all, and the start an `EKEvent` with **no**
+zone reports back is not stable across a change of device zone — so travelling
+made the mirror disagree with Radicale about every event and rewrite all of
+them. This does not decide when an event happens; any concrete zone stores the
+same instant. It decides what Calendar.app shows as the event's
+zone, and picking the household's own beats the `GMT` it falls back to. City
+names only: `EDT` does not load, and a fixed offset is an hour out for half the
+year. All-day events stay floating on purpose, which is why a tournament day
+does not slide onto the wrong date when you travel.
+
+Only `games` and `practices` belong in `pairs`. `onboarding` and `enrichment`
+are holding pens: putting an event calsync could not classify in front of the
+whole family is exactly what they exist to prevent. They stay visible in
+`/review` and in a calendar client pointed at Radicale.
+
+## How it knows which events are its own
+
+**EventKit gives no way to set an event's UID.**
+`calendarItemExternalIdentifier` is read-only and iCloud assigns it on create,
+and the `X-CALSYNC-UID` property on the VEVENT does not survive into an EKEvent
+either. So the identity calsync already has cannot travel in the field built for
+it, and the only channel left is a writable text field:
+
+```text
+Soccer · Rogues (Naboo Rogues U11)
+Start 14:00 EDT
+Field: #2
+1009 Theed Rd, Naboo NX 40114
+
+Managed by calsync — uid:360Player-event-7716716
+```
+
+That line is the whole ownership model. An event carrying it may be updated or
+deleted; an event without one is somebody's haircut and is never touched. It
+being human-readable is the second half of the point — the family can see which
+entries are managed.
+
+Because identity lives in the events themselves, **no state file holds
+identity.** A file mapping source UIDs to event ids is one that, lost, recreates
+every event beside itself. This re-derives ownership from the calendar on every
+run.
+
+The same property is why **deleting a managed event in Calendar.app does not
+stick**: with nothing remembering what was written, a deleted event is
+indistinguishable from one that was never there, and the next run creates it
+again. It is not a bug to fix here — a mirror that remembered deletions would
+need exactly that state file, and
+it would still leave the event on every phone subscribed to Radicale. Take the
+event off in the console instead: `/calendar` has **Not attending** and
+**Cancelled** on each upcoming row, which remove it from the collection itself
+and keep it off through every later poll (`src/calsync/withheld.py`). The
+deletion then reaches this side as an ordinary disappearance — including the
+guard, so withholding a large number of events at once is held here until
+somebody confirms it from the menu bar (or with `--confirm`).
+
+There is one small state file, and it is deliberately of a different kind:
+`~/Library/Application Support/calsync-mirror/health.json` records only when a
+read last worked, which is not derivable from anywhere else. Losing it costs
+nothing — the tool forgets it has been offline and starts counting again. No
+decision about what gets written depends on it.
+
+## Duplicates
+
+New events are written and the hand-made ones are left alone, with a report:
+
+```text
+  + create  Sat 12 Sep 14:00  Luke ⚽️ vs Mos Eisley FC
+  ! possible duplicate on Sat 12 Sep 14:00: "Soccer game" is already on the
+    calendar, and was not created by calsync
+    (nothing was deleted — remove the hand-made copies in Calendar.app if they
+    are the same event)
+```
+
+There is no scoring and no auto-adoption: clearing one season of hand-typed
+entries takes ten minutes, and a fuzzy matcher takes a weekend to build and is
+used once.
+
+Two things make the report readable:
+
+- **Time proximity, not just the day.** A family calendar's "same day" means
+  school drop-off, a swim practice and two pickups, and a report naming
+  `School Drop-Off` as a possible duplicate of a soccer practice is one somebody
+  learns to scroll past. The band is ±60 minutes, because hand-entered events
+  often encode *arrival* time rather than start time.
+- **Grouped by what is already there.** A hundred separate warnings is not a
+  report. Grouped it is a dozen lines, and the answer is immediate:
+
+```
+  ! 38 of these land within an hour of something already on this calendar
+    that calsync did not create:
+         38 × Luke ⚽️ Practice
+         34 × Ahsoka 🏃‍♂️ Drylands
+         19 × Leia/Luke 🏊‍♂️ Practice
+    Nothing was deleted. Remove the hand-made copies in Calendar.app if they
+    are the same event.
+```
+
+`Luke ⚽️ Practice ×38` is a season somebody synced by hand; `Ahsoka 🏃‍♂️
+Drylands ×34` is a different kid's training that merely overlaps it. A person
+tells those apart instantly, which is why grouping beats scoring here.
+
+## What stops it emptying a calendar
+
+`CalDavTarget.cancel` is a hard DELETE, so **absence is the only cancellation
+signal here too** — and a partial read, a 502, or a mistyped collection name has
+the same shape as "the season was called off".
+
+- **The same guard `diff.py` applies to a feed.** More than 3, or more than 20%,
+  of tracked *future* events vanishing in one run withholds every deletion and
+  exits 3. Thresholds match `diff.MAX_DISAPPEARANCE_*` on purpose; two numbers
+  meaning the same thing drift apart the moment one is tuned. Absences calsync
+  accounts for (`GET /v1/placements`) leave both sides of the arithmetic and
+  are deleted even when the rest is held; only what nothing explains is
+  evidence of a broken read. The held list is
+  printed with a fingerprint; `--confirm <fingerprint>` (or the menu bar) deletes
+  that exact list and nothing else. An empty read and a total turnover cannot be
+  confirmed — both are the shape of a read gone wrong, not of a schedule.
+- **Total turnover is held too** — nothing tracked survived and nothing arriving
+  is recognised means the collection moved or the mapping is wrong, never a
+  normal season.
+- **Deletion only ever reaches marked events, and only forward.** A game played
+  in April is history, and Radicale holds the only copy of a past season.
+- **A body that is not iCalendar throws** rather than parsing as zero events,
+  so an HTML error page cannot read as an empty collection.
+
+- **A truncated read throws.** A body that starts as a calendar and stops
+  partway parses fine, and the events lost off the end look exactly like
+  cancellations. The disappearance guard catches a big truncation and would wave
+  a small one through, so `END:VCALENDAR` is required — completeness is a fact
+  about the document, not a judgement about the season.
+
+Exit codes match calsync's: `0` ok, `1` error, `3` a guard held, plus `4` for
+unreachable. A launchd job that treats 3 or 4 as a crash will retry forever.
+
+## Off-site
+
+The laptop leaves the network Radicale lives on, and launchd keeps firing every
+fifteen minutes. Nothing is written and nothing is deleted — that was already
+true, since a failed read aborts before the part that decides anything, the same
+ordering `sync.py` is built around. What is handled is the rest of it:
+
+- **Every collection is read before any calendar is opened**, so an off-site run
+  never touches EventKit and never prompts for calendar access on a network
+  where it could do nothing anyway.
+- **It fails in ten seconds, not sixty.** A private address on a network that is
+  not this one does not refuse a connection, it swallows it, and URLSession's
+  default is a 60-second timeout per collection. Radicale is on a LAN or a
+  VPN: it answers quickly or it is not there.
+- **It stops after the first collection.** Every pair is the same server, so
+  probing the rest spends another timeout each to learn the same thing. A *404*
+  does not short-circuit — that says nothing about the next collection, and
+  suppressing it would let one mistyped name quietly stop the other calendar.
+- **One line, and it says how long it has been.** `Radicale unreachable — last
+  read 3h ago, nothing to do`. Past `offlineWarnAfterHours` (48 by default) it
+  goes to stderr as a warning, because at that point "I am away from home" has
+  stopped being the likely explanation. An error every fifteen minutes for a
+  fortnight trains you to ignore a log that will one day say something real.
+- **A captive portal is unreachability, not an error.** A coffee-shop portal
+  answers `200` with an HTML login page. That fails the calendar check, and is
+  reported as being offline with the portal named, rather than as a fault in
+  the deployment.
+- **Exit 4, never 1.** A laptop away from home is not a broken deployment.
+
+Coming home needs no intervention: the next run reads, writes whatever changed
+while away, and resets the counter.
+
+If Radicale is reachable over a VPN, pointing `radicaleURL` at its VPN address
+makes most of this moot, and this becomes the handling for when the VPN is down.
+
+## Version
+
+Written in exactly one place: `Sources/CalsyncMirrorCore/Version.swift`.
+
+`install.sh` asks the built binary (`calsync-mirror --version`) rather than
+carrying its own literal, so the number in `Info.plist` cannot disagree with the
+number the tool reports. Same rule as `calsync.__version__`.
+
+It is tracked **separately from calsync's version**. This is a different program
+with its own lifecycle — it mirrors whatever Radicale holds, and a shared number
+would imply a compatibility relationship that does not exist.
+
+## Tests
+
+```bash
+swift test
+```
+
+`Tests/.../Fixtures/games.ics` is **generated by calsync's own
+`targets/ics_file.py:to_ics`**, not written by hand — a hand-written fixture
+tests the parser against the author's belief about the format, which is the
+belief most likely to be wrong. It caught real things: calsync folds
+descriptions mid-word, writes a 90-minute alarm as `-PT1H30M` rather than
+`-PT90M`, and emits `VALUE=DATE` with an **exclusive** `DTEND` where EventKit
+wants the last day inclusive.
+
+Regenerate it after a change to calsync's serializer:
+
+```bash
+.venv/bin/python mac/Tests/CalsyncMirrorCoreTests/Fixtures/generate.py
+```
+
+## Layout
+
+```text
+Sources/CalsyncMirrorCore/     everything that decides anything — no EventKit
+  ICS.swift                    parse the VEVENT subset calsync writes
+  Marker.swift                 the notes line, and reading it back
+  Reconcile.swift              create / update / delete / flag, as a plan
+  Guard.swift                  the disappearance guard
+  Radicale.swift               GET a collection
+  Config.swift                 what is on disk
+  ConfigDraft.swift            what a settings form may turn into one
+Sources/CalsyncMirrorEventKit/ the only code that touches EventKit
+  CalendarStore.swift
+  SyncRunner.swift             one sync, shared by the CLI and the app
+Sources/calsync-mirror/        the CLI
+Sources/CalsyncMirrorMenu/     the menu bar app and its Settings window
+```
+
+The split is the testing story: the layer that can delete things from a family
+calendar is a pure function over plain structs, and every safety rule above has
+a test that does not need a Mac, a calendar, or a permission prompt.

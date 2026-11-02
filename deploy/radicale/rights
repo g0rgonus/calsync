@@ -1,0 +1,37 @@
+# R8: one writer, one reader. Separate credentials so a bug in the read side
+# cannot corrupt the store, and a device subscription can be revoked without
+# rotating the writer's password.
+#
+# Permission letters differ between Radicale 2.x and 3.x — verify against the
+# version you install, then run the §6 acceptance checks. The read-only write
+# probe is the one that catches a rights file failing open.
+
+[calsync-root]
+user: calsync
+collection:
+permissions: R
+
+[calsync-home]
+user: calsync
+collection: calsync
+permissions: RW
+
+[calsync-collections]
+user: calsync
+collection: calsync/[^/]+
+permissions: rw
+
+[reader-root]
+user: calreader
+collection:
+permissions: R
+
+[reader-home]
+user: calreader
+collection: calsync
+permissions: R
+
+[reader-collections]
+user: calreader
+collection: calsync/[^/]+
+permissions: r

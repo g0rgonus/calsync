@@ -1,0 +1,316 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read            # each job asks for more only if it needs it
+
+# A new push to a PR replaces its running checks and any publish-dev waiting for approval.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  VERSION_FILE: src/calsync/__init__.py
+  VERSION_SED: 's/^__version__ = "\(.*\)"$/\1/p'
+  SCHEME: semver
+  IMAGE: ghcr.io/${{ github.repository }}
+  # Prints one version's CHANGELOG.md section: awk -v h="## [$VERSION]" "$SECTION_AWK" CHANGELOG.md
+  SECTION_AWK: 'index($0, h) == 1 { p = 1; next } /^## \[/ { p = 0 } p'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'    # the floor in pyproject
+      - run: pip install -e '.[dev]' pip-audit
+      - run: pytest -q
+      - run: pip-audit --skip-editable
+      # The Swift tests read a committed copy of this serializer's output; fail when it goes stale.
+      - name: The Mac mirror's fixture matches the serializer
+        run: |
+          python mac/Tests/CalsyncMirrorCoreTests/Fixtures/generate.py
+          git diff --exit-code -- mac/Tests/CalsyncMirrorCoreTests/Fixtures/games.ics \
+            || { echo "::error::games.ics is stale: run generate.py, then (cd mac && swift test)"; exit 1; }
+
+  # R1-R8 and a real sync, against the Radicale the stack ships.
+  acceptance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+      - run: pip install -e '.[dev]'
+      - run: scripts/dev-stack.sh
+      - name: Wait for Radicale through the proxy
+        run: |
+          for _ in $(seq 1 30); do curl -fsS http://localhost:8730/cal/ -o /dev/null && exit 0; sleep 2; done
+          docker compose logs radicale proxy; exit 1
+      - run: pytest tests/test_acceptance.py -q
+        env:
+          CALSYNC_ACCEPTANCE: '1'
+      - if: failure()
+        run: docker compose logs
+
+  # The README's first run, on Linux, where bind-mount ownership differs from macOS.
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: First run, as documented
+        run: |
+          set -eux
+          docker compose build calsync
+          # The name compose built, not $IMAGE: in a fork the two differ.
+          LOCAL=$(docker compose config --format json | jq -r .services.calsync.image)
+          echo "LOCAL=$LOCAL" >> "$GITHUB_ENV"
+          docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/out" "$LOCAL" init-deploy /out
+          test "$(stat -c '%a' .env)" = "600"
+          test "$(grep -c '^CALSYNC_SECRET.*=.' .env)" -eq 3
+          for f in radicale/config radicale/rights radicale/rights.anonymous caddy/Caddyfile; do test -s "config/$f"; done
+          # --build: otherwise compose pulls the last release and tests that instead.
+          docker compose up -d --build
+      - name: No credential lands on the host
+        run: |
+          set -eux
+          test ! -e config/radicale/users
+          test ! -e secrets/secrets.json
+          docker compose exec -T radicale sh -c 'test "$(stat -c %a /tmp/users)" = 600 && test "$(wc -l < /tmp/users)" -eq 2'
+      - name: Radicale runs as its own account
+        run: test "$(docker compose exec -T radicale id -u)" = "2999"
+      - name: The poller passes its startup check and stays up
+        run: |
+          set -eux
+          sleep 30
+          docker compose ps --status running calsync | grep -q calsync
+          docker compose run --rm calsync check
+          docker compose run --rm calsync status
+      - name: The one port serves the console, Radicale and the API
+        run: |
+          set -eux
+          for _ in $(seq 1 30); do curl -fsS http://localhost:8730/ -o /dev/null && break; sleep 2; done
+          curl -fsS http://localhost:8730/.well-known/caldav -o /dev/null
+          # CalDAV clients follow these hrefs, so the /cal prefix has to survive the proxy.
+          pw=$(grep '^CALSYNC_SECRET_RADICALE_PASSWORD=' .env | cut -d= -f2-)
+          curl -fsS -u "calsync:$pw" -X PROPFIND -H 'Depth: 0' http://localhost:8730/cal/ | grep -q '<href>/cal/'
+          token=$(grep '^CALSYNC_SECRET_API_TOKEN=' .env | cut -d= -f2-)
+          test "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $token" http://localhost:8730/v1)" = "200"
+      - name: A second init-deploy and a restart change no credential
+        run: |
+          set -eux
+          before=$(sha256sum .env)
+          docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/out" "$LOCAL" init-deploy /out
+          test "$(sha256sum .env)" = "$before"
+          docker compose up -d --build
+          sleep 10
+          docker compose run --rm calsync check
+      - if: failure()
+        run: docker compose logs
+
+  # A bump must come with its changelog entry, and can't reuse a released version.
+  check-version:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          VERSION=$(sed -n "$VERSION_SED" "$VERSION_FILE")
+          BASE=$(git show "origin/$BASE_REF:$VERSION_FILE" 2>/dev/null | sed -n "$VERSION_SED")
+          if [ "$VERSION" = "$BASE" ]; then echo "No version bump: merging won't release."; exit 0; fi
+          if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then echo "::error::v$VERSION is already released"; exit 1; fi
+          test -n "$(awk -v h="## [$VERSION]" "$SECTION_AWK" CHANGELOG.md)" \
+            || { echo "::error::CHANGELOG.md has no '## [$VERSION]' section"; exit 1; }
+
+  # Every PR builds the image without pushing, so a broken Dockerfile fails before approval.
+  build-check:
+    if: github.event_name == 'pull_request'
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # :dev is the PR a maintainer last approved. Only for branches in this repo: a fork's PR
+  # gets a read-only token, and pull_request_target would hand its code a write one.
+  publish-dev:
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.actor != 'dependabot[bot]'
+    needs: [build-check, check-version, acceptance, deploy]
+    runs-on: ubuntu-latest
+    environment: dev          # waits here for a required reviewer
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}   # the branch's commit, not the merge preview
+      - id: sha
+        run: echo "short=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - id: push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:dev
+            ${{ env.IMAGE }}:sha-${{ steps.sha.outputs.short }}
+          labels: |
+            org.opencontainers.image.version=dev
+            org.opencontainers.image.revision=${{ github.event.pull_request.head.sha }}
+          cache-from: type=gha
+      - run: |
+          echo ":dev is PR #${{ github.event.pull_request.number }} at ${{ steps.sha.outputs.short }}, digest ${{ steps.push.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"
+
+  # Dispatch only for a tag: release-tag dispatches the build of the tag it just pushed.
+  build:
+    if: >-
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v'))
+    needs: [test, acceptance, deploy]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write          # for the attestation
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0            # full history, to check a release tag is on main
+      - name: Refuse malformed release tags, tags not on main, or not matching the version file
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          [[ "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] \
+            || { echo "::error::$GITHUB_REF_NAME is not vX.Y.Z (no leading zeros)"; exit 1; }
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main \
+            || { echo "::error::$GITHUB_REF_NAME is not on main"; exit 1; }
+          VERSION=$(sed -n "$VERSION_SED" "$VERSION_FILE")
+          [ "$GITHUB_REF_NAME" = "v$VERSION" ] \
+            || { echo "::error::$GITHUB_REF_NAME doesn't match $VERSION_FILE ($VERSION)"; exit 1; }
+          test -n "$(awk -v h="## [$VERSION]" "$SECTION_AWK" CHANGELOG.md)" \
+            || { echo "::error::CHANGELOG.md has no '## [$VERSION]' section"; exit 1; }
+      # :latest moves only for the highest version, so a fix on an older line can't pull it back.
+      - id: newest
+        if: startsWith(github.ref, 'refs/tags/')
+        run: echo "is=$([ "$GITHUB_REF_NAME" = "$(git tag -l 'v*' --sort=-v:refname | head -1)" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+      - id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.IMAGE }}
+          flavor: latest=false      # set below, only for the newest release
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}},enable=${{ env.SCHEME == 'semver' && !startsWith(github.ref, 'refs/tags/v0.') }}
+            type=raw,value=latest,enable=${{ steps.newest.outputs.is == 'true' }}
+            type=raw,value=main,enable={{is_default_branch}}
+            type=sha
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # arm64 too: a Raspberry Pi or an Apple Silicon Mac is a likely host.
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - id: push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}   # includes OCI version + revision (SHA)
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      # subject-digest is required; without it the attestation silently attaches to nothing.
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+      - name: The published image has both architectures and lays out a deployment
+        env:
+          REF: ${{ env.IMAGE }}@${{ steps.push.outputs.digest }}
+        run: |
+          set -eux
+          docker buildx imagetools inspect "$REF" | tee manifest.txt
+          grep -q 'linux/amd64' manifest.txt
+          grep -q 'linux/arm64' manifest.txt
+          docker run --rm "$REF" --help
+          mkdir -p deploy-out
+          docker run --rm --user "$(id -u):$(id -g)" -v "$PWD/deploy-out:/out" "$REF" init-deploy /out
+          test -f deploy-out/docker-compose.yml
+          test -f deploy-out/config/radicale/config
+      - run: echo "digest ${{ steps.push.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"
+
+  # Merging a bump releases it. Tags pushed with GITHUB_TOKEN don't trigger workflows, so this
+  # dispatches the build on the new tag (workflow_dispatch is the exception).
+  release-tag:
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=$(sed -n "$VERSION_SED" "$VERSION_FILE")
+          if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then echo "v$VERSION already released."; exit 0; fi
+          test -n "$(awk -v h="## [$VERSION]" "$SECTION_AWK" CHANGELOG.md)" \
+            || { echo "::error::CHANGELOG.md has no '## [$VERSION]' section"; exit 1; }
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "v$VERSION" -m "v$VERSION" "$GITHUB_SHA"
+          git push origin "v$VERSION"
+          gh workflow run ci.yml --ref "v$VERSION"
+
+  release-notes:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=$(sed -n "$VERSION_SED" "$VERSION_FILE")
+          awk -v h="## [$VERSION]" "$SECTION_AWK" CHANGELOG.md > notes.md
+          gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file notes.md

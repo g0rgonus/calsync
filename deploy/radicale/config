@@ -1,0 +1,33 @@
+# Radicale 3.x. Requirements R1-R8 and their checks: tests/test_acceptance.py.
+
+[server]
+hosts = 0.0.0.0:5232
+
+[auth]
+type = htpasswd
+# Written by the container's own command from CALSYNC_SECRET_RADICALE_PASSWORD
+# and _READER_PASSWORD, on every start. It lives in /tmp, never on the host, and
+# is 0600 — so it cannot drift from the values in .env and there is no second
+# copy of a credential to keep in step. Plain because the file is derived from
+# plaintext in .env and never leaves the container; hashing it would protect
+# against nothing the environment does not already expose.
+htpasswd_filename = /tmp/users
+htpasswd_encryption = plain
+
+[rights]
+type = from_file
+# This file is the one to edit. The compose stack overrides the path on the
+# command line with an assembled copy — `rights` plus `rights.anonymous` when
+# CALSYNC_RADICALE_ANONYMOUS_READ=1 — because `init-deploy` never overwrites an
+# existing config, and a deployment upgrading into that flag would otherwise
+# find it silently doing nothing.
+file = /config/rights
+
+[storage]
+# File-backed, not a database backend: one .ics per event, so unknown X-
+# properties survive a round trip (R4/R5).
+type = multifilesystem
+filesystem_folder = /data/collections
+
+[logging]
+level = info

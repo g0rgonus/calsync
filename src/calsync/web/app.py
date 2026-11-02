@@ -1,0 +1,2594 @@
+"""Routes. Thin on purpose — the work is in inspection, onboarding and gate."""
+
+from __future__ import annotations
+
+import calendar as calendar_mod
+import hashlib
+import json
+import socketserver
+import sqlite3
+import threading
+import urllib.request
+import traceback
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
+from dataclasses import replace
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
+from urllib.parse import quote, urlparse
+from wsgiref.simple_server import WSGIRequestHandler, WSGIServer, make_server
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+import bottle
+from bottle import Bottle, redirect, request, response, static_file, template
+
+from .. import __version__
+from .. import config as config_mod
+from .. import (
+    db, dormancy, enrichment, matrix, merging, notify, overlay as overlay_mod,
+    repo, retire,
+    sources, targeting,
+    warmup, withheld as withheld_mod, zones,
+)
+from ..fetch import FetchError, http_fetch, render_url
+from ..inbound import app as inbound_app
+from ..inbound import events as inbound_events
+from ..inspection import InspectionError, inspect_feed
+from ..normalize import title as title_norm
+from ..normalize import venue as venue_norm
+from ..onboarding import (
+    Draft,
+    OnboardingError,
+    analyse_url,
+    clone_forward,
+    create as create_source,
+    propose_ids,
+)
+from ..routing import slugify
+from ..secrets import SecretError, SecretStore
+from ..settings import Settings, check_setting, set_setting
+from ..targets import TargetError
+from ..sync import NoTarget as _NoTarget, sync_source
+from . import fix as fix_mod
+from . import gate
+
+HERE = Path(__file__).parent
+VIEWS = HERE / "templates"
+STATIC = HERE / "static"
+
+#: How many feeds to check at once when the dashboard loads. The poller already
+#: hits these every twenty minutes; a handful of extra GETs a few times a season
+#: is not worth rate-limiting, but nor is opening thirty sockets at once.
+CHECK_WORKERS = 4
+
+
+class Refused(RuntimeError):
+    """Shown to the operator as a message, not as a traceback."""
+
+
+def create_app(
+    db_path,
+    *,
+    secrets: SecretStore | None = None,
+    fetcher=http_fetch,
+    clock=None,
+    trusted_origins=(),
+    matrix_opener=None,
+    push_opener=None,
+    write_target=None,
+    calendar_transport=None,
+) -> Bottle:
+    """Build the console.
+
+    ``fetcher`` is the one seam through which this app touches the network, used
+    both by inspection and by the previews behind the gate. Keeping it a single
+    parameter rather than an import is what lets the whole console be driven in
+    a test without a socket — and the gate is exactly the part that most needs
+    testing, since it decides what reaches a family's real calendar.
+
+    ``clock`` pins "now" the way ``calsync sync --now`` does. It matters more
+    here than it looks: the sync window is what decides which events are live,
+    so a console tested against a fixture from last spring would report an empty
+    parse and every gate condition would pass vacuously.
+
+    ``write_target`` is the seam for the two console actions that reach the
+    family's real calendars — retiring a source and syncing one on demand. One
+    parameter rather than two, because a test that could inject a target for one
+    of them and not the other would be testing a console nobody runs.
+    """
+    app = Bottle()
+    secrets = secrets or SecretStore()
+    clock = clock or _now
+    trusted_origins = set(trusted_origins or ())
+    # A second network seam, separate from `fetcher` because it speaks a
+    # different protocol: feeds are GETs of iCalendar text, this is an
+    # authenticated JSON API.
+    matrix_opener = matrix_opener or urllib.request.urlopen
+    push_opener = push_opener or urllib.request.urlopen
+    db_path = str(db_path)
+
+    # Once, at startup — not per request. Migration takes the write lock.
+    with closing(db.open_db(db_path)):
+        pass
+
+    def connect():
+        return closing(db.connect(db_path))
+
+    # Which sources a "Sync now" is in flight for. The server is threaded, so
+    # two clicks on a slow feed are two requests at once — and a sync is the one
+    # console action that both fetches and writes, where running it twice over
+    # means the second copy diffing against state the first has not committed
+    # yet. Nothing here coordinates with the *poller*; that is a different
+    # process and SQLite's write lock is what stands between them.
+    in_flight: set[str] = set()
+    in_flight_lock = threading.Lock()
+
+    # --- guards ------------------------------------------------------------
+
+    @app.hook("before_request")
+    def _same_origin():
+        """Reject cross-site writes.
+
+        No cookies are used, so this is not session riding — but the console is
+        a URL that a page in any other tab can post to, and nothing else stands
+        between that page and a source being deleted.
+
+        ``Sec-Fetch-Site`` is the check, not ``Origin`` against ``Host``. The
+        browser computes it from the URL it is actually talking to, so it says
+        ``same-origin`` for a form posting back to its own page whatever the
+        hops in between do to the headers.
+
+        Comparing ``Origin`` to ``Host`` looks equivalent and is not. Rewriting
+        ``Host`` to the backend is ordinary reverse-proxy behaviour — nginx,
+        Caddy, Traefik, Cloudflare Tunnel and tailscale serve all do it in some
+        configuration — so that check refused every write from any browser not
+        pointed straight at the port. It is not a property of one VPN.
+
+        ``none`` means a user-initiated navigation with no initiator — a typed
+        URL or a bookmark, which no attacker page can produce.
+
+        The ``Origin`` fallback is coupled to ``layout.tpl``'s referrer policy.
+        ``no-referrer`` makes a browser serialize ``Origin`` as ``null`` on every
+        POST — Fetch, "append a request `Origin` header" — so the console's own
+        forms arrived opaque and this refused every write it was ever reached
+        for, on exactly the old browsers it exists to serve. It is
+        ``same-origin`` for that reason: nothing leaks to an outbound link, and
+        a write to the console still says where it came from.
+        """
+        if request.method not in ("POST", "PUT", "DELETE"):
+            return
+
+        site = request.headers.get("Sec-Fetch-Site")
+        if site:
+            if site in ("same-origin", "none"):
+                return
+            raise Refused(
+                f"that form came from another site (Sec-Fetch-Site: {site}). Open "
+                "the console at its own address and try again, rather than "
+                "following a link in from somewhere else."
+            )
+
+        # No Sec-Fetch-Site: a browser too old to send it, something in front
+        # stripping it, or not a browser at all. Fall back to Origin, and say
+        # what mismatched — a refusal nobody can diagnose is one nobody gets
+        # past, which is how this check burned an afternoon already.
+        origin = request.headers.get("Origin")
+        if not origin:
+            return
+        host = request.headers.get("Host") or ""
+        sent = urlparse(origin).netloc
+        if sent in {host, *trusted_origins}:
+            return
+        if not sent:
+            # An opaque origin — a sandboxed frame, a page opened from a file,
+            # or a referrer policy that suppresses it. It names no host, so
+            # --trusted-origin has nothing to take; saying so beats printing the
+            # flag with an empty value after it.
+            raise Refused(
+                f"that form came from an opaque origin ({origin}), which names no "
+                f"host, so there is no --trusted-origin for it. If you are looking "
+                f"at this console at {host!r} right now, that is a bug in calsync "
+                "rather than something you did — its own pages are supposed to "
+                "send their origin."
+            )
+        raise Refused(
+            f"that form was submitted from {sent!r}, "
+            f"but this console is being served as {host!r}. If both of those are "
+            "yours, which is what happens when anything in front of calsync "
+            "rewrites Host, start it with "
+            f"--trusted-origin {sent}"
+        )
+
+    @app.error(500)
+    def _oops(err):
+        cause = getattr(err, "exception", None)
+        if isinstance(cause, (Refused, OnboardingError, SecretError, FetchError,
+                              InspectionError, config_mod.ConfigError,
+                              repo.NotFound)):
+            return render("problem.tpl", title="Stopped", message=str(cause))
+        return render(
+            "problem.tpl",
+            title="Something broke",
+            message="This is a bug in calsync, not something you did.",
+            detail=err.traceback or traceback.format_exc(),
+        )
+
+    @app.error(404)
+    def _missing(_err):
+        return render(
+            "problem.tpl",
+            title="No such page",
+            message="Nothing lives at that address.",
+        )
+
+    # --- dashboard ---------------------------------------------------------
+
+    @app.get("/")
+    def home():
+        live = request.query.get("check") != "0"
+        with connect() as conn:
+            children = repo.list_children(conn)
+            cards = [
+                _card(conn, source)
+                for source in repo.list_sources(conn, enabled_only=False)
+            ]
+
+        if live and cards:
+            checked = _check_all(
+                db_path, secrets, fetcher, clock, [c["source"] for c in cards]
+            )
+            for card in cards:
+                _apply_check(card, checked.get(card["source"].id))
+
+        with connect() as conn:
+            keys_revoked_at = repo.setting_row(conn, repo.KEYS_REVOKED_AT)
+        return render(
+            "home.tpl",
+            cards=cards,
+            children=children,
+            live=live,
+            keys_revoked_at=keys_revoked_at,
+            flash=_flash(),
+        )
+
+    # --- onboarding --------------------------------------------------------
+
+    @app.get("/onboard")
+    def onboard_form():
+        with connect() as conn:
+            return render(
+                "onboard.tpl",
+                children=repo.list_children(conn),
+                sports=repo.list_sports(conn),
+                url=request.query.get("url", ""),
+                flash=_flash(),
+            )
+
+    @app.post("/onboard")
+    def onboard_inspect():
+        """Fetch the URL and show what the feed says. Creates nothing."""
+        url = _field("url").strip()
+        if not url:
+            raise Refused("paste a feed URL first")
+
+        assembled = render_url(url, secrets=secrets, now=clock())
+        found = inspect_feed(fetcher(assembled))
+        plan = analyse_url(url)
+
+        with connect() as conn:
+            settings = Settings.load(conn)
+            # Inspection has no database, so it cannot say which of these places
+            # are already known. Answer that here — it is the difference between
+            # "five venues" and "five venues, one of which is work".
+            venues = tuple(
+                replace(v, known=repo.resolve_venue_alias(conn, v.name) is not None)
+                for v in found.venues
+            )
+            return render(
+                "confirm.tpl",
+                url=url,
+                found=found,
+                venues=venues,
+                plan=plan,
+                children=repo.list_children(conn),
+                sports=repo.list_sports(conn),
+                kinds=sources.fetched(),
+                default_tz=settings.default_tz,
+                tz_choices=zones.choices(settings.default_tz),
+            )
+
+    @app.post("/onboard/create")
+    def onboard_create():
+        with connect() as conn:
+            child_id = _field("child")
+            sport = _field("sport")
+            # Clone-forward: last season's team in the same sport for the same
+            # kid. Only the parts that survive a season change — never the name,
+            # the feed or the aliases, which are exactly what churns.
+            previous = clone_forward(conn, child_id, sport)
+            draft = Draft(
+                url=_field("url").strip(),
+                child_id=child_id,
+                sport=sport,
+                team_name=_field("team_name").strip(),
+                kind=_field("kind"),
+                tz=_require_zone(
+                    _field("tz").strip()
+                    or (previous.tz if previous else "")
+                    or Settings.load(conn).default_tz
+                ),
+                token=_field("token").strip() or None,
+                season_start=_field("season_start") or None,
+                season_end=_field("season_end") or None,
+                poll_interval_s=max(
+                    _whole("check interval", _field("poll_interval_s"), default=1200), 60
+                ),
+                # getall has no unicode variant, but these keys are our own
+                # ("path", "query:<name>") and never free text.
+                secret_keys=tuple(request.forms.getall("vault")),
+                staging_collection=_field("staging", "onboarding").strip(),
+                emoji=previous.emoji if previous else None,
+                league=previous.league if previous else None,
+                age_group=previous.age_group if previous else None,
+                alarm_game_min=previous.alarm_game_min if previous else 90,
+                alarm_practice_min=previous.alarm_practice_min if previous else 30,
+            )
+            created = create_source(conn, draft, secrets=secrets)
+
+        redirect(f"/sources/{created.source_id}?ok=" + _q("Created and staged."))
+
+    @app.post("/onboard/inbound")
+    def onboard_inbound():
+        """A team whose events a tool will send, rather than a feed to read.
+
+        Same draft, same staging, same activity row as a feed — only there is
+        no URL to inspect, so the three things a feed would have told us are
+        asked for directly. The answer is the key page, rendered in this
+        response rather than redirected to: a key in a redirect's query string
+        lands in the browser's history, and this is the only time it exists.
+        """
+        with connect() as conn:
+            child_id = _field("child")
+            sport = _field("sport")
+            previous = clone_forward(conn, child_id, sport)
+            draft = Draft(
+                url="",
+                child_id=child_id,
+                sport=sport,
+                team_name=_field("team_name").strip(),
+                kind="inbound",
+                tz=_require_zone(
+                    _field("tz").strip()
+                    or (previous.tz if previous else "")
+                    or Settings.load(conn).default_tz
+                ),
+                staging_collection="onboarding",
+                emoji=previous.emoji if previous else None,
+                league=previous.league if previous else None,
+                age_group=previous.age_group if previous else None,
+                alarm_game_min=previous.alarm_game_min if previous else 90,
+                alarm_practice_min=previous.alarm_practice_min if previous else 30,
+            )
+            created = create_source(conn, draft, secrets=secrets)
+            return _key_page(conn, created.source_id, created.key, fresh=True)
+
+    @app.post("/sources/<source_id>/inbound-key")
+    def replace_inbound_key(source_id):
+        """A new key for an inbound source. The old one stops working at once."""
+        with connect() as conn:
+            source = _require_source(conn, source_id)
+            if source.kind not in sources.PUSHED:
+                raise Refused("this team is read from a feed; it has no key to replace")
+            key = inbound_events.new_key()
+            repo.set_inbound_key_hash(conn, source_id, inbound_events.hash_key(key))
+            return _key_page(conn, source_id, key, fresh=False)
+
+    def _key_page(conn, source_id: str, key: str, *, fresh: bool):
+        source = _require_source(conn, source_id)
+        activity = repo.get_activity(conn, source.activity_id)
+        # Not cached anywhere, and not offered back: this page is the key's
+        # only copy in the clear.
+        response.set_header("Cache-Control", "no-store")
+        return render(
+            "inbound_key.tpl",
+            source=source,
+            activity=activity,
+            child=repo.get_child(conn, activity.child_id),
+            key=key,
+            fresh=fresh,
+            header=inbound_app.KEY_HEADER,
+            prefix=inbound_app.PREFIX,
+            port=inbound_app.DEFAULT_PORT,
+            flash=None,
+        )
+
+    # --- one source --------------------------------------------------------
+
+    @app.get("/sources/<source_id>")
+    def source_page(source_id):
+        with connect() as conn:
+            source = _require_source(conn, source_id)
+            activity = repo.get_activity(conn, source.activity_id)
+            child = repo.get_child(conn, activity.child_id)
+            report = _preview(conn, source, secrets, fetcher, clock)
+            conditions = gate.conditions(report, activity)
+            state, label = gate.summarise(conditions)
+            return render(
+                "source.tpl",
+                source=source,
+                activity=activity,
+                child=child,
+                report=report,
+                conditions=conditions,
+                state=state,
+                state_label=label,
+                venues=repo.list_venues(conn),
+                sports=repo.list_sports(conn),
+                health=repo.source_row(conn, source_id),
+                dormant=dormancy.for_source(conn, source_id, now=clock()),
+                tracked=repo.tracked_events(conn, source_id),
+                # What retiring would actually take off, as opposed to what this
+                # source has on the calendar in total. The two are usually very
+                # different by the time anybody retires anything.
+                upcoming=retire.live_events(conn, source_id, now=clock()),
+                polls=repo.recent_polls(conn, source_id),
+                pushed=source.kind in sources.PUSHED,
+                last_push=repo.last_push(conn, source_id),
+                key_used=repo.inbound_key_used_at(conn, source_id),
+                pushed_items=len(repo.inbound_items(conn, source_id)),
+                team_kids=repo.team_children(conn, activity),
+                all_kids=repo.list_children(conn),
+                # Only a kid's own copy can be retired by adding them here.
+                own_copies=[(s_.id, a_, repo.get_child(conn, a_.child_id))
+                            for s_ in repo.list_sources(conn) if s_.id != source_id
+                            for a_ in [repo.get_activity(conn, s_.activity_id)]
+                            if len(repo.team_children(conn, a_)) == 1],
+                held=_held_rows(
+                    conn, source_id, report, zone=_zone(activity.tz), now=clock(),
+                ),
+                flash=_flash(),
+            )
+
+    @app.post("/activities/<activity_id>")
+    def save_activity(activity_id):
+        """Edit a team.
+
+        Most of this is not cosmetic. `Activity.known_tokens` is built from the
+        official name, short name, league and age group, and that is what turns
+        "U10RS RSL Match vs Mos Eisley FC" into an opponent instead of nothing — so
+        these fields change how the feed parses on the next poll, not just how
+        it reads.
+        """
+        back = _field("back") or "/"
+        with connect() as conn:
+            venue = _field("home_venue_id").strip()
+            try:
+                repo.update_activity(
+                    conn, activity_id,
+                    name=_field("name"),
+                    emoji=_field("emoji").strip() or None,
+                    official_name=_field("official_name").strip() or None,
+                    short_name=_field("short_name").strip() or None,
+                    league=_field("league").strip() or None,
+                    age_group=_field("age_group").strip() or None,
+                    home_venue_id=_whole("home venue", venue) if venue else None,
+                    alarm_game_min=_whole("game alarm", _field("alarm_game_min"),
+                                          default=90),
+                    alarm_practice_min=_whole("practice alarm",
+                                              _field("alarm_practice_min"), default=30),
+                    warmup_minutes=_whole("warm-up", _field("warmup_minutes"),
+                                          default=0),
+                )
+
+            except ValueError as exc:
+                raise Refused(str(exc)) from exc
+        redirect(f"{back}?ok=" + _q("Team saved. The next poll re-parses the feed."))
+
+    @app.post("/sources/<source_id>/alias")
+    def add_alias(source_id):
+        alias = _field("alias").strip()
+        if not alias:
+            raise Refused("that answer was blank")
+        with connect() as conn:
+            source = _require_source(conn, source_id)
+            repo.add_activity_alias(conn, source.activity_id, alias)
+        redirect(f"/sources/{source_id}?ok=" + _q(f"Added {alias} as a name for this team."))
+
+    @app.post("/sources/<source_id>/event-type")
+    def teach_event_type(source_id):
+        """Answer "what kind of event is this?" for one coach-typed label."""
+        label = _field("label").strip()
+        kind = _field("kind")
+        if not label:
+            raise Refused("that answer was blank")
+        if kind not in ("game", "practice"):
+            raise Refused("an event is either a game or a practice")
+        with connect() as conn:
+            _require_source(conn, source_id)
+            repo.teach_event_type(conn, source_id, label, is_game=kind == "game")
+        redirect(f"/sources/{source_id}?ok=" + _q(
+            f"{label} now counts as a {kind} for this team."))
+
+    @app.post("/sources/<source_id>/venue")
+    def add_venue(source_id):
+        """Answer "where is this?" — either a new place or another name for one.
+
+        No coordinates are invented. A venue created here has a name and
+        whatever address was typed, and stays unpinned until somebody confirms
+        one; an unpinned location still reads correctly in a calendar.
+        """
+        raw = _field("raw").strip()
+        existing = _field("existing").strip()
+        name = _field("name").strip() or raw
+        if not raw:
+            raise Refused("nothing to name")
+
+        with connect() as conn:
+            _require_source(conn, source_id)
+            if existing:
+                config_mod.apply(conn, {"venues": [{"name": existing, "aliases": [raw]}]})
+                message = f"{raw} is now another name for {existing}."
+            else:
+                config_mod.apply(
+                    conn,
+                    {
+                        "venues": [
+                            {
+                                "name": name,
+                                "address": _field("address").strip() or None,
+                                "aliases": sorted({raw, name}),
+                            }
+                        ]
+                    },
+                )
+                message = f"Added {name}."
+        redirect(f"/sources/{source_id}?ok=" + _q(message))
+
+    # --- kids sharing a team ----------------------------------------------------
+
+    @app.post("/sources/<source_id>/kids")
+    def add_kid(source_id):
+        """Put another kid on this team, optionally retiring their own copy of it."""
+        child_id, retire_id = _field("child"), _field("retire").strip()
+        with connect() as conn:
+            source = _require_source(conn, source_id)
+            activity = repo.get_activity(conn, source.activity_id)
+            if "{child}" in Settings.load(conn).collection_template:
+                raise Refused("calendars are split by kid, so a shared event would need "
+                              "a copy on each kid's calendar, which is not built")
+            if child_id not in {c.id for c in repo.list_children(conn)}:
+                raise Refused("pick a kid")
+            if child_id in {c.id for c in repo.team_children(conn, activity)}:
+                raise Refused("that kid is already on this team")
+            other = _require_source(conn, retire_id) if retire_id else None
+            if other and other.id == source_id:
+                raise Refused("that is this team")
+            if other and [c.id for c in repo.team_children(
+                    conn, repo.get_activity(conn, other.activity_id))] != [child_id]:
+                raise Refused("only a team that kid is on alone can be retired here")
+            repo.add_team_child(conn, activity.id, child_id)
+            repo.log_admin(conn, "console", "team_kid_added", f"team:{source_id}",
+                           {"child": child_id})
+            conn.commit()
+            note = ""
+            merge_errs: list[str] = []
+            if other:
+                try:
+                    target = write_target or targeting.build_target(conn, secrets=secrets)
+                    report = retire.retire_source(conn, other, target, now=clock())
+                except (SecretError, TargetError) as exc:
+                    raise Refused(f"the kid is added, but the other team could not be "
+                                  f"retired: {exc}") from exc
+                # A partial retire leaves events only that team's sync can remove.
+                if report.ok:
+                    merge_errs = merging.publish_safely(
+                        conn, target, now=clock(), secrets=secrets).said()
+                    repo.revoke_team_key(conn, other.id, actor="console")
+                    repo.log_admin(conn, "console", "team_retired", f"team:{other.id}",
+                                   {"merged_into": source_id})
+                conn.commit()
+                note = (f" {other.id} retired: {report.line()}." if report.ok else
+                        f" {other.id} is only partly retired and keeps its key: "
+                        f"{report.line()}.")
+        _, problems = _sync_now([source_id])
+        if other and not report.ok:
+            problems = [f"Added to the team.{note}"] + problems
+        redirect(f"/sources/{source_id}?" + ("err=" if problems else "ok=") + _q(
+            (problems[0] if problems else f"Added to the team.{note}")
+            + _merge_note(merge_errs)))
+
+    @app.post("/sources/<source_id>/kids/split")
+    def split_kid(source_id):
+        """Take a kid off a shared team. A pushed team's events go with them."""
+        child_id = _field("child")
+        with connect() as conn:
+            source = _require_source(conn, source_id)
+            activity = repo.get_activity(conn, source.activity_id)
+            kids = {c.id for c in repo.team_children(conn, activity)}
+            if child_id not in kids or len(kids) < 2:
+                raise Refused("that kid is not sharing this team")
+            key = new_source_id = None
+            if source.kind in sources.PUSHED:
+                new_activity_id, new_source_id = propose_ids(
+                    conn, child_id=child_id, sport=activity.sport,
+                    team_name=activity.name, kind=source.kind)
+                repo.clone_team(conn, activity_id=activity.id, source_id=source_id,
+                                child_id=child_id, new_activity_id=new_activity_id,
+                                new_source_id=new_source_id)
+                key = inbound_events.new_key()
+                repo.set_inbound_key_hash(conn, new_source_id, inbound_events.hash_key(key))
+                repo.log_admin(conn, "console", "team_split", f"team:{source_id}",
+                               {"child": child_id, "new_team": new_source_id})
+            repo.remove_team_child(conn, activity, child_id)
+            repo.log_admin(conn, "console", "team_kid_removed", f"team:{source_id}",
+                           {"child": child_id})
+            conn.commit()
+        _sync_now([source_id] + ([new_source_id] if new_source_id else []))
+        if key:
+            with connect() as conn:
+                return _key_page(conn, new_source_id, key, fresh=True)
+        redirect(f"/sources/{source_id}?ok=" + _q(
+            "Taken off the team. A feed belongs to one team, so its events stay here."))
+
+    @app.post("/sources/<source_id>/promote")
+    def promote(source_id):
+        """Clear the staging collection, gated on a live check.
+
+        Same gate as ``calsync promote``, and for the same reason it runs a
+        fresh dry run rather than trusting anything stored: the feed may have
+        grown a schedule since the page was rendered.
+        """
+        force = bool(_field("force"))
+        with connect() as conn:
+            source = _require_source(conn, source_id)
+            if not source.staging_collection:
+                redirect(f"/sources/{source_id}?ok=" + _q("Already live."))
+            report = _preview(conn, source, secrets, fetcher, clock)
+            if not report.promotable and not force:
+                if report.pushed and report.events_seen == 0:
+                    reason = "nothing has been sent yet"
+                elif not report.pushed and report.fixtures_seen == 0:
+                    reason = "no games have appeared yet"
+                else:
+                    reason = "the parse still has gaps"
+                redirect(f"/sources/{source_id}?err=" + _q(f"Not promoted: {reason}."))
+            repo.set_staging(conn, source_id, None)
+        redirect(
+            f"/sources/{source_id}?ok="
+            + _q("Promoted. The next sync moves its events to the real calendars.")
+        )
+
+    @app.post("/sources/<source_id>/stage")
+    def stage(source_id):
+        collection = _field("collection", "onboarding").strip()
+        with connect() as conn:
+            _require_source(conn, source_id)
+            repo.set_staging(conn, source_id, collection or None)
+        redirect(f"/sources/{source_id}?ok=" + _q(f"Staged to {collection}."))
+
+    @app.post("/sources/<source_id>/retire")
+    def retire_source_route(source_id):
+        """Clear what a source still has coming, then stop polling.
+
+        Needs a real target rather than the previews behind the rest of this
+        page, because removing an event is a write. "Sync now" is the other one.
+
+        Events that have already happened stay put (`retire.py`), so retiring a
+        season a month after it ended normally removes nothing and the message
+        below says as much rather than claiming a success it did not have.
+        """
+        merge_errs: list[str] = []
+        with connect() as conn:
+            source = _require_source(conn, source_id)
+            try:
+                target = write_target or targeting.build_target(
+                    conn, secrets=secrets
+                )
+                report = retire.retire_source(conn, source, target, now=clock())
+                if report.ok:
+                    # Its meets go back to the other teams' own copies.
+                    merge_errs = merging.publish_safely(
+                        conn, target, now=clock(), secrets=secrets).said()
+            except (SecretError, TargetError) as exc:
+                raise Refused(f"could not reach the calendar: {exc}") from exc
+
+        if not report.ok:
+            raise Refused(
+                f"{len(report.errors)} event(s) could not be removed, so polling "
+                "is still on and a later run will retry them: "
+                + "; ".join(report.errors[:3])
+            )
+        if report.cancelled:
+            done = f"{report.cancelled} upcoming event(s) removed from the calendar"
+        else:
+            done = "nothing was upcoming, so nothing came off the calendar"
+        if report.kept:
+            done += f"; {report.kept} past event(s) left in place"
+        redirect(f"/sources/{source_id}?ok=" + _q(
+            f"Polling stopped — {done}." + _merge_note(merge_errs)))
+
+    # --- syncing on demand -------------------------------------------------
+
+    def _merge_note(errors: list[str]) -> str:
+        """Say why a merged event may be stale; the redirect would otherwise hide it."""
+        return f" (merged event: {errors[0]})" if errors else ""
+
+    def _sync_now(
+        source_ids: list[str], *, confirm_held: str | None = None,
+    ) -> tuple[list, list[str]]:
+        """Run the real sync loop for the named sources, now.
+
+        The same ``sync_source`` the poller calls, against the same target — not
+        the dry run behind every other number on these pages. That is the whole
+        point of the button: a dry run cannot put a venue you have just taught,
+        or an answer you have just approved, on anybody's phone. Waiting for the
+        next poll can, in twenty minutes.
+
+        Two things it deliberately does not do. It does not touch the poller's
+        schedule, so a forced sync is extra work rather than a skipped one — the
+        feed is fetched twice in an hour, which is nothing, and the alternative
+        is a button that quietly *delays* the next automatic poll. And it does
+        not run the season-end, review or dispatch passes the poller runs after
+        a sync: those decide whether to disable a source and whether to page
+        somebody, and neither belongs on a key somebody pressed to see a change
+        land.
+        """
+        taken: list[str] = []
+        with in_flight_lock:
+            for source_id in source_ids:
+                if source_id not in in_flight:
+                    in_flight.add(source_id)
+                    taken.append(source_id)
+        if not taken:
+            raise Refused(
+                "that is already syncing — give it a moment rather than "
+                "starting a second run over the top of the first."
+            )
+
+        reports, problems = [], []
+        try:
+            with connect() as conn:
+                try:
+                    target = write_target or targeting.build_target(
+                        conn, secrets=secrets
+                    )
+                except (SecretError, TargetError) as exc:
+                    raise Refused(f"could not reach the calendar: {exc}") from exc
+
+                for source_id in taken:
+                    source = _require_source(conn, source_id)
+                    try:
+                        reports.append(
+                            sync_source(
+                                conn, source, target, now=clock(),
+                                secrets=secrets, fetcher=fetcher,
+                                confirm_held=confirm_held,
+                            )
+                        )
+                    except sqlite3.OperationalError as exc:
+                        if "locked" not in str(exc):
+                            raise
+                        # The poller holds the write lock from its first
+                        # recorded event to the end of the source, which is
+                        # longer than the busy timeout when a feed is large.
+                        # Nothing is lost: whatever reached the calendar before
+                        # this is on it, and the next poll records the rest.
+                        problems.append(
+                            f"{source_id}: the poller was writing to the "
+                            "database and would not let go in time — try again "
+                            "in a moment."
+                        )
+        finally:
+            with in_flight_lock:
+                in_flight.difference_update(taken)
+        return reports, problems
+
+    @app.post("/sources/<source_id>/sync")
+    def sync_one(source_id):
+        with connect() as conn:
+            source = _require_source(conn, source_id)
+            if not source.enabled:
+                # Refused rather than "resume, then sync": the events of a
+                # retired season were cancelled on the way out, and a sync would
+                # put every upcoming one back. Whoever paused it gets to say.
+                raise Refused(
+                    "polling is paused for this team, so there is nothing to "
+                    "sync it against. Resume polling first — and if it was "
+                    "retired rather than paused, be sure you want its events "
+                    "back on the calendar."
+                )
+
+        reports, problems = _sync_now([source_id])
+        if problems:
+            redirect(f"/sources/{source_id}?err=" + _q("; ".join(problems)))
+        redirect(f"/sources/{source_id}?ok=" + _q(reports[0].line()))
+
+    @app.post("/sources/<source_id>/confirm-cancellations")
+    def confirm_cancellations(source_id):
+        """Agree that the events a guard held back really are gone.
+
+        The guard says "pending confirmation"; this is the confirmation. It is
+        "Sync now" with one answer attached — the fingerprint of the held set
+        the page showed — so it runs the real sync loop and its ordering, and
+        cancels exactly that set or nothing. If the feed has moved between the
+        page and the press, the poll stays held and the page is shown again
+        with whatever is missing now: agreeing to one list is not agreeing to
+        another.
+        """
+        expected = _field("held")
+        if not expected:
+            raise Refused("nothing was confirmed — reload the page and look again")
+        with connect() as conn:
+            source = _require_source(conn, source_id)
+            if not source.enabled:
+                raise Refused(
+                    "polling is paused for this team, so there is no poll to "
+                    "confirm. Resume polling first."
+                )
+
+        reports, problems = _sync_now([source_id], confirm_held=expected)
+        if problems:
+            redirect(f"/sources/{source_id}?err=" + _q("; ".join(problems)))
+        report = reports[0]
+        if not report.confirmed and report.held_kind == "disappearance":
+            redirect(f"/sources/{source_id}?err=" + _q(
+                "the feed changed since that page loaded, so nothing was "
+                "cancelled. Here is what is missing now — look again."
+            ))
+        if not report.confirmed:
+            redirect(f"/sources/{source_id}?ok=" + _q(
+                "nothing is held any more, so there was nothing to confirm — "
+                + report.line()
+            ))
+        redirect(f"/sources/{source_id}?ok=" + _q(report.line()))
+
+    @app.post("/sync")
+    def sync_every():
+        """Every enabled source, one after another.
+
+        Serially, unlike the dashboard's checks: those are reads through their
+        own connections, and this writes.
+        """
+        with connect() as conn:
+            source_ids = [s.id for s in repo.list_sources(conn, enabled_only=True)]
+        if not source_ids:
+            redirect("/?err=" + _q("no team is being polled, so there is "
+                                   "nothing to sync."))
+
+        reports, problems = _sync_now(source_ids)
+        lines = [r.line() for r in reports] + problems
+        key = "err" if problems or any(r.status != "ok" for r in reports) else "ok"
+        redirect(f"/?check=0&{key}=" + _q(" · ".join(lines)))
+
+    @app.post("/sources/<source_id>/persists")
+    def set_persists(source_id):
+        """Mark a source as one that survives the off-season.
+
+        Most teams are replaced each year, so a quiet feed means finished. A club
+        team kept across seasons goes quiet every summer, and switching it off on
+        a timer means finding out in September.
+        """
+        wanted = _field("persists") == "1"
+        with connect() as conn:
+            source = _require_source(conn, source_id)
+            config = dict(source.config or {})
+            config["persists_across_seasons"] = wanted
+            conn.execute("UPDATE sources SET config = ? WHERE id = ?",
+                         (json.dumps(config), source_id))
+            conn.commit()
+        redirect(f"/sources/{source_id}?ok=" + _q(
+            "Kept across seasons; it will not be switched off automatically."
+            if wanted else "Treated as a single season."))
+
+    @app.post("/sources/<source_id>/enabled")
+    def set_enabled(source_id):
+        wanted = _field("enabled") == "1"
+        with connect() as conn:
+            _require_source(conn, source_id)
+            repo.set_enabled(conn, source_id, wanted)
+        redirect(
+            f"/sources/{source_id}?ok="
+            + _q("Polling resumed." if wanted else "Polling paused.")
+        )
+
+    # --- settings ----------------------------------------------------------
+
+    #: Bounds on the guard thresholds. These are the protection against a
+    #: truncated feed reading as a cancelled season, so the form will not let
+    #: them be widened to the point of being off — a guard you can disable from
+    #: a web form in two clicks is not a guard. Narrowing is always allowed.
+    LIMITS = {
+        "max_disappearance_pct": (0.01, 0.5),
+        "max_disappearance_count": (1, 25),
+        "sync_window_back_days": (0, 365),
+        "sync_window_forward_days": (1, 1095),
+    }
+
+    def _bounded(key: str, raw: str) -> str:
+        low, high = LIMITS[key]
+        try:
+            value = float(raw)
+        except ValueError:
+            raise Refused(f"{key} has to be a number, not {raw!r}") from None
+        if value > 1 and key == "max_disappearance_pct":
+            value = value / 100.0  # 20 and 0.20 both mean twenty percent
+        if not low <= value <= high:
+            raise Refused(
+                f"{key} has to be between {low} and {high}. It is what stops a "
+                "truncated feed from being read as a cancelled season, and "
+                "widening it past that would leave nothing guarding a whole "
+                "calendar's worth of deletions."
+            )
+        return str(value if key == "max_disappearance_pct" else int(value))
+
+    def _settings_page(conn, check=None, pushed=None, calendar_check=None):
+        settings = Settings.load(conn)
+        return render(
+            "settings.tpl",
+            settings=settings,
+            raw={r["key"]: r["value"] for r in conn.execute("SELECT key, value FROM settings")},
+            sample=_sample_title(settings),
+            matrix=matrix.load(conn),
+            matrix_has_token=secrets.has(matrix.load(conn).secret_ref),
+            pushover=notify.load(conn),
+            pushover_ready=notify.load(conn).available(secrets),
+            tz_choices=zones.choices(settings.default_tz),
+            tz_loadable=zones.loadable(settings.default_tz),
+            read_key_set=repo.read_key_hash(conn) is not None,
+            read_key_used=repo.read_key_used_at(conn),
+            admin_keys=[k for k in repo.api_keys(conn) if k.scope == "admin"],
+            revocable=len(repo.api_keys(conn)),
+            feed_teams=sum(1 for s_ in repo.list_sources(conn)
+                           if s_.kind not in sources.PUSHED),
+            keys_revoked_at=repo.setting_row(conn, repo.KEYS_REVOKED_AT),
+            revoked_together=repo.keys_revoked_together(
+                conn, repo.setting_row(conn, repo.KEYS_REVOKED_AT) or ""),
+            paused_feeds=[s_ for s_ in repo.list_sources(conn, enabled_only=False)
+                          if s_.id in json.loads(repo.setting_row(conn, repo.FEEDS_PAUSED)
+                                                 or "[]")],
+            read_api_unblocked=repo.setting_row(conn, repo.READ_API_UNBLOCKED) is not None,
+            api_token_ref=Settings.load(conn).api_token_ref,
+            api_has_token=secrets.has(Settings.load(conn).api_token_ref),
+            pushed=pushed,
+            radicale_has_password=secrets.has(settings.radicale_secret_ref),
+            kinds=targeting.KINDS,
+            check=check,
+            calendar_check=calendar_check,
+            flash=_flash(),
+            # Which section's save is being confirmed, "" for a plain visit.
+            # Only ever compared against the literals in `SETTINGS_SECTIONS`,
+            # never rendered, so an unrecognised value simply confirms nothing
+            # in particular rather than reaching the page.
+            at=request.query.get("at", ""),
+        )
+
+
+    # --- the calendar ------------------------------------------------------
+
+    @app.get("/calendar")
+    def calendar_view():
+        """What calsync has actually written, month by month.
+
+        Read out of ``event_content`` — the receipt, the same source the digest
+        and ``GET /v1/events`` read — and re-titled now through
+        ``normalize/title.py``. Three things follow from that, and all three are
+        the point rather than a compromise:
+
+        - It shows what is **on the calendar**, not what a feed currently says.
+          A poll held by a guard, or one that has not run yet, leaves the two
+          different, and the calendar is the one somebody's phone has.
+        - It re-composes each title on this request, so a naming-convention
+          change shows up here without anything being re-fetched.
+        - It cannot show a hand-created family appointment, because calsync
+          never saw one. This is a view of calsync's own writes, and a page
+          claiming to be the family's whole calendar would be lying about the
+          half it does not manage.
+
+        Bounded by what is retained: content is pruned to
+        ``sync_window_back_days``, so a month further back than that is empty
+        here and lives only on the calendar server.
+        """
+        # `mode` in here and in the template, `view` in the URL: `render()`'s
+        # first parameter is the template name and is called `view`, so a
+        # context key of that name collides with it.
+        mode = "agenda" if request.query.get("view") == "agenda" else "month"
+        child_id = request.query.get("child") or None
+
+        with connect() as conn:
+            settings = Settings.load(conn)
+            children = repo.list_children(conn)
+            zone = _zone(settings.default_tz)
+            month = _month_of(request.query.get("month"), zone=zone, clock=clock)
+            start, end = _month_bounds(month, zone)
+
+            def link(mode=mode, month=month, child=child_id):
+                """One place that spells a link to this page, defaults included.
+
+                Built here rather than in the template because every control on the
+                page is the current view with one thing changed, and a template that
+                reassembles three parameters by hand loses one of them the first
+                time a fourth is added.
+                """
+                parts = [f"view={mode}", f"month={month.year:04d}-{month.month:02d}"]
+                if child:
+                    parts.append(f"child={quote(child, safe='')}")
+                return "/calendar?" + "&".join(parts)
+            here = link()
+
+            # Padded on both sides, then filtered exactly below. `stored_events`
+            # compares ISO strings, and a feed may write an offset rather than
+            # UTC — so a string bound can miss an event by its own offset. A day
+            # either side covers every real one.
+            items = repo.stored_events(
+                conn,
+                start=(start - timedelta(days=1)).isoformat(),
+                end=(end + timedelta(days=1)).isoformat(),
+                child_id=child_id,
+            )
+
+            # Built from the padded read, not the filtered one below: a
+            # warm-up sits before its game and can fall on the previous day, so
+            # a game withheld on the 1st has a warm-up the page would otherwise
+            # show as plainly cancelled with no reason against it. Keyed by uid
+            # rather than a set because the warm-up borrows its game's reason:
+            # `withheld.is_withheld` answers whether, this answers which.
+            off = {
+                item.event.uid: item.withheld for item in items if item.withheld
+            }
+
+            colours, seen = {}, {}
+            entries = []
+            for item in items:
+                if not start <= item.event.starts_at < end:
+                    continue
+                if item.activity_id not in seen:
+                    activity = repo.get_activity(conn, item.activity_id)
+                    seen[item.activity_id] = activity
+                activity = seen[item.activity_id]
+                kids = [repo.get_child(conn, k) for k in item.kids]
+                team = repo.team_children(conn, activity)
+                if activity.child_id not in colours:
+                    colours[activity.child_id] = len(colours) % _COLOURS
+                # In the venue's timezone, not the browser's and not the
+                # household default: a game at 7pm local is on that day for the
+                # people driving to it. Same rule the event bodies follow.
+                local = item.event.local_start
+                entries.append({
+                    "uid": item.event.uid,
+                    "local": local,
+                    "day": local.date(),
+                    "title": title_norm.render(item.event, activity, kids, settings),
+                    "activity": activity,
+                    "child": kids[0],
+                    "kids": kids,
+                    "team_kids": team,
+                    "away": [c for c in team if c.id not in item.kids],
+                    "colour": colours[activity.child_id],
+                    "venue": item.event.venue,
+                    "source_id": item.source_id,
+                    "all_day": item.event.all_day,
+                    "cancelled": item.cancelled,
+                    # The reason a person gave, or the game's reason if this is
+                    # the warm-up in front of one. Both are off the calendar;
+                    # only the game carries the row that says why.
+                    "withheld": item.withheld or off.get(item.event.warmup_for),
+                    "upcoming": retire.upcoming(
+                        item.event.starts_at.isoformat(), clock()
+                    ),
+                    "held": bool(settings.enrichment_collection)
+                            and item.collection == settings.enrichment_collection,
+                    "collection": item.collection,
+                    "is_game": item.event.is_game,
+                    # A warm-up is fixed through its game.
+                    "fix_url": (
+                        f"/events/fix?uid={quote(item.event.warmup_for or item.event.uid, safe='')}"
+                        f"&back={quote(here, safe='')}"
+                    ),
+                    **dict(zip(("fixed", "disputed"), fix_mod.calendar_status(
+                        item, repo.overrides_of(conn, item.event.uid)
+                    ))),
+                })
+
+        entries.sort(key=lambda e: (e["local"], e["title"]))
+        by_day: dict[date, list] = {}
+        for position, entry in enumerate(entries):
+            # Numbered rather than keyed on the uid: a feed's uid is not ours to
+            # assume anything about, and it ends up in a fragment identifier
+            # that a chip in the grid links to in the agenda.
+            entry["anchor"] = f"ev-{position}"
+            by_day.setdefault(entry["day"], []).append(entry)
+
+        return render(
+            "calendar.tpl",
+            mode=mode,
+            month=month,
+            weeks=calendar_mod.Calendar(firstweekday=0).monthdatescalendar(
+                month.year, month.month
+            ),
+            by_day=by_day,
+            entries=entries,
+            link=link,
+            children=children,
+            child_id=child_id,
+            today=clock().astimezone(zone).date(),
+            # So a decision made from this page comes back to this page, with
+            # the month and the child filter still on it.
+            back=here,
+            reasons=withheld_mod.REASONS,
+            previous=_shift_month(month, -1),
+            following=_shift_month(month, +1),
+            horizon=(clock().astimezone(zone)
+                     - timedelta(days=settings.sync_window_back_days)).date(),
+            tz=str(zone),
+            flash=_flash(),
+        )
+
+    def _back_to(default: str) -> str:
+        """Where to return after a write made from a list of events.
+
+        The same page it was pressed on, so a run of three cancellations is
+        three clicks rather than three clicks and two navigations. Checked
+        against the pages that carry these buttons rather than trusted: a
+        redirect target straight out of a form is an open redirect, and this one
+        arrives on a POST from a page anybody on the network can reach.
+        """
+        back = _field("back", default)
+        if not back.startswith(("/calendar", "/review")):
+            back = default
+        return back + ("&" if "?" in back else "?")
+
+    def _kid_absence(uid: str, child_id: str, *, absent: bool):
+        """One kid of a shared team out of, or back in, one event, then sync it."""
+        with connect() as conn:
+            state = repo.event_state(conn, uid)
+            if state is None:
+                raise Refused("calsync has no record of writing that event")
+            if repo.get_source(conn, state.source_id).kind == "merged":
+                # The kid's own team holds the absence; the merge step redraws.
+                holder = next((m for m in repo.members_of(conn, uid)
+                               if child_id in (m["kids"] or "").split(",")), None)
+                if holder is None:
+                    raise Refused("that kid is not on a team at this event")
+                uid = holder["member_uid"]
+                state = repo.event_state(conn, uid)
+            source = _require_source(conn, state.source_id)
+            activity = repo.get_activity(conn, source.activity_id)
+            if child_id not in {c.id for c in repo.team_children(conn, activity)}:
+                raise Refused("that kid is not on this event's team")
+            if absent and not retire.upcoming(state.shown_starts_at, clock()):
+                raise Refused("that event has already started")
+            name = repo.get_child(conn, child_id).name
+            repo.set_absence(conn, uid, child_id, absent)
+            repo.log_admin(conn, "console", "kid_absent" if absent else "kid_back",
+                           f"event:{uid}", {"child": child_id})
+            conn.commit()
+            merge_errs: list[str] = []
+            try:
+                target = write_target or targeting.build_target(conn, secrets=secrets)
+                withheld_mod.enforce(conn, source.id, target)
+                conn.commit()
+                merge_errs = merging.publish_safely(
+                    conn, target, now=clock(), secrets=secrets).said()
+            except (SecretError, TargetError):
+                pass
+        _, problems = _sync_now([source.id]) if source.enabled else ([], [])
+        redirect(_back_to("/calendar") + ("err=" if problems else "ok=") + _q(
+            (problems[0] if problems else
+             f"{name} {'is not going' if absent else 'is going again'}.")
+            + _merge_note(merge_errs)))
+
+    @app.post("/events/withhold")
+    def withhold_event():
+        """Take one event off the calendar and keep it off.
+
+        The button the mirror makes necessary: deleting an event in Calendar.app
+        is undone by the next mirror run, because identity lives in the events
+        and a deleted one is indistinguishable from one never written
+        (`withheld.py`). Deciding it here removes it for every subscriber at
+        once, and the decision outlives the poll that would otherwise restore it.
+
+        A write to the family's real calendar, so it goes through the same
+        `write_target` seam retiring and "Sync now" use.
+        """
+        # The uid arrives as a form field rather than in the path. It is a
+        # string a coach's app minted and calsync has never constrained —
+        # `@`, `/` and worse are all in the recorded feeds — and a path segment
+        # is the one place that has to be escaped correctly by every template
+        # that links to it.
+        uid = _field("uid")
+        reason = _field("reason")
+        if reason not in withheld_mod.REASONS:
+            raise Refused(
+                f"{reason!r} is not a reason to take an event off the calendar"
+            )
+        if _field("child"):
+            if reason != "not_attending":
+                raise Refused("a cancellation is for everyone")
+            return _kid_absence(uid, _field("child"), absent=True)
+
+        with connect() as conn:
+            state = repo.event_state(conn, uid)
+            if state is None:
+                raise Refused("calsync has no record of writing that event")
+            if not retire.upcoming(state.shown_starts_at, clock()):
+                # The same refusal `retire.py` makes, for the same reason: it
+                # already happened, and taking it off now deletes the record of
+                # a game that was played rather than one nobody is going to.
+                raise Refused(
+                    "that event has already started. Taking it off the calendar "
+                    "now would remove the record of something that happened "
+                    "rather than change anybody's plans."
+                )
+            def on_calendar() -> int:
+                rows = (repo.event_state(conn, u) for u in (uid, warmup.uid_for(uid)))
+                return sum(1 for r in rows if r is not None and not r.cancelled)
+
+            was = on_calendar()
+            merge_errs: list[str] = []
+            repo.set_withheld(conn, uid, reason)
+            conn.commit()
+
+            try:
+                target = write_target or targeting.build_target(conn, secrets=secrets)
+                report = withheld_mod.enforce(conn, state.source_id, target)
+                conn.commit()
+                # A copy taken off may end a group; a merged event taken off
+                # keeps its members dropped.
+                merge_errs = merging.publish_safely(
+                    conn, target, now=clock(), secrets=secrets).said()
+            except (SecretError, TargetError) as exc:
+                raise Refused(
+                    f"the decision is saved, but the calendar could not be "
+                    f"reached to act on it, so the event is still there for now "
+                    f"and the next sync will remove it: {exc}"
+                ) from exc
+            removed = was - on_calendar()
+            conn.commit()
+
+        if not report.ok:
+            raise Refused(
+                "the decision is saved, but the event could not be removed, so "
+                "a later sync will retry it: " + "; ".join(report.errors[:3])
+            )
+        label = withheld_mod.REASONS[reason]
+        redirect(_back_to("/calendar") + "ok=" + _q(
+            f"Marked {label} — {removed} event(s) off the calendar, and "
+            "the next poll will leave it that way." + _merge_note(merge_errs)
+        ))
+
+    @app.post("/events/restore")
+    def restore_event():
+        """Put a withheld event back, by clearing the decision and syncing.
+
+        Nothing here writes an event. Clearing the flag leaves a cancelled
+        `event_state` row, which `known_hashes` skips, so the sync that follows
+        sees the event as new and creates it — through exactly the path every
+        other event takes. A second writer of events is the one thing this was
+        never going to be (`withheld.py`).
+        """
+        uid = _field("uid")
+        if _field("child"):
+            return _kid_absence(uid, _field("child"), absent=False)
+        with connect() as conn:
+            state = repo.event_state(conn, uid)
+            if state is None:
+                raise Refused("calsync has no record of writing that event")
+            source = repo.get_source(conn, state.source_id)
+            repo.set_withheld(conn, uid, None)
+            conn.commit()
+            enabled = source.enabled
+            if source.kind == "merged":
+                # Written by the merge step; a companion has no feed to sync.
+                try:
+                    target = write_target or targeting.build_target(conn, secrets=secrets)
+                    merged = merging.publish_safely(conn, target, now=clock(), secrets=secrets)
+                except (SecretError, TargetError) as exc:
+                    raise Refused(f"cleared, but the calendar could not be reached: {exc}"
+                                  ) from exc
+                redirect(_back_to("/calendar") + ("err=" if merged.errors else "ok=") + _q(
+                    "; ".join(merged.errors[:3]) or "Put back."))
+
+        if not enabled:
+            # Same refusal `POST /sources/<id>/sync` makes: syncing a retired
+            # season puts the whole thing back, not one event of it.
+            redirect(_back_to("/calendar") + "ok=" + _q(
+                "Cleared. Polling is paused for that team, so the event comes "
+                "back when it resumes."
+            ))
+
+        reports, problems = _sync_now([state.source_id])
+        message = problems[0] if problems else reports[0].line()
+        key = "err" if problems else "ok"
+        redirect(_back_to("/calendar") + key + "=" + _q(message))
+
+    # --- fixing one event --------------------------------------------------
+    #
+    # A person's correction to one event, kept however long the team app goes on
+    # saying otherwise (`overlay.py`, `web/fix.py`). Saving stores the decision
+    # and then runs the real sync, as "Put it back" does: the sync loop is the
+    # one thing that writes events, and a fix that waited twenty minutes for
+    # the poller would read as a button that did nothing.
+
+    def _fix_back(default: str = "/calendar") -> str:
+        """Where the page returns to: a calendar or review page, never elsewhere."""
+        back = _field("back") or request.query.getunicode("back") or default
+        return back if back.startswith(("/calendar", "/review")) else default
+
+    def _fix_url(uid: str, back: str, **flash) -> str:
+        url = f"/events/fix?uid={quote(uid, safe='')}&back={quote(back, safe='')}"
+        for key, text in flash.items():
+            url += f"&{key}={_q(text)}"
+        return url
+
+    def _fix_subject(conn, uid: str) -> fix_mod.Subject:
+        found = fix_mod.subject(conn, uid)
+        if found is None:
+            raise Refused("calsync has no record of writing that event")
+        if found.source_kind == "merged":
+            raise Refused(
+                "that is one event written for several teams, so fix it on the "
+                "kid's own team event, and it carries over."
+            )
+        if found.item.cancelled and any(
+            o.status == "orphaned" for o in found.overrides.values()
+        ):
+            # Gone from the team app with a fix still waiting: the question is
+            # where the fix goes, which is its own page.
+            redirect(f"/events/fix/orphan?uid={quote(uid, safe='')}"
+                     f"&back={quote(_fix_back(), safe='')}")
+        if found.item.cancelled or found.state.withheld:
+            raise Refused(
+                "that event is off the calendar, so there is nothing to fix. Put "
+                "it back first if it is on after all."
+            )
+        return found
+
+    #: Everything the fix form posts, read only when present: a field the form
+    #: did not send (an opponent, for a practice) is not a request to clear it.
+    _FIX_FIELDS = ("date", "start", "end", "venue_name", "venue_field",
+                   "venue_address", "opponent", "detail", "notes", "reason", "actor",
+                   "version")
+
+    #: Said when a save would land on top of a change the person never saw.
+    _MOVED_ON = ("Somebody else changed this event while you had it open, so "
+                 "nothing was saved. This is what it says now — make your change "
+                 "again if it is still needed.")
+
+    def _current(found: fix_mod.Subject) -> bool:
+        """Is the page this form came from still what is saved?"""
+        return _field("version") == fix_mod.version(found.overrides)
+
+    def _fix_form() -> dict:
+        form = {name: _field(name) for name in _FIX_FIELDS if name in request.forms}
+        if "date" in form:
+            form["all_day"] = bool(_field("all_day"))
+        return form
+
+    def _fix_page(uid: str, back: str, *, form: dict | None = None, flash=None):
+        with connect() as conn:
+            found = fix_mod.subject(conn, uid)
+            if found is None:
+                raise Refused("calsync has no record of writing that event")
+            context = fix_mod.page(conn, found, now=clock(), back=back, form=form)
+        if form and form.get("version"):
+            # Shown again from a posted form — back from the day check, or with
+            # an error to correct — so it is still the page that form was typed
+            # on. A fresh stamp would let the next save absorb whatever
+            # somebody else changed in between.
+            context["version"] = form["version"]
+        if flash is None and context["pending"]:
+            flash = {"kind": "info", "text": (
+                "Your last change is saved but not on the calendar yet — the "
+                "calendar could not be reached. It goes on at the next sync."
+            )}
+        return render("event_fix.tpl", flash=flash or _flash(), **context)
+
+    def _land(source_id: str, uid: str) -> tuple[str, str]:
+        """Sync the source a fix belongs to, and say how it went in plain words.
+
+        Whether the fix *landed* is read back from the receipt, not inferred
+        from the sync's status: a poll a guard holds finishes without an error
+        and may still not have written this event, and telling somebody their
+        change is on everyone's phones when it is not is the one message this
+        page must never get wrong.
+        """
+        with connect() as conn:
+            enabled = _require_source(conn, source_id).enabled
+        if not enabled:
+            return "ok", ("Saved. Updates for that team are paused, so the "
+                          "calendar catches up when they resume.")
+        try:
+            _, problems = _sync_now([source_id])
+        except Refused as exc:
+            return "err", (f"Saved, but the calendar couldn’t be updated just now "
+                           f"({exc}) — it will catch up on the next sync.")
+        with connect() as conn:
+            found = fix_mod.subject(conn, uid)
+            landed = found is not None and not found.item.cancelled and (
+                overlay_mod.values(found.item.overrides)
+                == {u: o.value for u, o in found.overrides.items()}
+            )
+        if problems or not landed:
+            return "err", ("Saved, but the calendar couldn’t be updated just now — "
+                           "it will catch up on the next sync.")
+        return "ok", "Calendar updated. Everyone’s phones will show the change."
+
+    @app.get("/events/fix")
+    def fix_event_page():
+        uid = request.query.getunicode("uid") or ""
+        back = _fix_back()
+        with connect() as conn:
+            parent = warmup.parent_of(uid)
+            if parent is not None:
+                # A warm-up is its game's shadow, so it is fixed through the game.
+                redirect(_fix_url(parent, back))
+            _fix_subject(conn, uid)
+        return _fix_page(uid, back)
+
+    @app.post("/events/fix")
+    def fix_event():
+        uid, back = _field("uid"), _fix_back()
+        form = _fix_form()
+        with connect() as conn:
+            found = _fix_subject(conn, uid)
+            if not found.upcoming(clock()):
+                raise Refused(
+                    "that has already happened, so it can't be changed now — "
+                    "changing it would rewrite the record of something that was "
+                    "played."
+                )
+            if not _current(found):
+                return _fix_page(uid, back, flash={"kind": "bad", "text": _MOVED_ON})
+            plan = fix_mod.plan(found, form)
+            if plan.errors:
+                return _fix_page(uid, back, form=form,
+                                 flash={"kind": "bad", "text": " ".join(plan.errors)})
+            if plan.empty:
+                redirect(_fix_url(uid, back, ok=(
+                    "Nothing to change — that is what the calendar already shows.")))
+            reason = (form.get("reason") or "").strip()
+            if plan.sets and not reason:
+                return _fix_page(uid, back, form=form, flash={"kind": "bad", "text": (
+                    "Say why you’re changing it — it’s what everyone else sees "
+                    "next to the change.")})
+            if plan.moved_day and _field("day_change") != "confirmed":
+                # The one change worth a second look: a date picker one row off
+                # is a family at the wrong field on the wrong Saturday.
+                zone = found.zone
+                was, becomes = found.current, plan.sets["time"]
+                new_start = datetime.fromisoformat(becomes["starts_at"]).astimezone(zone)
+                return render(
+                    "fix_move.tpl",
+                    title=fix_mod.page(conn, found, now=clock(), back=back)["title"],
+                    app=fix_mod.app_name(found.source_kind),
+                    App=fix_mod.app_name(found.source_kind).capitalize(),
+                    old_day=was.starts_at.astimezone(zone).strftime("%A %-d %B"),
+                    old_clock=("all day" if was.all_day
+                               else was.starts_at.astimezone(zone).strftime("%-H:%M")),
+                    new_day=new_start.strftime("%A %-d %B"),
+                    new_clock=("all day" if becomes["all_day"]
+                               else new_start.strftime("%-H:%M")),
+                    new_day_short=new_start.strftime("%A"),
+                    fields={"uid": uid, "back": back, **{
+                        k: ("1" if v is True else v) for k, v in form.items() if v is not False
+                    }},
+                )
+            actor = (form.get("actor") or "").strip() or None
+            for unit, value in plan.sets.items():
+                repo.set_override(conn, uid, unit, value, reason=reason, actor=actor)
+            for unit in plan.removes:
+                repo.remove_override(conn, uid, unit, actor=actor,
+                                     reason=reason or "put back to the team app’s")
+            conn.commit()
+            source_id = found.state.source_id
+        key, message = _land(source_id, uid)
+        redirect(_fix_url(uid, back, **{key: message}))
+
+    @app.post("/events/fix/undo")
+    def unfix_event():
+        """Lift one part of a fix — the "use the team app's instead" link."""
+        uid, back, unit = _field("uid"), _fix_back(), _field("unit")
+        with connect() as conn:
+            found = _fix_subject(conn, uid)
+            if not found.upcoming(clock()):
+                raise Refused("that has already happened, so it can't be changed now.")
+            if not _current(found):
+                return _fix_page(uid, back, flash={"kind": "bad", "text": _MOVED_ON})
+            actor = (_field("actor") or "").strip() or None
+            if not repo.remove_override(conn, uid, unit, actor=actor,
+                                        reason="put back to the team app’s"):
+                redirect(_fix_url(uid, back, ok="That was already the team app’s."))
+            conn.commit()
+            source_id = found.state.source_id
+        key, message = _land(source_id, uid)
+        redirect(_fix_url(uid, back, **{key: message}))
+
+    @app.post("/events/fix/resolve")
+    def resolve_fix():
+        """Answer "which is right?" for a fix the team app has since contradicted."""
+        uid, back, unit = _field("uid"), _fix_back(), _field("unit")
+        keep = _field("keep")
+        with connect() as conn:
+            found = _fix_subject(conn, uid)
+            if not found.upcoming(clock()):
+                raise Refused("that has already happened, so it can't be changed now.")
+            if not _current(found):
+                return _fix_page(uid, back, flash={"kind": "bad", "text": _MOVED_ON})
+            item = found.overrides.get(unit)
+            if item is None or item.status != "changed":
+                redirect(_fix_url(uid, back, ok="That was already settled."))
+            zone, app_ = found.zone, fix_mod.app_name(found.source_kind)
+            mine = fix_mod.describe(unit, item.value, zone)
+            theirs = fix_mod.describe(unit, item.upstream_seen, zone)
+            actor = (_field("actor") or "").strip() or None
+            if keep == "mine":
+                # Nothing on the calendar changes — it already shows the fix —
+                # so there is nothing to sync.
+                repo.keep_override(conn, uid, unit, actor=actor)
+                conn.commit()
+                redirect(_fix_url(uid, back, ok=(
+                    f"Kept {mine}. If {app_} changes it again, you’ll be asked again.")))
+            if keep != "theirs":
+                raise Refused("choose which one is right")
+            repo.remove_override(conn, uid, unit, actor=actor,
+                                 reason=f"took {app_}’s {theirs}")
+            conn.commit()
+            source_id = found.state.source_id
+        key, message = _land(source_id, uid)
+        if key == "ok":
+            message = f"Calendar updated to {app_}’s {theirs}."
+        redirect(_fix_url(uid, back, **{key: message}))
+
+    @app.get("/events/fix/orphan")
+    def orphaned_fix_page():
+        uid = request.query.getunicode("uid") or ""
+        with connect() as conn:
+            context = fix_mod.orphan_page(conn, uid, now=clock(), back=_fix_back("/review"))
+        if context is None:
+            raise Refused("there is no fix waiting on that event")
+        return render("fix_orphan.tpl", flash=_flash(), **context)
+
+    @app.post("/events/fix/reattach")
+    def reattach_fix():
+        """Move an orphaned fix onto the event a person says it became."""
+        uid, to, back = _field("uid"), _field("to"), _fix_back("/review")
+        actor = (_field("actor") or "").strip() or None
+        if not to:
+            raise Refused("pick the event your fix belongs on")
+        with connect() as conn:
+            if _field("version") != fix_mod.version(repo.overrides_of(conn, uid)):
+                redirect(f"/events/fix/orphan?uid={quote(uid, safe='')}&back="
+                         f"{quote(back, safe='')}&err={_q(_MOVED_ON)}")
+            target = fix_mod.subject(conn, to)
+            if target is None or not target.upcoming(clock()):
+                raise Refused("pick an event that is still to come")
+            try:
+                moved = repo.reattach_overrides(conn, uid, to, actor=actor)
+            except overlay_mod.OverrideError as exc:
+                raise Refused(str(exc)) from exc
+            conn.commit()
+            source_id = target.state.source_id
+        key, message = _land(source_id, to)
+        if key == "ok":
+            message = ("Moved your fix here and updated the calendar: "
+                       + fix_mod.joined([fix_mod.LABELS[u] for u in moved]) + ".")
+        redirect(_fix_url(to, back, **{key: message}))
+
+    @app.post("/events/fix/forget")
+    def forget_fix():
+        uid, back = _field("uid"), _fix_back("/review")
+        with connect() as conn:
+            if _field("version") != fix_mod.version(repo.overrides_of(conn, uid)):
+                redirect(f"/events/fix/orphan?uid={quote(uid, safe='')}&back="
+                         f"{quote(back, safe='')}&err={_q(_MOVED_ON)}")
+            removed = repo.forget_overrides(
+                conn, uid, actor=(_field("actor") or "").strip() or None
+            )
+            conn.commit()
+        if not removed:
+            raise Refused("there is no fix waiting on that event")
+        redirect(back + ("&" if "?" in back else "?") + "ok=" + _q(
+            "Forgotten. Nothing on the calendar changed."))
+
+    @app.post("/events/fix/edit")
+    def refix_event():
+        """Back from the day-change check, with everything typed still there."""
+        return _fix_page(_field("uid"), _fix_back(), form=_fix_form())
+
+    @app.get("/review")
+    def review():
+        """Everything waiting on a human, across every source.
+
+        The questions come from a live dry run, exactly as the source page's
+        gate does — a verdict from last week says nothing about a feed that has
+        since been corrected. The *count* of what is actually held comes from
+        `event_state`, because that is what is really sitting in the enrichment
+        calendar rather than what a fresh parse thinks would be.
+
+        Those two can disagree, and the disagreement is the useful part: events
+        still held while the feed now parses cleanly are ones the next poll will
+        release, and the page says so instead of showing an empty question list
+        and leaving you wondering.
+        """
+        with connect() as conn:
+            settings = Settings.load(conn)
+            enrichment_collection = slugify(settings.enrichment_collection) \
+                if settings.enrichment_collection else ""
+            sources_ = repo.list_sources(conn, enabled_only=True)
+            held = {
+                s.id: repo.events_in_collection(conn, s.id, enrichment_collection)
+                for s in sources_
+            } if enrichment_collection else {}
+
+        # Only the sources with something waiting, so the page is empty when
+        # there is nothing to do rather than a list of everything that is fine.
+        wanted = [s for s in sources_ if held.get(s.id)]
+        reports = _check_all(db_path, secrets, fetcher, clock, wanted)
+
+        queues = []
+        with connect() as conn:
+            for source in wanted:
+                activity = repo.get_activity(conn, source.activity_id)
+                report = reports.get(source.id)
+                conditions = gate.conditions(report, activity) if report else ()
+                queues.append({
+                    "source": source,
+                    "activity": activity,
+                    "held": held.get(source.id, 0),
+                    "report": report,
+                    "asking": [c for c in conditions if c.state == gate.ASKING],
+                })
+            return render(
+                "review.tpl",
+                queues=queues,
+                enrichment=enrichment_collection,
+                # Answers waiting on a decision, across every source. Listed
+                # separately from the questions because they are a different
+                # act: answering is work, deciding is a glance.
+                pending=repo.list_tasks(conn, state=repo.ANSWERED),
+                # First on the page, because it is the one where the calendar
+                # is already wrong: a held poll has written the new events and
+                # kept the old ones, so until somebody looks, it shows both.
+                # The decision is on the source page, beside the list it is
+                # about; this is the signpost the Mac's menu bar sends you to.
+                held_polls=repo.held_polls(conn),
+                fixes=fix_mod.attention(conn, now=clock()),
+                venues=repo.list_venues(conn),
+                flash=_flash(),
+            )
+
+    @app.post("/review/<task_id>/<decision:re:approve|reject>")
+    def decide(task_id, decision):
+        """The review gate, and the only place an answer becomes configuration.
+
+        Reached from the console rather than the API on purpose: an agent can
+        put an answer in front of you and has no path to this handler. Applying
+        calls exactly the same `repo` helpers the manual answer forms call, so
+        an approved answer and a hand-typed one write the same row.
+        """
+        with connect() as conn:
+            task = repo.get_task(conn, task_id)
+            if task is None:
+                raise Refused("no such question")
+            if task.state != repo.ANSWERED:
+                raise Refused(
+                    f"that question is {task.state}, so there is nothing waiting "
+                    "on a decision"
+                )
+            if decision == "reject":
+                repo.decide_task(conn, task_id, repo.REJECTED)
+                conn.commit()
+                redirect("/review?ok=" + _q("Rejected. The question stays open."))
+
+            try:
+                did = enrichment.apply(conn, task)
+            except (enrichment.AnswerError, repo.NotFound) as exc:
+                raise Refused(f"could not apply that answer: {exc}") from exc
+            repo.decide_task(conn, task_id, repo.APPROVED)
+            conn.commit()
+        redirect("/review?ok=" + _q(
+            f"Approved — {did}. The next poll re-renders and releases the events."))
+
+    @app.get("/settings")
+    def settings_page():
+        with connect() as conn:
+            return _settings_page(conn)
+
+    @app.post("/settings/calendar")
+    def save_calendar_settings():
+        with connect() as conn:
+            # Checked before the loop, so a refusal saves nothing.
+            try:
+                check_setting(conn, "collection_template", _field("collection_template"))
+            except ValueError as exc:
+                raise Refused(str(exc)) from exc
+            for key in ("target_kind",
+                        "radicale_url", "radicale_user", "radicale_secret_ref",
+                        "collection_template", "collection_game_label",
+                        "collection_practice_label", "default_tz"):
+                value = _field(key).strip()
+                if key == "default_tz" and value:
+                    _require_zone(value)
+                if value:
+                    set_setting(conn, key, value)
+            # Blank is a meaningful value here and nowhere else in this form:
+            # it switches the hold off. The loop above deliberately ignores
+            # empty fields so a half-filled form cannot wipe the CalDAV URL,
+            # which would make this un-clearable if it went through the same
+            # path — the setting would be documented as switchable and not be.
+            set_setting(conn, "enrichment_collection",
+                        _field("enrichment_collection").strip())
+            password = _field("radicale_password")
+            if password:
+                secrets.put(_field("radicale_secret_ref").strip() or "radicale_password",
+                            password)
+        _saved("calendar", "Calendar settings saved.")
+
+    @app.post("/settings/titles")
+    def save_title_settings():
+        with connect() as conn:
+            for key in ("title_template", "multi_kid_style", "all_kids_label",
+                        "all_kids_threshold", "home_marker", "away_marker"):
+                value = _field(key).strip()
+                if value:
+                    set_setting(conn, key, value)
+            # Blankable, unlike the rest: an empty warm-up template is a
+            # meaningful choice — it falls back to the title template — where an
+            # empty title template would render every event as nothing at all,
+            # which is why the loop above refuses to store one.
+            set_setting(conn, "warmup_title_template",
+                        _field("warmup_title_template").strip())
+
+        _saved("titles", "Title settings saved. Every event re-renders on the "
+                         "next sync — no re-fetch needed.")
+
+    @app.post("/settings/seasons")
+    def save_season_settings():
+        with connect() as conn:
+            for key in ("season_nudge_days", "season_shutoff_days"):
+                value = _field(key).strip()
+                if value:
+                    set_setting(conn, key, str(_whole(key, value)))
+            nudge = Settings.load(conn)
+            if nudge.season_shutoff_days < nudge.season_nudge_days:
+                raise Refused(
+                    "the shut-off has to come after the nudge, or a season would "
+                    "be switched off before anybody was told about it"
+                )
+        _saved("seasons", "Season settings saved.")
+
+    @app.post("/settings/notifications")
+    def save_notification_settings():
+        with connect() as conn:
+            token_ref = _field("pushover_token_ref").strip() or "pushover_token"
+            user_ref = _field("pushover_user_ref").strip() or "pushover_user"
+            set_setting(conn, "pushover_token_ref", token_ref)
+            set_setting(conn, "pushover_user_ref", user_ref)
+            for ref, value in ((token_ref, _field("pushover_token")),
+                               (user_ref, _field("pushover_user"))):
+                if value:
+                    secrets.put(ref, value)
+        _saved("notifications", "Notification settings saved.")
+
+    @app.post("/settings/api")
+    def save_api_settings():
+        """The read API's bearer token.
+
+        Stored in the secret store like every other credential, so the settings
+        table stays safe to read, export and paste into a bug report. `calsync
+        api` refuses to start until the value is there, which is why this form
+        says whether it is rather than making you find out by starting it.
+        """
+        with connect() as conn:
+            ref = _field("api_token_ref").strip() or "api_token"
+            set_setting(conn, "api_token_ref", ref)
+            token = _field("api_token")
+            if token:
+                secrets.put(ref, token)
+        _saved("api", "API settings saved.")
+
+    @app.post("/settings/read-key")
+    def make_read_key():
+        """A household read key for tools: every team's calendar, no writes.
+
+        Rendered in this response, never redirected to, for the team-key
+        page's reason: this is the only time the key exists in the clear.
+        """
+        key = inbound_events.new_key()
+        with connect() as conn:
+            replaced = repo.read_key_hash(conn) is not None
+            repo.set_read_key_hash(conn, inbound_events.hash_key(key))
+        response.set_header("Cache-Control", "no-store")
+        return render(
+            "read_key.tpl", key=key, replaced=replaced,
+            header=inbound_app.KEY_HEADER, prefix=inbound_app.PREFIX, flash=None,
+        )
+
+    @app.post("/settings/read-key/remove")
+    def remove_read_key():
+        with connect() as conn:
+            repo.set_read_key_hash(conn, None)
+        _saved("read-key", "Read key removed. Nothing can read the whole calendar now.")
+
+    @app.post("/settings/admin-keys")
+    def make_admin_key():
+        """An admin key for a tool. Shown in this response only, like the read key."""
+        label = _field("label").strip()
+        if not label:
+            raise Refused("say who the key is for, e.g. R2-D2")
+        key = inbound_events.new_key()
+        with connect() as conn:
+            repo.issue_admin_key(conn, label[:60], inbound_events.hash_key(key))
+        response.set_header("Cache-Control", "no-store")
+        return render("admin_key.tpl", key=key, label=label[:60],
+                      header=inbound_app.KEY_HEADER, prefix=inbound_app.PREFIX, flash=None)
+
+    @app.post("/settings/admin-keys/<key_id:int>/revoke")
+    def revoke_admin_key(key_id):
+        with connect() as conn:
+            repo.revoke_key(conn, key_id)
+        _saved("admin-keys", "Admin key revoked. It stopped working at once.")
+
+    # --- the kill switch ------------------------------------------------------
+
+    @app.post("/settings/kill-switch")
+    def kill_switch():
+        """Revoke every key, once "yes" is typed beside the button."""
+        if _field("confirm").strip().lower() != "yes":
+            raise Refused('type "yes" to revoke every key; nothing was revoked')
+        with connect() as conn:
+            if not repo.api_keys(conn):
+                raise Refused("no key is working, so there is nothing to revoke")
+        _revoke_everything(clock(), pause_feeds=bool(_field("pause_feeds")))
+        redirect("/settings#recovery")
+
+    def _revoke_everything(now, *, pause_feeds: bool) -> None:
+        at = now.isoformat()
+        with connect() as conn:
+            revoked = repo.revoke_all_keys(conn, actor="console", at=at)
+            try:
+                token = secrets.get(Settings.load(conn).api_token_ref)
+                repo.put_setting_row(conn, repo.READ_API_REVOKED,
+                                     hashlib.sha256(token.encode()).hexdigest())
+                unblocked = False
+            except SecretError:
+                unblocked = True
+            repo.put_setting_row(conn, repo.READ_API_UNBLOCKED, "1" if unblocked else None)
+            paused = []
+            if pause_feeds:
+                for source in repo.list_sources(conn):
+                    if source.kind not in sources.PUSHED:
+                        conn.execute("UPDATE sources SET enabled = 0 WHERE id = ?",
+                                     (source.id,))
+                        paused.append(source.id)
+                if paused:
+                    repo.log_admin(conn, "console", "feeds_paused", None, {"teams": paused})
+            repo.put_setting_row(conn, repo.FEEDS_PAUSED, json.dumps(paused) if paused else None)
+            repo.put_setting_row(conn, repo.KEYS_REVOKED_AT, at)
+            conn.commit()
+            try:
+                notify.send(notify.load(conn), secrets,
+                            f"Every calsync key was revoked from the console "
+                            f"({len(revoked)} keys"
+                            + (f", {len(paused)} feed teams paused" if paused else "")
+                            + ")." + (" The read API's token could not be read, so it is "
+                                      "NOT blocked." if unblocked else ""),
+                            title="calsync: all keys revoked", opener=push_opener)
+            except notify.NotifyError:
+                pass
+
+    @app.post("/settings/recovery/dismiss")
+    def dismiss_recovery():
+        with connect() as conn:
+            for key in (repo.KEYS_REVOKED_AT, repo.FEEDS_PAUSED, repo.READ_API_UNBLOCKED):
+                repo.put_setting_row(conn, key, None)
+            conn.commit()
+        _saved("kill-switch", "Recovery notes dismissed.")
+
+    @app.post("/settings/notifications/test")
+    def test_notification():
+        """Send a real push.
+
+        Worth a button of its own: these credentials are used a handful of times
+        a year, when a season ends, so a typo would otherwise sit undiscovered
+        until the exact moment it needed to work.
+        """
+        with connect() as conn:
+            config = notify.load(conn)
+            try:
+                notify.send(
+                    config, secrets,
+                    "If you can read this, calsync can reach you when a season ends.",
+                    title="calsync test", opener=push_opener,
+                )
+                result = "Sent. Check your phone."
+            except notify.NotifyError as exc:
+                result = str(exc)
+            return _settings_page(conn, pushed=result)
+
+    @app.post("/settings/safety")
+    def save_safety_settings():
+        with connect() as conn:
+            for key in LIMITS:
+                value = _field(key).strip()
+                if value:
+                    set_setting(conn, key, _bounded(key, value))
+        _saved("safety", "Safety settings saved.")
+
+    @app.post("/settings/matrix")
+    def save_matrix_settings():
+        ref = _field("matrix_secret_ref").strip() or "matrix_access_token"
+        with connect() as conn:
+            set_setting(conn, "matrix_homeserver", _field("matrix_homeserver").strip())
+            set_setting(conn, "matrix_user_id", _field("matrix_user_id").strip())
+            set_setting(conn, "matrix_room_id", _field("matrix_room_id").strip())
+            set_setting(conn, "matrix_secret_ref", ref)
+            # Validated on the way in: `digest.due` treats anything it cannot
+            # parse as "never", so a typo would otherwise look configured and
+            # quietly send nothing for the rest of the season.
+            send_at = _field("digest_send_at").strip()
+            if send_at and not _reads_as_a_time(send_at):
+                raise Refused(
+                    f"{send_at!r} is not a time of day — use HH:MM, like 07:30, "
+                    "or leave it empty for no digest"
+                )
+            set_setting(conn, "digest_send_at", send_at)
+            hours = _field("digest_window_hours").strip()
+            if hours:
+                set_setting(conn, "digest_window_hours", str(_whole("hours", hours)))
+            # The token is a bearer credential; it goes to the secret store and
+            # never to the database, same as the Radicale password.
+            token = _field("matrix_access_token")
+            if token:
+                secrets.put(ref, token)
+        _saved("matrix", "Matrix settings saved. Check them below.")
+
+
+    @app.post("/settings/calendar/verify")
+    def verify_calendar_settings():
+        """Ask the calendar server whether this configuration is real.
+
+        The check nothing did until a deployment spent days writing nothing,
+        because `radicale_url` pointed at localhost and the poller runs in a
+        container where localhost is itself. The failure was in the logs, once
+        per source per poll, behind a wall of per-event errors — and then the
+        backoff made it three-hourly. A button is what turns that into a
+        question somebody can ask.
+        """
+        with connect() as conn:
+            return _settings_page(
+                conn, calendar_check=targeting.verify(
+                    conn, secrets, transport=calendar_transport
+                )
+            )
+
+    @app.post("/settings/matrix/verify")
+    def verify_matrix_settings():
+        with connect() as conn:
+            return _settings_page(
+                conn, check=matrix.verify(matrix.load(conn), secrets, opener=matrix_opener)
+            )
+
+    # --- venues ------------------------------------------------------------
+    #
+    # Worth a screen of its own because venues are the one thing that outlasts a
+    # team. Names churn every season; the parks and schools do not, so an alias
+    # added once is still paying off three seasons later — and near-duplicates
+    # accumulating across those seasons is the normal way this table goes wrong.
+
+    @app.get("/venues")
+    def venues_index():
+        with connect() as conn:
+            return render(
+                "venues.tpl", venues=repo.venues_detailed(conn), flash=_flash()
+            )
+
+    @app.get("/venues/<venue_id:int>")
+    def venue_page(venue_id):
+        with connect() as conn:
+            venue = repo.get_venue_detail(conn, venue_id)
+            if venue is None:
+                raise Refused("there is no venue with that id")
+            return render(
+                "venue.tpl",
+                venue=venue,
+                others=[v for v in repo.venues_detailed(conn) if v.id != venue_id],
+                flash=_flash(),
+            )
+
+    def _checked_name(raw: str) -> str:
+        """Refuse a field designator in a venue name.
+
+        "Anchorhead #2" is field #2 at Anchorhead, and folding the designator into
+        the name mints a separate venue — and a separate pin — for every field
+        at one park. The parser already splits these apart; this stops a typed
+        name from putting one back.
+        """
+        name = raw.strip()
+        if not name:
+            raise Refused("a venue needs a name")
+        base, designator = venue_norm.split_field(name)
+        if designator and base:
+            raise Refused(
+                f"{name!r} is {designator} at {base!r}. A venue is the place, not the "
+                f"field within it — otherwise every field at {base!r} gets its own "
+                f"row and its own pin. Save it as {base!r}; {name!r} can be one of "
+                "its other names."
+            )
+        return name
+
+
+    @app.post("/venues")
+    def create_venue():
+        name = _checked_name(_field("name"))
+        with connect() as conn:
+            venue_id = repo.upsert_venue(
+                conn,
+                name=name,
+                short_name=_field("short_name").strip() or None,
+                address=_field("address").strip() or None,
+            )
+        redirect(f"/venues/{venue_id}?ok=" + _q(f"Added {name}."))
+
+    @app.post("/venues/<venue_id:int>")
+    def save_venue(venue_id):
+        name = _checked_name(_field("name"))
+        with connect() as conn:
+            existing = repo.get_venue_detail(conn, venue_id)
+            if existing is None:
+                raise Refused("there is no venue with that id")
+            repo.upsert_venue(
+                conn,
+                venue_id=venue_id,
+                name=name,
+                short_name=_field("short_name").strip() or None,
+                address=_field("address").strip() or None,
+                # Carried, not edited. Nothing emits coordinates any more, so
+                # the console has no business curating them — but a value that
+                # arrived through config import is not the console's to discard.
+                lat=existing.lat,
+                lon=existing.lon,
+                pin_confirmed=existing.pin_confirmed,
+                geocoder=existing.geocoder,
+            )
+        redirect(f"/venues/{venue_id}?ok=" + _q(f"Saved {name}."))
+
+
+    @app.post("/venues/<venue_id:int>/alias")
+    def venue_alias(venue_id):
+        alias = _field("alias").strip()
+        remove = _field("remove").strip()
+        with connect() as conn:
+            if remove:
+                venue = repo.get_venue_detail(conn, venue_id)
+                if venue and remove == venue.name:
+                    raise Refused(
+                        "that is the venue's own name. Rename it and this alias "
+                        "goes with it."
+                    )
+                repo.remove_venue_alias(conn, venue_id, remove)
+                message = f"Removed {remove}."
+            else:
+                if not alias:
+                    raise Refused("that was blank")
+                repo.add_venue_alias(conn, venue_id, alias)
+                message = f"{alias} now resolves here."
+        redirect(f"/venues/{venue_id}?ok=" + _q(message))
+
+    @app.post("/venues/<venue_id:int>/merge")
+    def merge_venue(venue_id):
+        target = _field("into").strip()
+        if not target:
+            raise Refused("pick a venue to merge into")
+        with connect() as conn:
+            losing = repo.get_venue_detail(conn, venue_id)
+            winning = repo.get_venue_detail(conn, _whole("venue", target))
+            if losing is None or winning is None:
+                raise Refused("one of those venues no longer exists")
+            moved = repo.merge_venues(conn, losing_id=venue_id, winning_id=winning.id)
+        redirect(
+            f"/venues/{winning.id}?ok="
+            + _q(f"Merged {losing.name} in, keeping {moved + 1} names for this place.")
+        )
+
+    @app.post("/venues/<venue_id:int>/delete")
+    def remove_venue(venue_id):
+        with connect() as conn:
+            venue = repo.get_venue_detail(conn, venue_id)
+            if venue is None:
+                raise Refused("there is no venue with that id")
+            repo.delete_venue(conn, venue_id)
+            note = (
+                f" {', '.join(venue.home_to)} lost its home ground."
+                if venue.home_to
+                else ""
+            )
+        redirect("/venues?ok=" + _q(f"Removed {venue.name}.{note}"))
+
+    # --- the household -----------------------------------------------------
+    #
+    # Not admin CRUD over tables — only the handful of things that genuinely
+    # change. A kid is added once and then occasionally corrected; the sport
+    # catalog needs a row when a household takes up something the seed list
+    # never anticipated, and that sport's emoji is in the title of every event.
+
+    @app.get("/household")
+    def household():
+        with connect() as conn:
+            return render(
+                "household.tpl",
+                children=[
+                    {
+                        "row": row,
+                        "usage": repo.child_usage(conn, row["id"]),
+                        # Decoded here rather than in the template: the column is
+                        # a JSON array, and a view has no business parsing one.
+                        "nicknames": ", ".join(json.loads(row["nicknames"] or "[]")),
+                    }
+                    for row in repo.child_rows(conn)
+                ],
+                sports=[
+                    {"row": row, "usage": repo.sport_usage(conn, row["id"])}
+                    for row in repo.list_sports(conn)
+                ],
+                flash=_flash(),
+            )
+
+    @app.post("/children")
+    def save_child():
+        """Create or correct. An existing id means a correction.
+
+        The id is derived from the name once and then left alone: activities
+        reference it, and fixing a spelling should fix the calendar titles
+        rather than rebuild every row that points at them.
+        """
+        name = _field("name").strip()
+        if not name:
+            raise Refused("a kid needs a name")
+
+        child_id = _field("id").strip() or slugify(name)
+        initial = _field("initial").strip() or name[:1].upper()
+        nicknames = [
+            n.strip() for n in _field("nicknames").split(",") if n.strip()
+        ]
+
+        with connect() as conn:
+            order = _field("birth_order") or conn.execute(
+                "SELECT COALESCE(MAX(birth_order), 0) + 1 AS n FROM children"
+            ).fetchone()["n"]
+            try:
+                config_mod.apply(
+                    conn,
+                    {
+                        "children": [
+                            {
+                                "id": child_id,
+                                "name": name,
+                                "initial": initial,
+                                "birth_order": _whole("list order", str(order)),
+                                "color": _field("color").strip() or None,
+                                "nicknames": nicknames,
+                            }
+                        ]
+                    },
+                )
+            except sqlite3.IntegrityError as exc:
+                # The only unique constraint here is on `initial`, and it exists
+                # so a shared title can never render ambiguously.
+                raise Refused(
+                    f"{initial!r} is already another kid's initial, and initials have "
+                    'to be unique — a title like "Lu+Le" has to mean one pair of kids.'
+                ) from exc
+
+        redirect(
+            _field("next")
+            or f"/household?ok={_q(f'Saved {name}.')}#{child_id}"
+        )
+
+    @app.post("/children/<child_id>/delete")
+    def remove_child(child_id):
+        with connect() as conn:
+            usage = repo.child_usage(conn, child_id)
+            if usage.in_use:
+                raise Refused(
+                    f"{child_id} still has {len(usage.activities)} team(s): "
+                    f"{', '.join(usage.activities)}. Deleting a kid cascades through "
+                    f"their teams to the record of the {usage.tracked_events} events "
+                    "already written, which would leave those events sitting in the "
+                    "calendar with nothing tracking them. Remove the teams first."
+                )
+            repo.delete_child(conn, child_id)
+        redirect("/household?ok=" + _q(f"Removed {child_id}."))
+
+    @app.post("/sports")
+    def save_sport():
+        name = _field("name").strip()
+        emoji = _field("emoji").strip()
+        if not name or not emoji:
+            raise Refused("a sport needs a name and an emoji")
+
+        sport_id = _field("id").strip() or slugify(name).replace("-", "_")
+        with connect() as conn:
+            config_mod.apply(
+                conn, {"sports": [{"id": sport_id, "name": name, "emoji": emoji}]}
+            )
+        redirect(f"/household?ok={_q(f'Saved {name}.')}#sport-{sport_id}")
+
+    @app.post("/sports/<sport_id>/delete")
+    def remove_sport(sport_id):
+        with connect() as conn:
+            sport = repo.get_sport(conn, sport_id)
+            if sport is None:
+                raise Refused(f"there is no sport called {sport_id!r}")
+            if sport["builtin"]:
+                raise Refused(
+                    f"{sport['name']} is built in, and the seed list is reapplied on "
+                    "every upgrade — deleting it would only bring it back. Change its "
+                    "emoji instead; that edit does survive."
+                )
+            usage = repo.sport_usage(conn, sport_id)
+            if usage.in_use:
+                raise Refused(
+                    f"{sport['name']} is still used by {', '.join(usage.activities)}."
+                )
+            repo.delete_sport(conn, sport_id)
+        redirect("/household?ok=" + _q(f"Removed {sport_id}."))
+
+    # --- static ------------------------------------------------------------
+
+    @app.get("/static/<path:path>")
+    def assets(path):
+        return static_file(path, root=str(STATIC))
+
+    return app
+
+
+# --- helpers ----------------------------------------------------------------
+
+
+def _whole(name: str, value: str, *, default: int | None = None) -> int:
+    """A form field as an integer, or a message the operator can act on.
+
+    Every one of these arrives from a select or a number input, so a
+    non-numeric value means a hand-built POST or a browser doing something
+    odd — either way it is bad input, not a bug, and rendering it as
+    "This is a bug in calsync" over a traceback tells the operator the wrong
+    thing about their own console.
+    """
+    value = (value or "").strip()
+    if not value and default is not None:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        raise Refused(f"{name} has to be a whole number, not {value!r}") from None
+
+
+def _reads_as_a_time(value: str) -> bool:
+    try:
+        hour, minute = (int(part) for part in value.split(":", 1))
+    except ValueError:
+        return False
+    return 0 <= hour <= 23 and 0 <= minute <= 59
+
+
+def _field(name: str, default: str = "") -> str:
+    """One form value, decoded as UTF-8.
+
+    Bottle leaves form values latin-1 decoded — the HTTP default when a browser
+    omits the charset, which browsers always do — and exposes ``getunicode`` to
+    recode them. Reading them with plain ``.get`` mangles every emoji and every
+    accented name, so nothing in this module calls ``.get`` on a form.
+    """
+    return request.forms.getunicode(name) or default
+
+
+def _sample_title(settings) -> str:
+    """Render the title template against a made-up event.
+
+    The template fields are the least guessable setting in the table, and the
+    title is a render rather than data — so changing it re-renders every event
+    on the next sync without a re-fetch. Showing the result is much cheaper than
+    changing it, syncing, and looking at a phone.
+    """
+    from ..models import Activity, Child, Event, Venue
+    from ..normalize import title
+
+    when = datetime(2026, 4, 11, 14, 0, tzinfo=timezone.utc)
+    child = Child(id="sample", name="Leia", initial="Le", birth_order=1)
+    activity = Activity(
+        id="sample", child_id="sample", name="Wookiees", sport="soccer",
+        emoji="\u26bd\ufe0f", tz="UTC",
+    )
+    event = Event(
+        uid="sample", activity_id="sample", starts_at=when, ends_at=when,
+        is_game=True, tz="UTC", opponent="Tuskens", home=True,
+        # Every field the template offers is populated, so an unused one reads
+        # as unused rather than as broken.
+        venue=Venue(raw="Anchorhead Meadow Park", name="Anchorhead Meadow Park"),
+    )
+    try:
+        return title.render(event, activity, [child], settings)
+    except (KeyError, IndexError, ValueError) as exc:
+        # An unknown {field} in the template. Say so rather than 500 — the
+        # operator is mid-edit and needs to see which field is wrong.
+        return f"template error: {exc}"
+
+
+def render(view: str, **context) -> str:
+    context.setdefault("flash", None)
+    # Every page, so the answer to "which version is this box running" is on
+    # whatever page somebody is already looking at.
+    context.setdefault("version", __version__)
+    return template(view, template_lookup=[str(VIEWS)], **context)
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _q(value: str) -> str:
+    """Make a message safe to hand back through a redirect query string."""
+    return quote(" ".join(value.split()), safe="")
+
+
+#: The settings page's sections, in the order they appear. The ids are anchors
+#: in `settings.tpl`, so a name here that is not a heading there sends a save to
+#: the top of the page — which is the behaviour this exists to remove.
+SETTINGS_SECTIONS = (
+    "calendar", "titles", "safety", "seasons", "notifications", "api", "read-key",
+    "admin-keys", "kill-switch", "matrix",
+)
+
+
+def _saved(section: str, message: str):
+    """Confirm a settings save *where it happened*, not at the top of the page.
+
+    The settings page is one long column of seven independent forms, and every
+    one of them used to redirect to a bare `/settings` — so saving the Matrix
+    room at the bottom threw you back past six sections you were not editing,
+    with a banner at the top confirming something now off-screen. The fragment
+    puts the page back where you were; `at` is what tells the template to draw
+    the confirmation beside that form instead.
+
+    Deliberately not JavaScript. The console has none, and a redirect the
+    browser already knows how to honour needs nothing to keep in step.
+    """
+    assert section in SETTINGS_SECTIONS, f"unknown settings section {section!r}"
+    redirect(f"/settings?ok={_q(message)}&at={section}#{section}")
+
+
+
+#: How many child colours the calendar cycles through before repeating. Six is
+#: past any household this is built for; the wrap is there so a seventh kid gets
+#: a colour somebody else has rather than no colour at all.
+_COLOURS = 6
+
+
+def _require_zone(name: str) -> str:
+    """Refuse a timezone nothing can load, where the person who typed it is."""
+    if not zones.loadable(name):
+        raise Refused(
+            f"{name!r} is not a timezone name. Pick one from the list — they "
+            "are the IANA names, like 'America/Toronto', and an abbreviation "
+            "like 'EDT' names one side of a daylight-saving switch rather than "
+            "a place."
+        )
+    return name
+
+
+def _zone(name: str) -> ZoneInfo:
+    """The household's timezone, or UTC if the setting names one that is gone.
+
+    A tzdata that has dropped a zone must not take the calendar page down —
+    `default_tz` is a free-text setting, and the page's job is to show a
+    schedule, not to adjudicate the zone database.
+    """
+    try:
+        return ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError):
+        return ZoneInfo("UTC")
+
+
+def _month_of(value: str | None, *, zone: ZoneInfo, clock) -> date:
+    """The first of the month a ``YYYY-MM`` parameter names. Today's by default.
+
+    A malformed one falls back rather than refusing: this arrives from a link,
+    and an error page in place of a calendar helps nobody.
+    """
+    if value:
+        try:
+            year, month = (int(part) for part in value.split("-", 1))
+            return date(year, month, 1)
+        except (ValueError, TypeError):
+            pass
+    return clock().astimezone(zone).date().replace(day=1)
+
+
+def _month_bounds(month: date, zone: ZoneInfo) -> tuple[datetime, datetime]:
+    """The month as an absolute half-open span, local midnight to local midnight."""
+    start = datetime(month.year, month.month, 1, tzinfo=zone)
+    following = _shift_month(month, +1)
+    return start, datetime(following.year, following.month, 1, tzinfo=zone)
+
+
+def _shift_month(month: date, by: int) -> date:
+    index = month.year * 12 + (month.month - 1) + by
+    return date(index // 12, index % 12 + 1, 1)
+
+
+def _flash():
+    # `getunicode`, for `_field`'s reason: a message with a curly apostrophe
+    # in it came back as mojibake through plain `.get`.
+    ok, err = request.query.getunicode("ok"), request.query.getunicode("err")
+    if ok:
+        return {"kind": "good", "text": ok}
+    if err:
+        return {"kind": "bad", "text": err}
+    return None
+
+
+def _require_source(conn, source_id: str):
+    source = repo.get_source(conn, source_id)
+    if source is None or source.kind == "merged":
+        raise Refused(f"there is no source called {source_id!r}")
+    return source
+
+
+def _preview(conn, source, secrets, fetcher, clock):
+    """A live dry run: the truth about this feed right now.
+
+    Deliberately not cached and deliberately not stored. ``calsync promote``
+    re-checks for the same reason — a verdict from last week says nothing about
+    a feed that has since grown a fixture list.
+    """
+    return sync_source(
+        conn, source, _NoTarget(), now=clock(), secrets=secrets,
+        fetcher=fetcher, dry_run=True,
+    )
+
+
+def _held_rows(
+    conn, source_id: str, report, *, zone: ZoneInfo, now: datetime,
+) -> list[dict]:
+    """The events a held poll would have cancelled, ready to put in front of a person.
+
+    A warm-up is folded into its game: it goes when the game goes, and listing
+    it separately would ask somebody to confirm one decision twice. Each row
+    names the event still on the calendar at the same start with the same
+    label, when there is one — that is what tells a schedule regenerated under
+    new ids (every row has a twin) from a season genuinely being cut short.
+    """
+    held = set(report.held_cancellations)
+    if not held:
+        return []
+    states = repo.event_states(conn, source_id)
+    contents = repo.event_contents(conn, source_id)
+
+    def label(uid: str) -> str:
+        content = contents.get(uid) or {}
+        if content.get("detail"):
+            return content["detail"]
+        if content.get("opponent"):
+            return f"vs {content['opponent']}"
+        return uid
+
+    present: dict[tuple[str, str], str] = {}
+    for uid, state in states.items():
+        if uid not in held and not state.cancelled and not warmup.is_synthetic(uid):
+            present.setdefault((state.starts_at, label(uid)), uid)
+
+    rows = []
+    for uid in held:
+        if warmup.is_synthetic(uid):
+            continue
+        state = states.get(uid)
+        if state is None:
+            continue
+        starts = datetime.fromisoformat(state.starts_at).astimezone(zone)
+        rows.append({
+            "uid": uid,
+            "when": starts.strftime("%a %b %-d, %-I:%M %p"),
+            "sort": state.starts_at,
+            "label": label(uid),
+            "collection": state.collection,
+            "past": starts < now,
+            "twin": present.get((state.starts_at, label(uid))),
+            "warmup": any(warmup.parent_of(w) == uid for w in held),
+        })
+    rows.sort(key=lambda r: datetime.fromisoformat(r["sort"]))
+    return rows
+
+
+def _card(conn, source) -> dict:
+    activity = repo.get_activity(conn, source.activity_id)
+    return {
+        "source": source,
+        "activity": activity,
+        "child": repo.get_child(conn, activity.child_id),
+        "tracked": repo.tracked_events(conn, source.id),
+        "health": repo.source_row(conn, source.id),
+        "conditions": (),
+        "state": "unchecked",
+        "state_label": "not checked",
+        "report": None,
+        "feed_events": 0,
+        "dormant": dormancy.for_source(conn, source.id),
+    }
+
+
+def _apply_check(card: dict, report) -> None:
+    if report is None:
+        return
+    conditions = gate.conditions(report, card["activity"])
+    state, label = gate.summarise(conditions)
+    card.update(
+        conditions=conditions,
+        state=state,
+        state_label=label,
+        report=report,
+        # What the feed holds right now, which is not the same as what is on the
+        # calendar: events outside the sync window are read and then dropped.
+        feed_events=report.created + report.updated + report.unchanged,
+    )
+
+
+def _check_all(db_path: str, secrets, fetcher, clock, sources) -> dict:
+    """Dry-run every source at once, so the dashboard is current rather than stale.
+
+    One connection per worker: a sqlite3 connection belongs to the thread that
+    opened it. Failures are swallowed to None — one dead feed must not take the
+    page down, and the card says "not checked" rather than inventing a verdict.
+    """
+    if not sources:
+        return {}
+
+    def check(source):
+        try:
+            with closing(db.connect(db_path)) as conn:
+                fresh = repo.get_source(conn, source.id)
+                if fresh is None or not fresh.enabled:
+                    return source.id, None
+                return source.id, _preview(conn, fresh, secrets, fetcher, clock)
+        except Exception:  # noqa: BLE001 - a broken feed is not a broken page
+            return source.id, None
+
+    with ThreadPoolExecutor(max_workers=CHECK_WORKERS) as pool:
+        return dict(pool.map(check, sources))
+
+
+# --- server -----------------------------------------------------------------
+
+
+class _Threaded(socketserver.ThreadingMixIn, WSGIServer):
+    daemon_threads = True
+
+
+class _QuietHandler(WSGIRequestHandler):
+    def log_message(self, fmt, *args):
+        """Do not log request lines.
+
+        A URL here can carry a team name and a child's name, and this process
+        writes to the container log. The poller already reports what matters.
+        """
+
+
+def serve(app, *, host: str = "127.0.0.1", port: int = 8730) -> None:
+    """Run the console.
+
+    Threaded because inspecting a feed blocks on a network fetch for as long as
+    the fetch timeout, and a single-threaded server would freeze the whole
+    console while one feed is slow.
+
+    The default host is loopback and should stay that way: this serves
+    children's names, schedules and the physical locations they will be at.
+    Reach it from another machine by putting a VPN or an authenticating proxy in
+    front of it, not by binding this to 0.0.0.0 — whichever one you use, the
+    console itself has no login and is not built to face a network directly.
+    """
+    bottle.TEMPLATE_PATH = [str(VIEWS)]
+    with make_server(
+        host, port, app, server_class=_Threaded, handler_class=_QuietHandler
+    ) as httpd:
+        print(f"calsync console on http://{host}:{port}", flush=True)
+        httpd.serve_forever()

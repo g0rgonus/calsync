@@ -1,0 +1,80 @@
+# A household described in one file, for `calsync import`.
+#
+#   calsync --db calsync.db init-db
+#   calsync --db calsync.db import docs/config.example.yaml
+#
+# The console writes the same rows, and onboarding a feed there is usually
+# easier. Importing again updates rows by id; it never deletes one.
+
+# Known venues resolve with no lookup. Aliases are the names feeds actually use.
+venues:
+  - name: Theed Park
+    address: 1009 Theed Rd, Naboo NX 40114
+    aliases: [Theed Pk]
+  - name: Anchorhead Meadow Park
+    address: 2210 Meadow Ln, Tatooine NX 40301
+    aliases: [Anchorhead, Anchorhead Meadow Park Soccer Fields]
+
+children:
+  - id: luke
+    name: Luke
+    initial: Lu          # in multi-kid titles; unique within the household
+    birth_order: 1       # fixes the order: always Lu+Le, never Le+Lu
+    color: "#2f6fdb"     # console only
+  - id: leia
+    name: Leia
+    initial: Le
+    birth_order: 2
+    color: "#d9663d"
+  - id: rey
+    name: Rey
+    initial: R
+    birth_order: 3
+    color: "#3da36b"
+
+activities:
+  - id: luke-soccer-jedi
+    child: luke
+    name: Jedi           # what titles call the team
+    official_name: U10RS
+    aliases: [U10 RS, Jedi Academy]   # other names the feed uses for this team
+    sport: soccer
+    league: RSL          # stripped from titles
+    age_group: U10       # stripped from opponents: "Mos Eisley FC U10" -> "Mos Eisley FC"
+    home_venue: Theed Park   # a game here is "vs"; elsewhere, only an explicit "@" is away
+    tz: America/New_York
+    season: { start: 2026-08-15, end: 2026-11-30 }
+    alarm_policy: { game: 90m, practice: 30m }
+    warmup: 45m          # a warm-up before every game; 0m or omit for none
+
+  - id: rey-soccer-rogues
+    child: rey
+    name: Rogues
+    sport: soccer
+    home_venue: Anchorhead Meadow Park
+    tz: America/New_York
+    alarm_policy: { game: 60m, practice: 30m }
+
+sources:
+  # The token is a secret-store reference, never part of the stored URL. Set it
+  # as CALSYNC_SECRET_P360_JEDI, or in secrets.json.
+  - id: p360-luke-jedi
+    activity: luke-soccer-jedi
+    kind: player360
+    poll_interval: 20m
+    url_template: "https://api.360player.com/v1/ics/events.ics?token={{secret:p360_jedi}}&from={{now-30d|unix}}&group_ids=10001"
+    secret_ref: p360_jedi
+
+  - id: tr-rey-rogues
+    activity: rey-soccer-rogues
+    kind: teamreach
+    poll_interval: 30m
+    url_template: "https://api.teamreach.net/api/events/teams/{{secret:tr_rogues}}/ical"
+    secret_ref: tr_rogues
+
+# Any key from the console's /settings page. docs/events.md lists the ones that
+# change what is written.
+settings:
+  collection_template: "{type}"
+  multi_kid_style: initials
+  all_kids_label: Kids

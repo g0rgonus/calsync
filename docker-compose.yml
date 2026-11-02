@@ -1,0 +1,148 @@
+# calsync + Radicale.  First run:
+#
+#   docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/out" \
+#     ghcr.io/g0rgonus/calsync:latest init-deploy /out
+#   docker compose up -d
+#
+# init-deploy writes config/ and a .env holding the three secrets this will not
+# start without. Every variable is documented in .env.example.
+
+x-env: &env
+  env_file:
+    - path: .env
+      required: false
+  environment:
+    CALSYNC_DB: /data/calsync.db
+    # Beside the database, in the same volume: the only thing left in it is
+    # feed tokens, which arrive during onboarding and are the console's own
+    # state. No host directory, so no ownership to get wrong.
+    CALSYNC_SECRETS: /data/secrets.json
+    CALSYNC_SETTING_RADICALE_URL: ${CALSYNC_SETTING_RADICALE_URL:-http://radicale:5232}
+
+# `image` and `build` both. Compose pulls the published image when one exists,
+# so a checkout testing its own changes needs `docker compose up -d --build`.
+x-calsync: &calsync
+  <<: *env
+  image: ghcr.io/g0rgonus/calsync:${CALSYNC_TAG:-latest}
+  build: .
+  restart: unless-stopped
+
+x-health: &health
+  interval: 30s
+  timeout: 5s
+  retries: 3
+  start_period: 5s
+
+services:
+  radicale:
+    image: tomsquest/docker-radicale:3.9.0.0
+    restart: unless-stopped
+    # As the account the image ships, rather than root: its entrypoint only
+    # drops privileges when told to run radicale directly, and the command below
+    # is a shell.
+    user: "2999:2999"
+    environment:
+      CALSYNC_SECRET_RADICALE_PASSWORD: ${CALSYNC_SECRET_RADICALE_PASSWORD:-}
+      CALSYNC_SECRET_RADICALE_READER_PASSWORD: ${CALSYNC_SECRET_RADICALE_READER_PASSWORD:-}
+      # 1 lets anything that can reach this stack read the calendars with no
+      # password. Writing still needs the writer's credential.
+      CALSYNC_RADICALE_ANONYMOUS_READ: ${CALSYNC_RADICALE_ANONYMOUS_READ:-}
+    # The users and rights files are derived on every start and live only in the
+    # container. Two accounts: calsync writes, calreader is read-only and is
+    # what goes on a family's devices.
+    command:
+      - sh
+      - -c
+      - |
+        : "$${CALSYNC_SECRET_RADICALE_PASSWORD:?is empty — set it in .env}"
+        : "$${CALSYNC_SECRET_RADICALE_READER_PASSWORD:?is empty — set it in .env}"
+        umask 077
+        printf 'calsync:%s\ncalreader:%s\n' \
+          "$$CALSYNC_SECRET_RADICALE_PASSWORD" "$$CALSYNC_SECRET_RADICALE_READER_PASSWORD" > /tmp/users
+        cp /config/rights /tmp/rights
+        case "$${CALSYNC_RADICALE_ANONYMOUS_READ:-}" in
+          ''|0) ;;
+          1) cat /config/rights.anonymous >> /tmp/rights ;;
+          *) echo "CALSYNC_RADICALE_ANONYMOUS_READ must be 1 or 0" >&2; exit 1 ;;
+        esac
+        exec /venv/bin/radicale --config /config/config --rights-file /tmp/rights
+    volumes:
+      - radicale-data:/data
+      - ./config/radicale:/config:ro
+    healthcheck:
+      <<: *health
+      test: ["CMD", "curl", "-fsS", "http://localhost:5232/", "-o", "/dev/null"]
+      retries: 5
+      start_period: 10s
+
+  calsync:
+    <<: *calsync
+    depends_on:
+      radicale:
+        condition: service_healthy
+    volumes:
+      - calsync-data:/data
+      - ./config/calsync:/config:ro
+
+  web:
+    <<: *calsync
+    command: ["web", "--host", "0.0.0.0", "--port", "8730"]
+    volumes:
+      - calsync-data:/data
+    healthcheck:
+      <<: *health
+      test: ["CMD", "python", "-c",
+             "import urllib.request;urllib.request.urlopen('http://localhost:8730/')"]
+
+  api:
+    <<: *calsync
+    command: ["api", "--host", "0.0.0.0", "--port", "8731"]
+    # CALSYNC_API_REPLICAS=0 in .env turns it off without editing this file.
+    deploy:
+      replicas: ${CALSYNC_API_REPLICAS:-1}
+    volumes:
+      - calsync-data:/data
+    healthcheck:
+      <<: *health
+      test: ["CMD", "python", "-c",
+             "import http.client as h; c=h.HTTPConnection('localhost',8731,timeout=3); c.request('GET','/v1/events'); raise SystemExit(0 if c.getresponse().status==401 else 1)"]
+
+  # Where a tool pushes a team's events (documented at /inbound/v1/docs). Its own
+  # published port, outside `proxy`, so a firewall rule can admit this and
+  # nothing else. Off until CALSYNC_INBOUND_REPLICAS=1.
+  inbound:
+    <<: *calsync
+    command: ["inbound", "--host", "0.0.0.0", "--port", "8732"]
+    deploy:
+      replicas: ${CALSYNC_INBOUND_REPLICAS:-0}
+    ports:
+      - ${CALSYNC_INBOUND_BIND:-0.0.0.0}:${CALSYNC_INBOUND_PORT:-8732}:8732
+    volumes:
+      - calsync-data:/data
+    healthcheck:
+      <<: *health
+      test: ["CMD", "python", "-c",
+             "import urllib.request;urllib.request.urlopen('http://localhost:8732/inbound/v1')"]
+
+  proxy:
+    image: caddy:2.11.7-alpine
+    restart: unless-stopped
+    ports:
+      - 8730:80
+    volumes:
+      - ./config/caddy:/etc/caddy:ro
+
+  feeds:
+    profiles: ["demo"]
+    image: python:3.12-slim
+    restart: unless-stopped
+    command: ["python", "/demo/feeds.py", "--port", "8000"]
+    volumes:
+      - ./demo:/demo:ro
+      - ./tests/fixtures:/tests/fixtures:ro
+    ports:
+      - "127.0.0.1:8000:8000"
+
+volumes:
+  radicale-data:
+  calsync-data:
