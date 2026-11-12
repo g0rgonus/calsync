@@ -160,8 +160,12 @@ A rule sends every category whose title matches it to a calendar, or to Skip:
   regular expression is a support call.
 - **Ordered, first match wins.** The source page lets a rule move up or down.
 - **Stored on the source:** `rules: [{"match": "starts_with" | "contains",
-  "text": …, "destination": …}]` in `sources.config`, read by
-  `routing.collection_for` like `categories`.
+  "text": …, "destination": …}]` in `sources.config`.
+- **Resolved in `routing.destination()`**, not in `collection_for` alone.
+  `destination()` is what `collection_for`, `skipped()` and so the sync's `off`
+  set all read, so a Skip rule takes written events off the way a skipped
+  category does: through `withheld.enforce`'s `also`, never counted against
+  the guard (invariant 2). `is_new()` reads rules too.
 - **A category placed by a rule is not new.** It is not marked *new*, not
   listed on `/review`, and sends no push. That is the point: a rule is the
   answer given once for every category it will ever match.
@@ -169,11 +173,19 @@ A rule sends every category whose title matches it to a calendar, or to Skip:
   stay two rows with their own counts; the rule only routes them. Merging is
   still an alias feature (below).
 
-`routing.collection_for` becomes, in order: staging; an event held in
-`enrichment`; the category's own destination if a person set one (Skip
-included); the first rule that matches; the default calendar. A category's
-own destination beats a rule, so one exception does not need a rule of its
-own.
+Where an event goes becomes, in order:
+
+1. staging;
+2. an event held in `enrichment`. 1.1.1 moves this ahead of the category's
+   destination, for the twelve-hour check (above). On `main` before it, a
+   destination is returned first;
+3. the category's own destination, if a person set one;
+4. the first rule that matches;
+5. the default calendar.
+
+Skip, from step 3 or 4, is applied in `sync.py` as today, not by
+`collection_for`. A category's own destination beats a rule, so one exception
+does not need a rule of its own.
 
 ### Showing what each rule matches
 
@@ -186,9 +198,14 @@ Rules are only safe if their reach is visible. "contains Meeting" also catches
 - **Each rule lists the categories it matches** in the sync window, with their
   event counts, and a rule matching nothing says so: it is either waiting for a
   title that has not appeared, or a typo.
-- **Adding or editing a rule shows its matches before it is saved.** The form
-  posts to a preview of the table, and Save applies it. Changing a rule moves
-  written events, so a person sees what will move first.
+- **Every change to the rules is previewed before it is saved**: adding,
+  editing, moving up or down, and deleting. Each changes which rule matches
+  first and so moves written events. The form posts to a preview of the table,
+  and Save applies it.
+- **A category a rule stops matching falls back to the default and is new
+  again.** It is marked *new* and listed on `/review`, but sends no push: the
+  preview named it, and the person saving has just seen it. It is recorded in
+  `category_notified` when the change is saved.
 
 ### A default place by category
 
@@ -212,10 +229,17 @@ from the venue table so it carries an address and a pin.
 
 ### Answering new categories at once
 
-`/review` and the category table get **Keep all at {default}**: it sets every
-category currently marked new to the default calendar, as if each had been
-confirmed. It acts on the categories listed when the page was drawn, sent with
-the form, so a category that arrived since is not answered without being seen.
+`/review` and the category table get **Keep all at {default}**. It clears the
+*new* mark from every category the page listed as new, and nothing else.
+
+- **It does not set a destination.** The categories are added to
+  `categories_seen` in `sources.config` and stay unset. They go on following
+  `default_calendar` when it changes and any rule added later. Setting each one
+  to the default would silently exempt them from future rules.
+- `is_new()` becomes: no destination of its own, matched by no rule, and not in
+  `categories_seen`.
+- It acts on the categories listed when the page was drawn, sent with the form,
+  so a category that arrived since is not answered without being seen.
 
 ### Through the API
 
@@ -273,6 +297,13 @@ route table, so these appear there with no hand-written docs (invariant 30).
 - `approve_all_applies_a_sources_answers`
 - `admin_category_change_pushes_and_returns_the_previous_value`
 - `admin_rules_preview_changes_nothing`
+- `skip_rule_removes_written_events_without_tripping_guard`
+- `rule_placed_category_is_not_new`
+- `hold_beats_category_and_rule`
+- `reordering_or_deleting_a_rule_is_previewed`
+- `category_a_rule_stops_matching_is_new_without_a_push`
+- `keep_all_leaves_categories_unset`
+- `rule_added_after_keep_all_routes_those_categories`
 - `rule_routes_matching_categories`
 - `first_matching_rule_wins`
 - `category_destination_beats_rule`
