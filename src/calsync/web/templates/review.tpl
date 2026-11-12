@@ -77,6 +77,12 @@
   Proposed by something else and applied by nobody. Approving writes the same
   row your own answer below would write; rejecting leaves the question open.
 </p>
+% for group in approve_all:
+<form method="post" action="/review/sources/{{ group['source_id'] }}/approve-all" style="margin-bottom:1rem">
+  <input type="hidden" name="tasks" value="{{ group['ids'] }}">
+  <button class="btn btn-answer" type="submit">Approve all {{ group['count'] }} for {{ group['team'] }}</button>
+</form>
+% end
 % for task in pending:
 <div class="card" style="margin-bottom:1rem">
   <p class="label" style="margin-bottom:0.4rem">{{ task.type.replace('_', ' ') }}</p>

@@ -9,6 +9,7 @@ is faked: every write runs the real sync loop into an `ics_file` target, so
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from io import BytesIO, StringIO
 from pathlib import Path
@@ -470,7 +471,8 @@ def test_the_gate_waits_for_a_push_not_for_a_game(client, db_path):
 
 def test_the_description_matches_the_route_table(client):
     app = client.app
-    actual = {(r.method, r.rule.replace("<", "{").replace(">", "}")) for r in app.routes}
+    actual = {(r.method, re.sub(r":\w+", "", r.rule).replace("<", "{").replace(">", "}"))
+              for r in app.routes}
     described = {(r.method, r.path) for r in inbound_app.ROUTES}
     assert actual == described
     r = client.get("/inbound/v1", key=None)

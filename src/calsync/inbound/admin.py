@@ -10,7 +10,7 @@ import json
 import re
 from datetime import date
 
-from .. import repo, withheld, zones
+from .. import repo, routing, withheld, zones
 from ..normalize import venue as venue_norm
 from .events import Invalid, _err
 
@@ -183,3 +183,85 @@ def validate_home(body) -> int | None:
 
 def request_hash(body) -> str:
     return hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()
+
+
+MAX_CALENDAR = 80
+MAX_QUESTION = 300
+
+
+def _id_or_null(value) -> bool:
+    return value is None or (isinstance(value, int) and not isinstance(value, bool)
+                             and 0 < value < 2 ** 63)
+
+
+def _calendar(value) -> str | None:
+    """A destination as stored: skip, or a calendar's slug."""
+    if not isinstance(value, str) or not value.strip() or len(value) > MAX_CALENDAR:
+        return None
+    return routing.SKIP if value.strip().casefold() == routing.SKIP else routing.slugify(value)
+
+
+def validate_label(label: str) -> str:
+    """A category from the URL: not blank, and no longer than a title could be."""
+    label = " ".join(label.split())
+    if not label or len(label) > MAX_QUESTION:
+        raise Invalid([_err("label", "bad_label",
+                            f"a category's title, 1 to {MAX_QUESTION} characters")])
+    return label
+
+
+def validate_category(body) -> dict:
+    """Where one category goes, and optionally its default place. A null
+    destination clears it; leaving place out keeps the stored one."""
+    if not isinstance(body, dict):
+        raise Invalid([_err("body", "not_an_object", "send a JSON object")])
+    errors = [_err(n, "unknown_field", "only destination and place")
+              for n in sorted(set(body) - {"destination", "place"})]
+    if "destination" not in body:
+        errors.append(_err("destination", "required", "a calendar, skip, or null to clear"))
+    elif body["destination"] is not None and _calendar(body["destination"]) is None:
+        errors.append(_err("destination", "bad_calendar",
+                           f"a calendar name, at most {MAX_CALENDAR} characters, or skip"))
+    if "place" in body and not _id_or_null(body["place"]):
+        errors.append(_err("place", "bad_id", "a venue id, or null for none"))
+    if errors:
+        raise Invalid(errors)
+    out = {"destination": None if body["destination"] is None
+           else _calendar(body["destination"])}
+    if "place" in body:
+        out["place"] = body["place"]
+    return out
+
+
+def validate_default_calendar(body) -> str:
+    if not isinstance(body, dict) or set(body) != {"calendar"}:
+        raise Invalid([_err("calendar", "required", "the calendar's name")])
+    chosen = _calendar(body["calendar"])
+    if chosen is None:
+        raise Invalid([_err("calendar", "bad_calendar",
+                            f"a calendar name, at most {MAX_CALENDAR} characters")])
+    if chosen == routing.SKIP:
+        raise Invalid([_err("calendar", "not_a_calendar",
+                            "the default has to be a calendar; skip a category instead")])
+    return chosen
+
+
+def validate_rules(body) -> list[dict]:
+    if not isinstance(body, dict) or set(body) != {"rules"}:
+        raise Invalid([_err("rules", "required", "the whole ordered list of rules")])
+    try:
+        return routing.validate_rules(body["rules"])
+    except ValueError as exc:
+        raise Invalid([_err("rules", "bad_rule", str(exc))]) from None
+
+
+def validate_times(body) -> list[str]:
+    if not isinstance(body, dict) or set(body) != {"times_confirmed"}:
+        raise Invalid([_err("times_confirmed", "required",
+                            "the whole list of confirmed questions")])
+    times = body["times_confirmed"]
+    if not isinstance(times, list) or not all(
+            isinstance(t, str) and t.strip() and len(t) <= MAX_QUESTION for t in times):
+        raise Invalid([_err("times_confirmed", "bad_list",
+                            "a list of questions, as held_times words them")])
+    return list(dict.fromkeys(times))

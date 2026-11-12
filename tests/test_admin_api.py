@@ -664,3 +664,194 @@ def test_every_admin_change_that_can_touch_a_live_calendar_sends_a_push(pushing)
         "R2-D2 cleared Jawas's home venue.",
         "R2-D2 made Ewoks live.",
     ]
+
+
+# --- calendar-feed routing ------------------------------------------------------------
+
+from pathlib import Path  # noqa: E402
+
+FEED = Path(__file__).parent / "fixtures" / "calendar_feed_sample.ics"
+FEED_NOW = datetime(2026, 9, 1, 12, tzinfo=timezone.utc)
+CAL = f"{TEAMS}/cal-explorers"
+MEETINGS = {"match": "contains", "text": "meeting", "destination": "meetings"}
+
+
+@pytest.fixture
+def routed(db_path, tmp_path):
+    """A live club calendar routed by category, and the pushes admin changes send."""
+    conn = conn_for(db_path)
+    conn.execute("INSERT INTO activities (id, child_id, name, sport_id, tz) VALUES "
+                 "('luke-scouts-explorers', 'luke', 'Explorers', 'scouts', 'America/New_York')")
+    conn.execute("INSERT INTO sources (id, activity_id, kind, shape, url_template, config) "
+                 "VALUES ('cal-explorers', 'luke-scouts-explorers', 'calendar-feed', 'feed', "
+                 "'https://example.org/club.ics', ?)",
+                 (json.dumps({"default_calendar": "explorers", "rules": [MEETINGS],
+                              "categories": {"Council Meeting": "council"}}),))
+    conn.commit()
+    conn.close()
+    secrets_file = tmp_path / "push-secrets.json"
+    secrets_file.write_text(json.dumps({"pushover_token": "t", "pushover_user": "u"}))
+    secrets_file.chmod(0o600)
+    sent = []
+    client = Client(inbound_app.create_app(
+        db_path, secrets=SecretStore(path=secrets_file), clock=lambda: FEED_NOW,
+        log=lambda line: None, write_target=build("ics_file", directory=tmp_path / "out"),
+        notify_sender=lambda config, secrets, message, **kw: sent.append(message),
+        fetcher=lambda url, **kw: FEED.read_bytes()), key=ADMIN_KEY)
+    return client, sent, db_path
+
+
+def _config(db_path):
+    conn = conn_for(db_path)
+    try:
+        return repo.get_source(conn, "cal-explorers").config
+    finally:
+        conn.close()
+
+
+def test_review_lists_categories_with_what_placed_them(routed):
+    client, _, _ = routed
+    review = client.get(f"{CAL}/review")["json"]
+    rows = {c["label"]: c for c in review["categories"]}
+
+    assert rows["Council Meeting"]["placed_by"] == "set"
+    assert rows["Council Meeting"]["destination"] == "council"
+    assert rows["Council Meeting"]["also_matches"] == [0]
+    assert rows["Padawan Meeting"]["placed_by"] == "rule"
+    assert rows["Padawan Meeting"]["rule"] == 0 and not rows["Padawan Meeting"]["new"]
+    assert rows["Mos Espa Camporee"]["placed_by"] == "default"
+    assert rows["Mos Espa Camporee"]["new"]
+    assert rows["Padawan Meeting"]["events"] > 1
+    assert "Group Meeting" in review["rules"][0]["matches"]
+    assert review["default_calendar"] == "explorers"
+    assert {"explorers", "council", "meetings"} <= set(review["calendars"])
+    assert review["held_times"] == []
+
+
+def test_a_team_not_routed_by_category_has_no_categories(client):
+    review = client.get(f"{TEAMS}/in-jawas/review")["json"]
+    assert review["categories"] == [] and review["default_calendar"] is None
+    r = client.call("PUT", f"{TEAMS}/in-jawas/rules", {"rules": []})
+    assert r["status"] == 409 and r["json"]["error"]["code"] == "not_routed"
+
+
+def test_admin_category_change_pushes_and_returns_the_previous_value(routed):
+    client, sent, db_path = routed
+    venue = mandalore(client)["id"]
+    r = client.call("PUT", f"{CAL}/categories/Mos Espa  camporee",
+                    {"destination": "Skip", "place": venue})
+
+    assert r["status"] == 200, r
+    assert r["json"]["current"] == {"destination": "skip", "place": venue}
+    assert r["json"]["previous"] == {"destination": None, "place": None}
+    config = _config(db_path)
+    assert config["categories"] == {"Council Meeting": "council", "Mos Espa camporee": "skip"}
+    assert config["places"] == {"Mos Espa camporee": venue}
+    assert sent == ["R2-D2 changed Explorers's Mos Espa camporee: kept it off every calendar."]
+
+    conn = conn_for(db_path)
+    (logged,) = [r_ for r_ in conn.execute("SELECT action FROM admin_log")
+                 if r_["action"] == "team_category"]
+    conn.close()
+    assert client.call("PUT", f"{CAL}/categories/Group Meeting",
+                       {"destination": "x", "place": 999})["status"] == 404
+    assert client.call("PUT", f"{CAL}/categories/Group Meeting",
+                       {"calendar": "x"})["status"] == 422
+
+
+def test_a_category_label_may_carry_a_slash(routed):
+    client, _, db_path = routed
+    r = client.call("PUT", f"{CAL}/categories/Committee Meeting / Popcorn Order Due",
+                    {"destination": "skip"})
+    assert r["status"] == 200
+    assert _config(db_path)["categories"]["Committee Meeting / Popcorn Order Due"] == "skip"
+
+
+def test_sending_previous_back_undoes_the_change(routed):
+    client, sent, db_path = routed
+    before = _config(db_path)
+
+    for path, change in (
+        (f"{CAL}/categories/Council Meeting", {"destination": None, "place": None}),
+        (f"{CAL}/default-calendar", {"calendar": "Club"}),
+        (f"{CAL}/rules", {"rules": [{"match": "starts_with", "text": "Padawan",
+                                     "destination": "skip"}]}),
+        (f"{CAL}/times-confirmed", {"times_confirmed": ["Padawan Meeting, then"]}),
+    ):
+        done = client.call("PUT", path, change)
+        assert done["status"] == 200, (path, done)
+        undone = client.call("PUT", path, done["json"]["previous"])
+        assert undone["status"] == 200, (path, undone)
+        assert undone["json"]["previous"] == done["json"]["current"]
+
+    after = _config(db_path)
+    assert after["categories"] == before["categories"]
+    assert after["default_calendar"] == before["default_calendar"]
+    assert after["rules"] == before["rules"]
+    assert after.get("times_confirmed") == []
+    assert len(sent) == 8, "every change, and every undo, is pushed"
+
+
+def test_admin_rules_preview_changes_nothing(routed):
+    client, sent, db_path = routed
+    before = _config(db_path)
+    r = client.call("POST", f"{CAL}/rules/preview", {"rules": []})
+
+    assert r["status"] == 200, r
+    rows = {c["label"]: c for c in r["json"]["categories"]}
+    assert rows["Padawan Meeting"]["from"] == "meetings"
+    assert rows["Padawan Meeting"]["to"] == "explorers"
+    assert rows["Council Meeting"]["from"] == rows["Council Meeting"]["to"] == "council"
+    assert "Padawan Meeting" in r["json"]["moving"]
+    assert "Council Meeting" not in r["json"]["moving"]
+    assert r["json"]["events_moving"] >= rows["Padawan Meeting"]["events"]
+    assert _config(db_path) == before
+    assert sent == []
+    bad = client.call("POST", f"{CAL}/rules/preview", {"rules": [{"match": "regex"}]})
+    assert bad["status"] == 422
+
+
+ROUTING_CALLS = [
+    ("PUT", "/categories/Group Meeting", {"destination": "skip"}),
+    ("PUT", "/default-calendar", {"calendar": "club"}),
+    ("PUT", "/rules", {"rules": []}),
+    ("POST", "/rules/preview", {"rules": []}),
+    ("PUT", "/times-confirmed", {"times_confirmed": []}),
+]
+
+
+@pytest.mark.parametrize("method,path,change", ROUTING_CALLS)
+@pytest.mark.parametrize("key", [TEAM_KEY, None])
+def test_routing_calls_need_an_admin_key(routed, method, path, change, key):
+    client, sent, db_path = routed
+    before = _config(db_path)
+    assert client.call(method, CAL + path, change, key=key)["status"] == 401
+    assert _config(db_path) == before and sent == []
+
+
+def test_a_staged_teams_routing_changes_send_no_push(routed):
+    client, sent, db_path = routed
+    conn = conn_for(db_path)
+    repo.set_staging(conn, "cal-explorers", "onboarding")
+    conn.close()
+    for method, path, change in ROUTING_CALLS:
+        assert client.call(method, CAL + path, change)["status"] == 200, path
+    assert sent == []
+
+
+@pytest.mark.parametrize("path,change", [
+    ("/default-calendar", {"calendar": "skip"}),
+    ("/default-calendar", {"calendar": ""}),
+    ("/times-confirmed", {"times_confirmed": "Padawan Meeting"}),
+    ("/times-confirmed", {"times_confirmed": [""]}),
+    ("/times-confirmed", {"times_confirmed": [7]}),
+    ("/rules", {"rules": [MEETINGS] * 51}),
+    ("/rules", {"rules": [{**MEETINGS, "text": "x" * 81}]}),
+    ("/categories/ ", {"destination": "skip"}),
+    ("/categories/" + "x" * 301, {"destination": "skip"}),
+])
+def test_routing_calls_refuse_what_they_cannot_store(routed, path, change):
+    client, sent, db_path = routed
+    before = _config(db_path)
+    assert client.call("PUT", CAL + path, change)["status"] == 422
+    assert _config(db_path) == before and sent == []

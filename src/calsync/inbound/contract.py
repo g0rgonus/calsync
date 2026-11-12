@@ -208,6 +208,8 @@ P = {
                              "of a second team; the key is not shown again.", True,
                              "create-ewoks-1"),
     "venue_id": Param("venue_id", "path", "The venue's id, from listVenues.", True, "7"),
+    "label": Param("label", "path", "The category, URL-encoded, matched ignoring case and "
+                   "spacing.", True, "Den%20Meeting%20-%20Special"),
     "q": Param("q", "query", "Only venues whose name or an alias contains this.",
                example="theed royal"),
     "If-None-Match": Param("If-None-Match", "header", "* makes a PUT create-only; 412 "
@@ -228,6 +230,11 @@ class Route:
     responses: dict = field(default_factory=dict)   # status -> (words, schema|None)
     auth: bool = True
 
+
+RULES = {"rules": [
+    {"match": "starts_with", "text": "Den Meeting", "destination": "practices", "place": 7},
+    {"match": "contains", "text": "no meeting", "destination": "skip"},
+]}
 
 _E = "Error"
 ROUTES: tuple[Route, ...] = (
@@ -395,6 +402,49 @@ ROUTES: tuple[Route, ...] = (
           "null to clear it.", params=("team_id",),
           body="HomeVenue", example={"venue_id": 7},
           responses={200: ("The team's home venue", None), 404: ("No such team or venue", _E)}),
+    Route("PUT", PREFIX + "/admin/teams/{source_id}/categories/{label}", "setCategory",
+          "Send one category of a calendar feed to a calendar, or skip it.",
+          "Admin key only. destination null clears it, so it follows the rules and the "
+          "default again. place is a venue id for events the feed gives no place; "
+          "leave it out to keep the stored one. Returns current and previous in this "
+          "body's shape: sending previous back is the undo. Pushes unless staged.",
+          params=("team_id", "label"), body="CategoryChoice",
+          example={"destination": "practices", "place": 7},
+          responses={200: ("The change", "Change"), 404: ("No such team or venue", _E),
+                     409: ("not_routed", _E), 422: ("Invalid", _E)}),
+    Route("PUT", PREFIX + "/admin/teams/{source_id}/default-calendar", "setDefaultCalendar",
+          "Where a calendar feed's unset categories go.",
+          "Admin key only. Moves every event in a category nobody set. Returns current "
+          "and previous; sending previous back is the undo. Pushes unless staged.",
+          params=("team_id",), body="DefaultCalendar", example={"calendar": "practices"},
+          responses={200: ("The change", "Change"), 404: ("No such team", _E),
+                     409: ("not_routed", _E), 422: ("Invalid, or skip", _E)}),
+    Route("PUT", PREFIX + "/admin/teams/{source_id}/rules", "setRules",
+          "Replace a calendar feed's title rules.",
+          "Admin key only. The whole ordered list; the first rule that matches a "
+          "category wins, and a category's own destination beats any rule. Preview "
+          "with previewRules first. Returns current and previous; sending previous "
+          "back is the undo. Pushes unless staged.",
+          params=("team_id",), body="Rules", example=RULES,
+          responses={200: ("The change", "Change"), 404: ("No such team or venue", _E),
+                     409: ("not_routed", _E), 422: ("Invalid", _E)}),
+    Route("POST", PREFIX + "/admin/teams/{source_id}/rules/preview", "previewRules",
+          "What a rule list would do, changing nothing.",
+          "Admin key only. Reads the feed now and returns where each category would go "
+          "and which would move, with their event counts.",
+          params=("team_id",), body="Rules", example=RULES,
+          responses={200: ("The preview", "RulesPreview"), 404: ("No such team", _E),
+                     409: ("not_routed", _E), 422: ("Invalid", _E),
+                     503: ("The feed could not be read", _E)}),
+    Route("PUT", PREFIX + "/admin/teams/{source_id}/times-confirmed", "setTimesConfirmed",
+          "Replace the held times answered as right.",
+          "Admin key only. The whole list, worded as reviewTeam's held_times. Returns "
+          "current and previous; sending previous back is the undo. Pushes unless staged.",
+          params=("team_id",), body="TimesConfirmed",
+          example={"times_confirmed": [
+              "Den Meeting, Tue 24 Nov 2026 at 07:00 (usually 19:00)"]},
+          responses={200: ("The change", "Change"), 404: ("No such team", _E),
+                     409: ("not_routed", _E), 422: ("Invalid", _E)}),
     Route("DELETE", PREFIX + "/admin/teams/{source_id}/key", "revokeTeamKey",
           "Revoke a team's key.", "Admin key only. Idempotent.", params=("team_id",),
           responses={204: ("Revoked, or there was none", None), 404: ("No such team", _E)}),
@@ -586,7 +636,50 @@ def openapi(server: str) -> dict:
                     "checks": {"type": "array", "items": {"type": "object"}},
                     "events": {"type": "array", "items": {"type": "object"},
                                "description": "As the read API's events, plus lands_in."},
-                    "clashes": {"type": "array", "items": {"type": "object"}}}},
+                    "clashes": {"type": "array", "items": {"type": "object"}},
+                    "categories": {"type": "array", "items": {"type": "object"},
+                                   "description": "A calendar feed's categories in the "
+                                   "window: label, events, destination, placed_by (set, "
+                                   "rule or default), rule, also_matches, place, new."},
+                    "rules": {"type": "array", "items": {"type": "object"},
+                              "description": "Each rule with the categories it matches."},
+                    "default_calendar": {"type": ["string", "null"]},
+                    "calendars": {"type": "array", "items": {"type": "string"},
+                                  "description": "Calendars a destination may name; a "
+                                  "new name makes a new calendar."},
+                    "held_times": {"type": "array", "items": {"type": "string"},
+                                   "description": "Times held as twelve hours off."}}},
+                "CategoryChoice": {"type": "object", "additionalProperties": False,
+                                   "required": ["destination"], "properties": {
+                                       "destination": {"type": ["string", "null"]},
+                                       "place": {"type": ["integer", "null"]}}},
+                "DefaultCalendar": {"type": "object", "additionalProperties": False,
+                                    "required": ["calendar"],
+                                    "properties": {"calendar": {"type": "string"}}},
+                "Rules": {"type": "object", "additionalProperties": False,
+                          "required": ["rules"], "properties": {"rules": {
+                              "type": "array", "items": {
+                                  "type": "object", "additionalProperties": False,
+                                  "required": ["match", "text", "destination"],
+                                  "properties": {
+                                      "match": {"type": "string",
+                                                "enum": ["starts_with", "contains"]},
+                                      "text": {"type": "string"},
+                                      "destination": {"type": "string"},
+                                      "place": {"type": "integer"}}}}}},
+                "TimesConfirmed": {"type": "object", "additionalProperties": False,
+                                   "required": ["times_confirmed"], "properties": {
+                                       "times_confirmed": {"type": "array",
+                                                           "items": {"type": "string"}}}},
+                "Change": {"type": "object", "properties": {
+                    "source_id": {"type": "string"},
+                    "current": {"type": "object"},
+                    "previous": {"type": "object", "description": "Send it back as the "
+                                 "body to undo."}}},
+                "RulesPreview": {"type": "object", "properties": {
+                    "categories": {"type": "array", "items": {"type": "object"}},
+                    "moving": {"type": "array", "items": {"type": "string"}},
+                    "events_moving": {"type": "integer"}}},
                 "StatusChange": _schema(STATUS_FIELDS, required=("uid", "status")),
                 "EventStatus": {"type": "object", "properties": {
                     "uid": {"type": "string"},

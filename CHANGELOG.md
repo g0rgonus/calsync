@@ -6,6 +6,20 @@ All notable changes to calsync are recorded here, in the
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-11-12
+
+### Added
+- The admin review endpoint lists a calendar feed's categories (with what
+  placed each one), its rules (with what each matches), the default calendar,
+  the calendars a destination may name, and held times.
+- A `route_category` agent task for each new category of a live calendar feed,
+  answered with a destination and an optional default place and applied only
+  once a person approves it. `/review` approves all of a source's answers at
+  once; one that cannot be applied stays waiting.
+- Admin calls to set a category, the default calendar, the title rules (with a
+  preview that changes nothing) and the confirmed times. Each is logged and
+  pushed, and returns the value it replaced, so sending it back is the undo.
+
 ## [1.3.0] - 2026-11-12
 
 ### Added

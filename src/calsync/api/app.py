@@ -376,6 +376,7 @@ _ANSWER_SHAPES = {
     "resolve_activity": {"alias": "Rogues"},
     "classify_kind": {"label": "Skills Session", "is_game": False},
     "confirm_time": {"time_is_right": True},
+    "route_category": {"destination": "practices", "place": "optional venue id"},
     "normalize_venue": {"name": "Anchorhead Meadow Park",
                         "address": "optional",
                         "same_as": "or the name of a venue already known"},

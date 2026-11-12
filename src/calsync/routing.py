@@ -34,6 +34,11 @@ def _key(text: str) -> str:
     return " ".join(text.split()).casefold()
 
 
+#: Bounds on what a rule list may hold, so one bad request cannot bloat the
+#: source's config and every review that echoes it.
+MAX_RULES = 50
+MAX_RULE_TEXT = 80
+
 #: How a rule may match a category's title. No patterns: a parent writes these
 #: on a phone, and a regular expression is a support call.
 MATCHES = ("starts_with", "contains")
@@ -104,10 +109,46 @@ def default_place(label: str, config: dict | None) -> int | None:
     return None
 
 
+#: ``place`` left out of :func:`with_category`: keep whatever is stored.
+KEEP = object()
+
+
+def with_category(config: dict, label: str, destination: str | None,
+                  place=KEEP) -> dict:
+    """A copy of ``config`` with one category's destination and default place
+    set, matched like a category. ``None`` clears either. The one writer for the
+    console, an approved agent answer and the admin API, so they cannot drift."""
+    wanted = _key(label)
+    config = dict(config)
+
+    def replaced(mapping, value):
+        kept = {k: v for k, v in (mapping or {}).items() if _key(k) != wanted}
+        return {**kept, label: value} if value is not None else kept
+
+    config["categories"] = replaced(config.get("categories"), destination)
+    if place is not KEEP:
+        config["places"] = replaced(config.get("places"), place)
+    return config
+
+
+def own_category(config: dict | None, label: str) -> dict:
+    """What a person set for one category: ``{"destination", "place"}``."""
+    wanted = _key(label)
+
+    def find(mapping):
+        return next((v for k, v in (mapping or {}).items() if _key(k) == wanted), None)
+
+    config = config or {}
+    return {"destination": find(config.get("categories")) or None,
+            "place": find(config.get("places"))}
+
+
 def validate_rules(rules) -> list[dict]:
     """A rule list as stored, or ValueError naming what is wrong with it."""
     if not isinstance(rules, list):
         raise ValueError("rules are a list")
+    if len(rules) > MAX_RULES:
+        raise ValueError(f"at most {MAX_RULES} rules")
     clean = []
     for n, rule in enumerate(rules, 1):
         if not isinstance(rule, dict):
@@ -121,6 +162,9 @@ def validate_rules(rules) -> list[dict]:
             raise ValueError(f"rule {n} has no text to match")
         if not chosen:
             raise ValueError(f"rule {n} goes nowhere")
+        if len(text) > MAX_RULE_TEXT or len(chosen) > MAX_RULE_TEXT:
+            raise ValueError(f"rule {n}'s text and calendar are at most "
+                             f"{MAX_RULE_TEXT} characters")
         place = rule.get("place")
         if place is not None and (isinstance(place, bool) or not isinstance(place, int)):
             raise ValueError(f"rule {n}'s place is not a venue")
