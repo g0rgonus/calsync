@@ -161,29 +161,7 @@ final class StatusPresenterTests: XCTestCase {
         let result = status(.ok(created: 0, updated: 0, deleted: 0, at: now))
         XCTAssertEqual(result.title, "In sync")
         XCTAssertFalse(result.needsAttention)
-        XCTAssertTrue(result.showsMark)
-        XCTAssertEqual(result.symbol, "calendar",
-                       "the symbol is the fallback when the bitmap is missing")
         XCTAssertTrue(result.detail?.contains("No changes") == true)
-    }
-
-    /// The template is this flag, not the symbol name. A change of symbol
-    /// must not be what decides whether the mark is drawn.
-    func testOnlyAQuietSyncShowsTheMark() {
-        XCTAssertTrue(status(.ok(created: 2, updated: 1, deleted: 0, at: now)).showsMark)
-        XCTAssertFalse(status(.never).showsMark)
-        XCTAssertFalse(status(.held("6 of 21", at: now)).showsMark)
-        XCTAssertFalse(status(.failed("nope", at: now)).showsMark)
-        XCTAssertFalse(status(.offline(at: now)).showsMark)
-        XCTAssertFalse(status(
-            .ok(created: 0, updated: 0, deleted: 0, at: now),
-            pause: Pause.starting(.anHour, at: now)).showsMark)
-        XCTAssertFalse(status(
-            .ok(created: 0, updated: 0, deleted: 0, at: now),
-            review: ReviewCounts(heldEvents: 1, needsAttention: 1)).showsMark)
-        XCTAssertFalse(status(
-            .ok(created: 0, updated: 0, deleted: 0, at: now),
-            review: ReviewCounts(heldPolls: 1, needsAttention: 1)).showsMark)
     }
 
     func testChangesAreCounted() {
@@ -200,7 +178,6 @@ final class StatusPresenterTests: XCTestCase {
             review: ReviewCounts(heldEvents: 3, needsAttention: 3))
         XCTAssertEqual(result.title, "3 events held")
         XCTAssertFalse(result.needsAttention, "not the mirror's problem to alarm about")
-        XCTAssertFalse(result.showsMark)
         XCTAssertNotEqual(result.symbol, "calendar")
     }
 
