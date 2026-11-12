@@ -26,6 +26,15 @@ it as private all the same.
 **One feed per group, many kids.** The feed is the group's, not a child's.
 Which kids an event belongs to comes from the source, as with any team.
 
+**Persists across seasons by default.** A club or school calendar goes quiet
+over the summer, and `seasonend.py` switches off a fetched source after two
+quiet months. Onboarding this kind sets `persists_across_seasons` in the
+source's config, and the source page can clear it for a group that really does
+end.
+
+**Set the default calendar** (below) when onboarding. It starts as the
+calendar this team's non-game events already go to.
+
 ## Categories
 
 Every distinct event title is a category: `Padawan Meeting`, `Council
@@ -48,66 +57,151 @@ The choices are the calendars calsync already writes to, **Skip**, and **New
 calendar…**. A select per row rather than drag and drop: the same model, it
 works on a phone, and it needs no front-end library.
 
+### Where an event goes
+
+`routing.collection_for`, in order:
+
+1. **The staging calendar, while the source is being onboarded.**
+   `staging_collection` wins over everything, as for every source. Nothing from
+   this feed reaches a family calendar before promotion, whatever its
+   category says.
+2. **Skip** keeps the event off every calendar (below).
+3. **The category's destination**, if a person has set one.
+4. **The source's default calendar**, for a category nobody has set yet.
+
+The default is `default_calendar` in `sources.config`. Onboarding sets it to
+the collection this team's non-game events already render to under
+`collection_template`, and the source page can change it. Changing it moves
+every event in an unset category, as any collection change does.
+
 ### A new category
 
-A category the source has never seen goes to the source's **default
-calendar** at once, so a one-off is on the family's phones without waiting for
-anyone. It is marked *new* on the source page, listed on `/review` until a
-person confirms or changes it, and announced by **one push per new category**,
-never one per poll.
+A category the source has never seen goes to the default calendar on the next
+sync after promotion, so a one-off reaches the family's phones without waiting
+for anyone. Before promotion it waits on the staging calendar with everything
+else.
 
-This is the opposite of a sports feed, where an unknown label is held in the
-`enrichment` calendar (invariant 20). There the cost of a guess is a game on
-the wrong calendar; here every category already has a sensible place to go,
-and a missed one-off costs more than a misfiled one.
+It is marked *new* on the source page and listed on `/review` until a person
+confirms or changes its destination. This is the opposite of a sports feed,
+where an unknown label is held in the `enrichment` calendar (invariant 20).
+There a guess puts a game on the wrong calendar; here every category already
+has a sensible place to go, and a missed one-off costs more than a misfiled
+one.
+
+**New categories are not a diagnostic.** They are not in
+`PollResult.diagnostics`, do not make `is_clean` false, and do not hold
+promotion. On the first poll every category is new; if they held promotion,
+the source could not leave staging until each one was answered.
+
+### Telling someone
+
+A new category sends **one push per category**, never one per poll. It uses
+`enrichment.review`'s fingerprint pattern on a column of its own,
+`sources.category_notified`, so it and the held-events announcement never
+silence each other.
+
+The copy says what already happened, because the event is already on a
+calendar:
+
+```
+Explorers: new category "Naboo Sunday"
+1 event added to the Explorers calendar. Keep it there, move it, or skip it.
+```
+
+The link opens the source page's category table. On `/review` new categories
+are their own section, apart from the questions about held events, with the
+same wording: *already on {calendar}, confirm or change*. Neither may reuse the
+held-events copy, which says nothing has gone to the family's calendars.
 
 ### Changing a category
 
 - **To another calendar:** its written events move (invariant 6: a move, never
   an update).
-- **To Skip:** its events come off the calendar. They are dropped on the way to
-  the write, like a withheld event, so they stay in the diff and never count as
-  disappearances against the guard (invariant 2). Taking twelve meetings off
-  must not look like a truncated feed.
+- **To Skip:** its events come off the calendar. They join the sync's `off`
+  set and are passed to `withheld.enforce` as `also`, the way correlated copies
+  are (`claimed`). They stay in the diff and never count as disappearances
+  against the guard (invariant 2), so taking twelve meetings off cannot look
+  like a truncated feed. They are never stored as `withheld`.
 - **Back from Skip:** an ordinary sync writes them again.
 
 A destination is a person's decision. Nothing in the poll path sets one; the
-poll only records that a category exists.
+poll only reports which categories exist.
 
 ## What it writes
 
 Every event is a non-game that keeps the feed's own label: `Luke ⚜️ Padawan
 Meeting`. It takes the activity's practice alarm, gets no warm-up, and has no
-opponent or home/away. All-day events follow invariant 13.
+opponent or home/away.
+
+- **`LOCATION`** becomes the venue, through the same venue parsing and lookup
+  as other connectors. An unknown place is an `unresolved_venues` diagnostic,
+  which holds promotion like any source's, and a map pin rather than a
+  calendar once promoted (invariant 20).
+- **`DESCRIPTION`** goes in the body, as other connectors carry it.
+- **All-day events** follow invariant 13.
 
 ## Rules
 
-- **Repeating series are expanded** into one event per occurrence, with
-  `EXDATE` and `RECURRENCE-ID` overrides applied. Google writes rules the
-  inbound expander refuses (`FREQ=MONTHLY;BYDAY=1WE`, `WKST=SU`), so this uses
-  a full RRULE implementation, bounded by the sync window. An occurrence's uid
-  is the series uid plus its original start, so an override replaces exactly
-  one occurrence.
-- **Promotion waits for events, not games** (`SyncReport.promotable`). A feed
-  with no fixtures would otherwise sit on the onboarding calendar forever.
 - **Change detection hashes content fields** (invariant 9): `DTSTART`, `DTEND`,
-  `SUMMARY`, `LOCATION`, `DESCRIPTION`, `STATUS`.
+  `SUMMARY`, `LOCATION`, `DESCRIPTION`. `STATUS` is not hashed. A
+  `STATUS:CANCELLED` event sets `Event.cancelled` and is honoured without a
+  guard (invariant 4).
 - **An empty or unparseable feed raises** (invariant 10).
+- **Promotion waits for events, not games, for this kind only.** The kind is in
+  a set the sync reads (beside `sources.PUSHED`), and `promotable` asks for
+  `events_seen > 0` for kinds in it, as it already does for pushed sources.
+  Every other fetched kind keeps `fixtures_seen > 0`: a sports feed with only
+  practices has not exercised the opponent path.
+
+## Repeating series
+
+Each series is expanded into one event per occurrence, because everything
+downstream works one event at a time (`inbound/recurrence.py` explains why).
+Google writes rules that expander refuses (`FREQ=MONTHLY;BYDAY=1WE`,
+`WKST=SU`), so this kind uses `dateutil.rrule`, which `icalendar` already
+depends on, limited to a stated subset.
+
+**Supported:** `FREQ` of `DAILY`, `WEEKLY`, `MONTHLY` or `YEARLY`; `INTERVAL`;
+`BYDAY` with or without an ordinal (`1WE`, `-1FR`); `BYMONTHDAY`; `BYMONTH`;
+any `WKST`; `UNTIL`, `COUNT`, or neither. Also `EXDATE`, and `RECURRENCE-ID`
+overrides of a single occurrence.
+
+**Refused:** `BYSETPOS`, `BYHOUR`, `BYMINUTE`, `BYSECOND`, `BYWEEKNO`,
+`BYYEARDAY`, `RDATE`, `RANGE=THISANDFUTURE`, and `FREQ` finer than `DAILY`. A
+refused rule raises `FeedError` naming the event and the rule part, rather than
+being approximated: a rule read half-right puts meetings on days nobody is
+there.
+
+**Bounded by the sync window.** The sync passes its window edges to the parser,
+a new optional argument to `sources.parse`. Only occurrences inside the window
+are produced, so a rule with no end produces a bounded list. The cap is 400
+occurrences per series, as in the inbound expander. Past that, the parse
+raises.
+
+**Expanded in wall-clock time.** Occurrences are computed in the series'
+`DTSTART` zone (its `TZID`) and only then anchored to an instant, so a 19:00
+meeting stays at 19:00 across a daylight-saving change. A floating time (no
+`TZID`, no `Z`) takes the calendar's `X-WR-TIMEZONE`. With neither, the parse
+raises (invariant 12). An all-day series is anchored at local midnight in the
+team's zone (invariant 13).
+
+**Occurrence uids.** `<series UID>/<original start>`, where the original start
+is the occurrence's start as the rule produced it, before any override:
+`YYYYMMDDTHHMMSSZ` in UTC for a timed series, `YYYYMMDD` for an all-day one. A
+`RECURRENCE-ID` override keeps the uid of the occurrence it replaces, so moving
+one meeting is an update, not a delete and a create. A VEVENT with no `RRULE`
+keeps its own `UID` unchanged.
 
 ## Shape of the change
 
 - **The mapping lives on the source, not in the adapter.** `sources.config`
-  holds `categories: {label: destination}`, where a destination is a calendar
-  or `skip`. Routing reads it in the sync layer (`routing.collection_for`), so
-  another feed kind can opt in later without a rewrite.
-- **The adapter stays pure.** It sets `Event.source_category` and reports
-  categories it was not given as `new_categories`, a diagnostic that does not
-  hold an event.
-- **Skip joins the `off` set in `sync.py`**, the way correlated copies do
-  (`claimed`), and is passed to `withheld.enforce` as `also`. It is never
-  stored as `withheld`.
-- **The push** reuses `enrichment.review`'s once-per-question fingerprint,
-  tracked apart from the held-events one.
+  holds `categories: {label: destination}` (a calendar or `skip`) and
+  `default_calendar`. Routing reads them in `routing.collection_for`, after the
+  staging override, so another feed kind can opt in later without a rewrite.
+- **The adapter stays pure.** It sets `Event.source_category` and returns every
+  category it saw with a count in a new `PollResult.categories`, not in
+  `diagnostics`. The sync compares that with the config to find new ones.
+- **One migration**, adding `sources.category_notified`.
 
 ## Not in scope
 
@@ -124,10 +218,18 @@ Fixtures from the invented world, keeping the shape of a real Google export:
 `RECURRENCE-ID` overrides, a monthly `BYDAY=1WE` series, events with and
 without `LOCATION`, and no `DESCRIPTION`.
 
-- `new_category_syncs_to_default_and_is_reported`
+- `new_category_waits_on_staging_before_promotion`
+- `new_category_goes_to_default_after_promotion`
+- `new_categories_do_not_block_promotion`
+- `promotable_on_events_without_games`
+- `sports_feed_still_needs_a_fixture_to_promote`
 - `skipped_category_never_written`
 - `skipping_a_written_category_removes_without_tripping_guard`
 - `moving_a_category_moves_its_events`
-- `recurrence_overrides_replace_one_occurrence`
-- `promotable_on_events_without_games`
-- `new_category_pushes_once`
+- `cancelled_status_is_honoured_and_not_hashed`
+- `recurrence_override_keeps_occurrence_uid`
+- `recurrence_keeps_wall_clock_across_dst`
+- `unbounded_series_stops_at_window`
+- `refused_rule_part_raises`
+- `new_category_pushes_once_with_its_own_copy`
+- `onboarding_sets_persists_across_seasons`
