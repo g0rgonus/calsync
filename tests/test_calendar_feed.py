@@ -319,17 +319,13 @@ def _with_slip():
 
 
 def test_twelve_hours_off_is_held_and_asked(conn, target):
-    result = _parse(_with_slip())
-    by_uid = {e.uid: e for e in result.events}
-
-    assert by_uid["slip@google.com"].needs_enrichment
-    assert not by_uid["breakfast@google.com"].needs_enrichment, "07:30 is another time"
-    assert result.diagnostics["suspect_times"] == [
-        "Padawan Meeting, Tue 24 Nov 2026 at 07:00 (usually 19:00)"]
-
     report = _sync(conn, target, raw=_with_slip())
+
+    assert report.diagnostics["suspect_times"] == [
+        "Padawan Meeting, Tue 24 Nov 2026 at 07:00 (usually 19:00)"]
     assert _live(conn)["slip@google.com"].collection == "enrichment"
-    assert _live(conn)["breakfast@google.com"].collection == "explorers"
+    assert _live(conn)["breakfast@google.com"].collection == "explorers", \
+        "07:30 is another time"
     assert report.awaiting_review == 1
     assert not report.promotable
 
@@ -345,15 +341,36 @@ def test_a_confirmed_time_is_released(conn, target):
     assert report.moved == 1
 
 
-def test_a_skipped_category_is_not_asked_about():
-    raw = _with_slip()
-    act = Activity(id="a", child_id="luke", name="Explorers", sport="scouts",
-                   emoji="⚜️", tz="America/New_York")
-    result = sources.parse("calendar-feed", raw, act, source_id="cal-explorers",
-                           config={"default_calendar": "explorers",
-                                   "categories": {"Padawan Meeting": "skip"}},
-                           window=(NOW, NOW + timedelta(days=180)))
-    assert "suspect_times" not in result.diagnostics
+def test_a_corrected_start_is_not_asked_about(conn, target):
+    _sync(conn, target, raw=_with_slip())
+    repo.set_override(conn, "slip@google.com", "time", {
+        "starts_at": "2026-11-24T19:00:00-05:00", "ends_at": "2026-11-24T20:30:00-05:00",
+        "all_day": 0}, reason="the den leader confirmed 7pm", actor="anakin")
+    conn.commit()
+    report = _sync(conn, target, raw=_with_slip())
+
+    assert "suspect_times" not in report.diagnostics
+    assert _live(conn)["slip@google.com"].collection == "explorers"
+
+
+def test_a_tie_has_no_usual_time(conn, target):
+    # Five at 07:00 beside five at 19:00: the series cut to three, plus its
+    # two moved occurrences, which keep their 19:00 start.
+    raw = FIXTURE.read_bytes().replace(b"UNTIL=20270526T035959Z", b"COUNT=3")
+    raw = raw.replace(b"END:VCALENDAR\n", b"".join(
+        b"BEGIN:VEVENT\nDTSTART;TZID=America/New_York:2026120%dT070000\n"
+        b"DTEND;TZID=America/New_York:2026120%dT080000\nUID:am%d@google.com\n"
+        b"SUMMARY:Padawan Meeting\nEND:VEVENT\n" % (d, d, d) for d in (1, 2, 3, 4, 5))
+        + b"END:VCALENDAR\n")
+    report = _sync(conn, target, raw=raw, dry_run=True)
+
+    assert "suspect_times" not in report.diagnostics
+
+
+def test_a_skipped_category_is_not_asked_about(conn, target):
+    _configure(conn, categories={"Padawan Meeting": "skip"})
+    report = _sync(conn, target, raw=_with_slip(), dry_run=True)
+    assert "suspect_times" not in report.diagnostics
 
 
 def test_series_over_the_cap_raises():

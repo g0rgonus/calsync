@@ -141,10 +141,13 @@ poll only reports which categories exist.
 Calendars are typed by hand, and AM for PM is the slip that costs something: a
 Den Meeting at 06:30 rings an alarm before dawn and is missed that evening. A
 timed event exactly twelve hours from its category's usual start (the most
-common start, seen at least three times) waits in `enrichment` (invariant 20)
+common start, seen at least three times and not tied with another) waits in
+`enrichment` (invariant 20)
 and is asked about on the source page and `/review`, under **Times look
 right**, which takes the place of "Types known" for this kind. Skipped
-categories are not checked.
+categories are not checked, and nor is an event whose start a person has
+corrected (`overlay.py`), which is why the sync runs the check rather than the
+parse.
 
 **This time is right** stores the question itself in `times_confirmed`, so an
 edit to that event's time is asked about again. If the calendar is corrected,

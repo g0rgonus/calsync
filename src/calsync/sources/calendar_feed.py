@@ -388,13 +388,24 @@ def parse_feed(
             continue
         name = spelled.setdefault(category_key(event.source_category), event.source_category)
         result.categories[name] = result.categories.get(name, 0) + 1
+    return result
 
-    suspect = _suspect_times([e for e in events if routing.destination(e, config) != routing.SKIP],
-                             inside, set((config or {}).get("times_confirmed") or ()))
-    for event, question in suspect:
+
+def hold_suspect_times(result: PollResult, *, config: dict | None, inside,
+                       corrected: set[str]) -> None:
+    """Hold, and ask about, starts twelve hours off their category's usual one.
+
+    Called by the sync rather than the parse: ``corrected`` is the uids whose
+    start a person has already fixed (`overlay.py`), which only the sync knows,
+    and a corrected start is not a question.
+    """
+    routed = [e for e in result.events if routing.destination(e, config) != routing.SKIP]
+    suspect = [(e, q) for e, q in _suspect_times(
+        routed, inside, set((config or {}).get("times_confirmed") or ()))
+        if e.uid not in corrected]
+    for event, _ in suspect:
         event.unresolved = event.unresolved + (models.SUSPECT_TIME,)
     result.report("suspect_times", [question for _, question in suspect])
-    return result
 
 
 def suspect_time(event: Event, usual: tuple[int, int]) -> str:
@@ -424,8 +435,11 @@ def _suspect_times(events, inside, confirmed: set[str]) -> list[tuple[Event, str
 
     out = []
     for group in timed.values():
-        (usual, seen), = Counter(hm(e) for e in group).most_common(1)
-        if seen < USUAL_AT_LEAST:
+        ranked = Counter(hm(e) for e in group).most_common(2)
+        (usual, seen) = ranked[0]
+        # A tie has no usual time, and picking one would hold whichever half
+        # the feed happened to list second.
+        if seen < USUAL_AT_LEAST or (len(ranked) > 1 and ranked[1][1] == seen):
             continue
         for event in group:
             hour, minute = hm(event)
