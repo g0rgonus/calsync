@@ -40,11 +40,10 @@ cp "$HERE/.build/release/CalsyncMirrorMenu" "$APP/Contents/MacOS/Calsync Mirror"
 
 # --- the app icon ----------------------------------------------------------
 #
-# The same drawing the console serves as its favicon, rasterised here rather
-# than committed as a second binary that would drift from it the first time the
-# mark is touched. Reaching across into the Python package is a build-time read
-# of one asset, not a coupling between two programs that are separate on
-# purpose — nothing at runtime knows this file exists.
+# The Mac app icon comes from mac/icon.svg, pinned to the original artwork
+# and independent of the web console icon. Rasterised here rather than
+# committed as an .icns, so the binary is not a second copy to keep in step.
+# Nothing at runtime knows this file exists.
 #
 # Without it the app is a blank page in Finder, in Login Items, and — the one
 # that actually matters — in the calendar permission dialog, where an unnamed
