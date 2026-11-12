@@ -18,7 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 
-from . import correlate, overlay, repo, retire, sources, warmup, withheld
+from . import correlate, overlay, repo, retire, routing, sources, warmup, withheld
 from .diff import diff_poll, fingerprint
 from .fetch import FetchError, http_fetch, render_url
 from .models import Activity, Event, Venue
@@ -46,6 +46,9 @@ class SyncReport:
     #: sender states each event's type outright, so there is no fixture parsing
     #: to prove; what the gate waits for instead is the first push.
     pushed: bool = False
+    #: A fetched kind with no fixtures (`sources.EVENTS_ONLY`): like a pushed
+    #: source, the gate waits for events rather than a game.
+    events_only: bool = False
     #: Events in this poll that are on, in the window. For a pushed source this
     #: is the gate's evidence, where a feed's is `fixtures_seen`.
     events_seen: int = 0
@@ -80,6 +83,12 @@ class SyncReport:
     #: reported so a season of standing exclusions is visible rather than
     #: showing up as a permanent shortfall in `created`.
     withheld: int = 0
+    #: Events in a category a person chose to keep off every calendar. Not
+    #: withheld: nothing is stored per event, the category decides.
+    skipped: int = 0
+    #: Every category this poll's feed published, with its event count, for a
+    #: source routed by category (`PollResult.categories`).
+    categories: dict[str, int] = field(default_factory=dict)
     #: Events held off the real calendar because calsync could not tell which
     #: one they belong in. Not an error and not a guard trip — a question
     #: waiting for an answer, counted so the poller says so out loud.
@@ -121,7 +130,8 @@ class SyncReport:
             self.status == "ok"
             and self.is_clean
             and not self.errors
-            and (self.events_seen > 0 if self.pushed else self.fixtures_seen > 0)
+            and (self.events_seen > 0 if self.pushed or self.events_only
+                 else self.fixtures_seen > 0)
         )
 
     def tally(self) -> str:
@@ -142,6 +152,8 @@ class SyncReport:
             parts.append(f"{self.amended} amended")
         if self.withheld:
             parts.append(f"{self.withheld} withheld")
+        if self.skipped:
+            parts.append(f"{self.skipped} skipped")
         if self.fixes_cleared:
             parts.append(f"{self.fixes_cleared} override(s) cleared, the feed agrees")
         if self.fixes_changed:
@@ -288,6 +300,7 @@ def sync_source(
     report = SyncReport(
         source_id=source.id, staged_to=source.staging_collection,
         pushed=source.kind in sources.PUSHED,
+        events_only=source.kind in sources.EVENTS_ONLY,
     )
     settings = Settings.load(conn)
     activity: Activity = repo.get_activity(conn, source.activity_id)
@@ -312,7 +325,9 @@ def sync_source(
             )
             raw = fetcher(assembled)
         result = sources.parse(
-            source.kind, raw, activity, source_id=source.id, config=source.config
+            source.kind, raw, activity, source_id=source.id, config=source.config,
+            window=(now - timedelta(days=settings.sync_window_back_days),
+                    now + timedelta(days=settings.sync_window_forward_days)),
         )
     except Exception as exc:  # noqa: BLE001
         # Deliberately broad. FetchError/SecretError/SourceError are the
@@ -329,6 +344,7 @@ def sync_source(
     # Carry the adapter's own parse gaps into the report; they are the promotion
     # gate, and until now they were computed and dropped.
     report.diagnostics = {k: list(v) for k, v in result.diagnostics.items()}
+    report.categories = dict(result.categories)
 
     # Loaded before anything is counted, because a person's standing decision to
     # keep an event off the calendar changes what a poll reports as much as what
@@ -338,6 +354,10 @@ def sync_source(
     # place nobody is going.
     states = repo.event_states(conn, source.id)
     off = withheld.off_uids(conn, source.id, states)
+    # A category set to Skip is dropped like a withheld event: kept in the diff,
+    # so taking its events off never reads as a truncated feed (invariant 2).
+    skipped = routing.skipped(result.events, source.config)
+    off = off | skipped
     # A person's corrections, laid over the feed below. Loaded here for the same
     # reason as `off`: a venue somebody has already corrected is not a question
     # worth asking about the place the feed named.
@@ -410,12 +430,16 @@ def sync_source(
     # What this team could take to a meet, after the person's overlay. Kids are
     # the team's, before absences: `merging.publish` reads those live.
     mine: dict[str, dict] = {}
-    if source.enabled and not source.staging_collection:
+    # A source routed by category is left out: a merged event is filed by the
+    # collection template, which would undo the category's destination.
+    if (source.enabled and not source.staging_collection
+            and not (source.config or {}).get("default_calendar")):
         for event in events:
             if event.needs_enrichment or withheld.is_withheld(event.uid, off):
                 continue
             k = correlate.key(event, activity.sport,
-                              collection_for(event, activity, children[0], settings))
+                              collection_for(event, activity, children[0], settings,
+                                             config=source.config))
             if k is None:
                 continue
             named = event.venue is not None and event.uid in placed
@@ -448,7 +472,8 @@ def sync_source(
                 # So an absence or a status change has a row to name.
                 repo.placeholder_state(
                     conn, uid=event.uid, source_id=source.id,
-                    collection=collection_for(event, activity, children[0], settings),
+                    collection=collection_for(event, activity, children[0], settings,
+                                              config=source.config),
                     content_hash=event.content_hash or "",
                     starts_at=event.starts_at.isoformat())
         states = repo.event_states(conn, source.id)
@@ -517,8 +542,10 @@ def sync_source(
         report.updated = len(_kept(delta.updated))
         report.cancelled = len(delta.cancelled) + len(delta.called_off)
         report.called_off = len(delta.called_off)
+        report.skipped = sum(1 for e in delta.created + delta.updated
+                             if withheld.is_withheld(e.uid, skipped))
         report.withheld = len(delta.created) + len(delta.updated) \
-            - report.created - report.updated
+            - report.created - report.updated - report.skipped
         return report
 
     if delta.is_anomalous:
@@ -570,7 +597,7 @@ def sync_source(
             continue
         belongs = collection_for(
             event, activity, primary_child, settings,
-            override=source.staging_collection,
+            override=source.staging_collection, config=source.config,
         )
         original = sourced.get(event.uid, event)
         current = overrides.get(event.uid)
@@ -607,7 +634,8 @@ def sync_source(
     # any of them is acted on. A withheld event is skipped whether it is new,
     # changed, moved or merely re-rendered: the decision is about the event, not
     # about what the feed did to it this morning.
-    report.withheld = len(pending) - len(_kept(pending))
+    report.skipped = sum(1 for e in pending if withheld.is_withheld(e.uid, skipped))
+    report.withheld = len(pending) - len(_kept(pending)) - report.skipped
     pending = _kept(pending)
 
     for event in pending:
@@ -625,6 +653,7 @@ def sync_source(
                 alarm_minutes=activity.alarm_minutes(is_game=event.alarms_as_game),
 
                 collection_override=source.staging_collection,
+                source_config=source.config,
             )
             target.ensure_collection(rendered.collection)
             ref = target.upsert(rendered, previous_ref)
@@ -717,7 +746,7 @@ def sync_source(
     # Its own read of `event_state`, not the `states` above: the loop just
     # above marked rows cancelled, and a stale copy would ask the target to
     # delete an event it has already deleted.
-    removal = withheld.enforce(conn, source.id, target, also=claimed)
+    removal = withheld.enforce(conn, source.id, target, also=claimed | skipped)
     report.cancelled += removal.removed
     if not removal.ok:
         report.status = "error"

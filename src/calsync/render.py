@@ -109,6 +109,7 @@ def render(
     manage_url: str | None = None,
     cancelled: bool = False,
     collection_override: str | None = None,
+    source_config: dict | None = None,
 ) -> RenderedEvent:
     primary = min(children, key=lambda c: (c.birth_order, c.name))
     venue = event.venue
@@ -123,7 +124,8 @@ def render(
     return RenderedEvent(
         uid=event.uid,
         collection=collection_for(
-            event, activity, primary, settings, override=collection_override
+            event, activity, primary, settings, override=collection_override,
+            config=source_config,
         ),
         title=title_norm.render(event, activity, children, settings),
         starts_at=event.starts_at,

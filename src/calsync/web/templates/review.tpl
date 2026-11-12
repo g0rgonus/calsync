@@ -109,7 +109,32 @@
 % end
 % end
 
-% if not queues and not pending and not fixes:
+% if new_categories:
+<h2>New categories</h2>
+<p class="note" style="margin-top:-0.5rem">
+  Already on a calendar. Confirm where each one goes, or change it on its
+  team's page.
+</p>
+% for row in new_categories:
+<div class="card" style="margin-bottom:1rem">
+  <p style="margin:0 0 0.6rem">
+    <strong>{{ row['activity'].name }}: {{ row['label'] }}</strong>,
+    {{ row['count'] }} {{ 'event' if row['count'] == 1 else 'events' }},
+    already on {{ row['calendar'] }}, confirm or change.
+  </p>
+  <div class="btn-row">
+    <form method="post" action="/sources/{{ row['source'].id }}/category">
+      <input type="hidden" name="label" value="{{ row['label'] }}">
+      <input type="hidden" name="destination" value="{{ row['calendar'] }}">
+      <button class="btn btn-answer" type="submit">Keep on {{ row['calendar'] }}</button>
+    </form>
+    <a class="btn btn-quiet" href="/sources/{{ row['source'].id }}#categories">Change</a>
+  </div>
+</div>
+% end
+% end
+
+% if not queues and not pending and not fixes and not new_categories:
 <div class="card">
   <p style="margin:0">
     <strong>Nothing waiting.</strong> Every event calsync has seen went to a

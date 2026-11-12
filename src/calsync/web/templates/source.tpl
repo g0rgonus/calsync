@@ -172,6 +172,59 @@
   </div>
 </div>
 
+% if default_calendar:
+<h2 id="categories">Categories</h2>
+<div class="card">
+  <p class="note" style="margin-top:0">
+    Every distinct event title is a category. A new one goes to
+    <strong>{{ default_calendar }}</strong> until you choose, so a one-off reaches
+    phones without waiting for anyone. Changing a category moves what is already
+    written on the next sync; <strong>Skip</strong> takes it off every calendar.
+  </p>
+% if not category_rows:
+  <p class="note" style="margin:0">No categories in the feed's sync window yet.</p>
+% else:
+  <table class="polls">
+    <tr><th>Category</th><th>Events</th><th>Goes to</th></tr>
+% for row in category_rows:
+    <tr>
+      <td>{{ row['label'] }}{{ ' (new)' if row['new'] else '' }}</td>
+      <td>{{ row['count'] }}</td>
+      <td>
+        <form method="post" action="/sources/{{ source.id }}/category">
+          <input type="hidden" name="label" value="{{ row['label'] }}">
+% current = row['chosen'] or default_calendar
+          <select name="destination" aria-label="Where {{ row['label'] }} goes">
+% for name in calendars:
+            <option value="{{ name }}"{{ ' selected' if name == current else '' }}>{{ name }}</option>
+% end
+            <option value="skip"{{ ' selected' if current == 'skip' else '' }}>Skip</option>
+            <option value="__new__">New calendar…</option>
+          </select>
+          <input type="text" name="new_calendar" placeholder="name, if new" size="10">
+          <button class="btn btn-quiet" type="submit">{{ 'Confirm' if row['new'] else 'Save' }}</button>
+        </form>
+      </td>
+    </tr>
+% end
+  </table>
+% end
+  <form method="post" action="/sources/{{ source.id }}/default-calendar" style="margin-top:1rem">
+    <label>Default calendar
+      <select name="destination">
+% for name in calendars:
+        <option value="{{ name }}"{{ ' selected' if name == default_calendar else '' }}>{{ name }}</option>
+% end
+        <option value="__new__">New calendar…</option>
+      </select>
+    </label>
+    <input type="text" name="new_calendar" placeholder="name, if new" size="10">
+    <button class="btn btn-quiet" type="submit">Save</button>
+    <span class="note">Moves every event in a category you have not set.</span>
+  </form>
+</div>
+% end
+
 <h2>Recent polls</h2>
 <div class="card">
 % if not polls:

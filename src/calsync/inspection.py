@@ -52,6 +52,8 @@ _PRODID_HINTS: tuple[tuple[str, str], ...] = (
     ("teamreach", "teamreach"),
     ("360 player", "player360"),
     ("360player", "player360"),
+    # A public Google Calendar is the usual club or school calendar.
+    ("google calendar", "calendar-feed"),
 )
 
 _WS = re.compile(r"\s+")

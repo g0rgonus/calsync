@@ -29,7 +29,7 @@ from . import db, repo
 from .secrets import SecretError, SecretStore
 from .settings import Settings, set_setting
 from . import (
-    digest, enrichment, matrix, merging, polling, retire, seasonend, targeting,
+    categories, digest, enrichment, matrix, merging, polling, retire, seasonend, targeting,
 )
 from .sync import sync_source
 from .targets import build
@@ -259,6 +259,20 @@ def cmd_poll(args) -> int:
             except Exception as exc:  # noqa: BLE001 — never take the poller down
                 print(f"    review check failed: {exc}", flush=True)
 
+            # A calendar feed's new categories. Already on a calendar, so this
+            # is news rather than a question; its own column and its own copy.
+            try:
+                placed = categories.review(
+                    conn, source, report, secrets=secrets,
+                    base_url=args.console_url or "",
+                )
+                for label in placed.notified:
+                    print(f"    new category {label!r}; notified", flush=True)
+                for problem in placed.errors:
+                    print(f"    could not notify: {problem}", flush=True)
+            except Exception as exc:  # noqa: BLE001 — never take the poller down
+                print(f"    category check failed: {exc}", flush=True)
+
             # And the same questions to the room, for whatever is listening.
             # Separate from the push above: different audience, and a room that
             # is not configured must not stop the poller or the notification.
@@ -362,7 +376,9 @@ def cmd_promote(args) -> int:
         if report.pushed and report.events_seen == 0:
             print("\nnot promoting: nothing has been sent to this inbound source yet.")
             print("Give the tool its source id and key, or --force.")
-        elif not report.pushed and report.fixtures_seen == 0:
+        elif report.events_only and report.events_seen == 0:
+            print("\nnot promoting: no events in the sync window yet. Wait, or --force.")
+        elif not (report.pushed or report.events_only) and report.fixtures_seen == 0:
             print("\nnot promoting: no fixtures in the feed yet, so the opponent and")
             print("home/away parsing has never run. Wait for the game schedule, or --force.")
         else:

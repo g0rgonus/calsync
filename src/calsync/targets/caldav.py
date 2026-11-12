@@ -56,7 +56,10 @@ class CalDavTarget:
         )
 
     def resource_url(self, collection: str, uid: str) -> str:
-        return f"{self.base_url}/{quote(collection)}/{quote(uid)}.ics"
+        # A calendar feed's occurrence uid is `<series>/<start>`. A bare slash
+        # names a sub-collection and Radicale refuses an escaped one, so the
+        # resource name swaps it, as the .ics directory target does.
+        return f"{self.base_url}/{quote(collection)}/{quote(uid.replace('/', '_'))}.ics"
 
     @staticmethod
     def _header(response, name: str) -> str | None:

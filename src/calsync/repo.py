@@ -1616,6 +1616,14 @@ def tracked_events(conn: sqlite3.Connection, source_id: str) -> int:
     )
 
 
+def written_collections(conn: sqlite3.Connection, *, exclude: set[str] = frozenset()
+                        ) -> list[str]:
+    """The calendars calsync has live events in, minus holding ones like staging."""
+    rows = conn.execute(
+        "SELECT DISTINCT collection FROM event_state WHERE cancelled = 0").fetchall()
+    return sorted(r["collection"] for r in rows if r["collection"] not in exclude)
+
+
 def events_in_collection(conn: sqlite3.Connection, source_id: str, collection: str) -> int:
     """How many live events this source has in one collection.
 

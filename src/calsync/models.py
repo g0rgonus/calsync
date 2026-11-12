@@ -228,6 +228,11 @@ class PollResult:
     #: adapter reports here is a question for a human or for an agent.
     diagnostics: dict[str, list[str]] = field(default_factory=dict)
 
+    #: Every category the feed published, with how many events each has, for
+    #: kinds routed by category. Not a diagnostic: a new category holds nothing
+    #: (docs/connectors/calendar-feed.md).
+    categories: dict[str, int] = field(default_factory=dict)
+
     def report(self, kind: str, values) -> None:
         values = sorted(v for v in values if v)
         if values:

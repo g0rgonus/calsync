@@ -1,0 +1,455 @@
+"""A club calendar, routed by category.
+
+The fixture keeps the shape of a Google public export: a VTIMEZONE, a weekly
+series with WKST=SU and two RECURRENCE-ID overrides, a monthly BYDAY=1WE series
+with no end, an all-day VALUE=DATE event, and events with and without LOCATION
+and with no DESCRIPTION. What each test pins is in
+docs/connectors/calendar-feed.md.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+import pytest
+
+from calsync import categories, db, onboarding, repo, sources
+from calsync.models import Activity
+from calsync.secrets import SecretStore
+from calsync.sources.calendar_feed import FeedError
+from calsync.sync import SyncReport, sync_source
+from calsync.targets import build
+
+FIXTURE = Path(__file__).parent / "fixtures" / "calendar_feed_sample.ics"
+NOW = datetime(2026, 9, 1, 12, tzinfo=timezone.utc)
+NY = ZoneInfo("America/New_York")
+SERIES = "0a1b2c3d4e5f6g7h8i9j0k1l2m@google.com"
+MONTHLY = "5n6o7p8q9r0s1t2u3v4w5x6y7z@google.com"
+
+
+class Pushover:
+    def __init__(self):
+        self.sent = []
+
+    def __call__(self, _config, _secrets, message, *, title="", url=None, url_title=None):
+        self.sent.append({"title": title, "message": message, "url": url})
+
+
+class Store:
+    def get(self, ref):
+        return {"pushover_token": "t", "pushover_user": "u"}[ref]
+
+    def has(self, ref):
+        return True
+
+
+@pytest.fixture
+def conn(tmp_path):
+    connection = db.open_db(tmp_path / "calsync.db")
+    connection.executescript(
+        """
+        INSERT INTO children (id, name, initial, birth_order)
+             VALUES ('luke', 'Luke', 'Lu', 1);
+        INSERT INTO activities (id, child_id, name, sport_id, tz)
+             VALUES ('luke-scouts-explorers', 'luke', 'Explorers', 'scouts',
+                     'America/New_York');
+        INSERT INTO sources (id, activity_id, kind, shape, config)
+             VALUES ('cal-explorers', 'luke-scouts-explorers', 'calendar-feed', 'feed',
+                     '{"default_calendar": "explorers", "categories": {}}');
+        """
+    )
+    connection.commit()
+    return connection
+
+
+@pytest.fixture
+def target(tmp_path):
+    return build("ics_file", directory=tmp_path / "out")
+
+
+def _configure(conn, **changes):
+    source = repo.get_source(conn, "cal-explorers")
+    config = dict(source.config or {})
+    config.update(changes)
+    conn.execute("UPDATE sources SET config = ? WHERE id = 'cal-explorers'",
+                 (json.dumps(config),))
+    conn.commit()
+
+
+def _sync(conn, target, raw=None, **kwargs):
+    source = repo.get_source(conn, "cal-explorers")
+    return sync_source(conn, source, target, now=kwargs.pop("now", NOW),
+                       raw=raw if raw is not None else FIXTURE.read_bytes(),
+                       publish=False, **kwargs)
+
+
+def _parse(raw=None, window=None):
+    act = Activity(id="a", child_id="luke", name="Explorers", sport="scouts",
+                   emoji="⚜️", tz="America/New_York")
+    return sources.parse("calendar-feed", raw if raw is not None else FIXTURE.read_bytes(),
+                         act, source_id="cal-explorers",
+                         window=window or (NOW - timedelta(days=30), NOW + timedelta(days=180)))
+
+
+def _live(conn):
+    return {uid: s for uid, s in repo.event_states(conn, "cal-explorers").items()
+            if not s.cancelled}
+
+
+def _by_category(result, name):
+    return [e for e in result.events if e.source_category == name]
+
+
+# --- routing ----------------------------------------------------------------
+
+
+def test_new_category_waits_on_staging_before_promotion(conn, target):
+    repo.set_staging(conn, "cal-explorers", "onboarding")
+    report = _sync(conn, target)
+
+    assert report.created > 0
+    assert {s.collection for s in _live(conn).values()} == {"onboarding"}
+
+
+def test_new_category_goes_to_default_after_promotion(conn, target):
+    _configure(conn, categories={"Padawan Meeting": "padawans"})
+    _sync(conn, target)
+
+    collections = {s.collection for uid, s in _live(conn).items()
+                   if not uid.startswith(SERIES)}
+    assert collections == {"explorers"}, "an unset category goes to the default"
+    assert {s.collection for uid, s in _live(conn).items()
+            if uid.startswith(SERIES)} == {"padawans"}
+
+
+def test_new_categories_do_not_block_promotion(conn, target):
+    no_places = re.sub(rb"(?m)^LOCATION:[^\n]*\n", b"", FIXTURE.read_bytes())
+    repo.set_staging(conn, "cal-explorers", "onboarding")
+    report = _sync(conn, target, raw=no_places, dry_run=True)
+
+    assert report.categories, "every category is new on the first poll"
+    assert report.is_clean
+    assert report.promotable
+
+
+def test_promotable_on_events_without_games(conn, target):
+    no_places = re.sub(rb"(?m)^LOCATION:[^\n]*\n", b"", FIXTURE.read_bytes())
+    report = _sync(conn, target, raw=no_places, dry_run=True)
+
+    assert report.fixtures_seen == 0
+    assert report.events_seen > 0
+    assert report.promotable
+
+
+def test_sports_feed_still_needs_a_fixture_to_promote():
+    practices_only = SyncReport(source_id="tr-rogues", events_seen=12, fixtures_seen=0)
+    assert not practices_only.promotable
+    assert SyncReport(source_id="cal", events_seen=12, events_only=True).promotable
+
+
+def test_skipped_category_never_written(conn, target, tmp_path):
+    _configure(conn, categories={"Council Meeting": "skip"})
+    report = _sync(conn, target)
+
+    assert not [uid for uid in repo.event_states(conn, "cal-explorers")
+                if uid.startswith(MONTHLY)]
+    assert report.skipped > 0
+    assert report.withheld == 0, "a skipped category is not a withheld event"
+    assert not [p for p in (tmp_path / "out").rglob("*.ics") if MONTHLY in p.name]
+
+
+def test_skipping_a_written_category_removes_without_tripping_guard(conn, target):
+    _sync(conn, target)
+    written = [uid for uid in _live(conn) if uid.startswith(SERIES)]
+    assert len(written) > 3, "enough to trip the guard if they counted"
+
+    _configure(conn, categories={"Padawan Meeting": "skip"})
+    report = _sync(conn, target)
+
+    assert report.status == "ok", report.held
+    assert not report.held
+    assert not [uid for uid in _live(conn) if uid.startswith(SERIES)]
+    rows = conn.execute("SELECT withheld FROM event_state WHERE uid LIKE ?",
+                        (SERIES + "%",)).fetchall()
+    assert all(r["withheld"] is None for r in rows), "never stored as withheld"
+
+    _configure(conn, categories={})
+    _sync(conn, target)
+    assert len([uid for uid in _live(conn) if uid.startswith(SERIES)]) == len(written)
+
+
+def test_moving_a_category_moves_its_events(conn, target):
+    _sync(conn, target)
+    _configure(conn, categories={"council meeting": "Council"})
+    report = _sync(conn, target)
+
+    council = {uid: s for uid, s in _live(conn).items() if uid.startswith(MONTHLY)}
+    assert council and {s.collection for s in council.values()} == {"council"}
+    assert report.moved == len(council)
+    assert report.created == 0 and report.cancelled == 0
+
+
+# --- the feed ---------------------------------------------------------------
+
+
+def test_cancelled_status_is_honoured_and_not_hashed(conn, target):
+    group = "1n2o3p4q5r6s7t8u9v0w1x2y3z@google.com"
+    raw = FIXTURE.read_bytes()
+    off = raw.replace(b"SUMMARY:Group  Meeting", b"SUMMARY:Group  Meeting\nSTATUS:CANCELLED")
+    off = off.replace(b"STATUS:CONFIRMED\nSUMMARY:Group  Meeting", b"SUMMARY:Group  Meeting")
+
+    before = next(e for e in _parse(raw).events if e.uid == group)
+    after = next(e for e in _parse(off).events if e.uid == group)
+    assert after.cancelled and not before.cancelled
+    assert after.content_hash == before.content_hash
+
+    _sync(conn, target)
+    report = _sync(conn, target, raw=off)
+    assert report.called_off == 1
+    assert group not in _live(conn)
+
+
+def test_recurrence_override_keeps_occurrence_uid():
+    events = {e.uid: e for e in _parse().events}
+
+    moved = events[f"{SERIES}/20261013T230000Z"]
+    assert moved.starts_at.astimezone(NY) == datetime(2026, 10, 14, 19, tzinfo=NY)
+    assert f"{SERIES}/20261014T230000Z" not in events
+    relocated = events[f"{SERIES}/20261111T000000Z"]
+    assert relocated.venue.name == "Jedi Temple Memorial Park"
+
+
+def test_recurrence_keeps_wall_clock_across_dst():
+    meetings = [e for e in _parse().events if e.uid.startswith(SERIES)]
+    before = [e for e in meetings if e.starts_at < datetime(2026, 11, 1, tzinfo=NY)]
+    after = [e for e in meetings if e.starts_at > datetime(2026, 11, 2, tzinfo=NY)]
+
+    assert before and after
+    for e in meetings:
+        assert (e.starts_at.astimezone(NY).hour, e.starts_at.astimezone(NY).minute) == (19, 0)
+    # The instant moves by the hour the clocks did.
+    assert {e.starts_at.astimezone(timezone.utc).hour for e in before} == {23}
+    assert {e.starts_at.astimezone(timezone.utc).hour for e in after} == {0}
+
+
+def test_unbounded_series_stops_at_window():
+    window = (NOW, NOW + timedelta(days=120))
+    council = [e for e in _parse(window=window).events if e.uid.startswith(MONTHLY)]
+
+    assert len(council) == 3    # the first Wednesdays of Oct, Nov and Dec
+    assert all(window[0] <= e.starts_at <= window[1] for e in council)
+    assert all(e.starts_at.astimezone(NY).weekday() == 2
+               and e.starts_at.astimezone(NY).day <= 7 for e in council)
+
+
+def test_refused_rule_part_raises():
+    raw = FIXTURE.read_bytes().replace(b"RRULE:FREQ=MONTHLY;BYDAY=1WE",
+                                       b"RRULE:FREQ=MONTHLY;BYDAY=WE;BYSETPOS=1")
+    with pytest.raises(FeedError, match=rf"{re.escape(MONTHLY)}.*BYSETPOS"):
+        _parse(raw)
+
+
+def test_exdate_in_utc_removes_a_local_occurrence():
+    raw = FIXTURE.read_bytes().replace(
+        b"RRULE:FREQ=WEEKLY;WKST=SU;UNTIL=20270526T035959Z;BYDAY=TU\n",
+        b"RRULE:FREQ=WEEKLY;WKST=SU;UNTIL=20270526T035959Z;BYDAY=TU\n"
+        b"EXDATE:20260922T230000Z\n")
+    uids = {e.uid for e in _parse(raw).events}
+
+    assert f"{SERIES}/20260922T230000Z" not in uids
+    assert f"{SERIES}/20260929T230000Z" in uids
+
+
+def test_series_over_the_cap_raises():
+    raw = FIXTURE.read_bytes().replace(b"RRULE:FREQ=MONTHLY;BYDAY=1WE", b"RRULE:FREQ=DAILY")
+    with pytest.raises(FeedError, match="more than 400"):
+        _parse(raw, window=(NOW, NOW + timedelta(days=500)))
+
+
+def test_categories_ignore_case_and_spacing():
+    result = _parse()
+
+    assert "Group Meeting" in result.categories, "doubled space tidied"
+    assert result.categories["Mos Espa Camporee"] == 1
+    assert result.categories["Padawan Meeting"] == len(_by_category(result, "Padawan Meeting"))
+
+
+def test_all_day_event_is_anchored_at_local_midnight():
+    camp = _by_category(_parse(), "Mos Espa Camporee")[0]
+
+    assert camp.all_day
+    assert camp.starts_at == datetime(2026, 10, 17, tzinfo=NY)
+    assert camp.ends_at == datetime(2026, 10, 19, tzinfo=NY)
+
+
+def test_empty_feed_raises():
+    with pytest.raises(FeedError):
+        _parse(b"BEGIN:VCALENDAR\nVERSION:2.0\nEND:VCALENDAR\n")
+
+
+def test_floating_time_without_calendar_zone_raises():
+    raw = FIXTURE.read_bytes().replace(b"X-WR-TIMEZONE:America/New_York\n", b"")
+    raw = raw.replace(b"DTSTART;TZID=America/New_York:20261020T183000",
+                      b"DTSTART:20261020T183000")
+    raw = raw.replace(b"DTEND;TZID=America/New_York:20261020T200000",
+                      b"DTEND:20261020T200000")
+    with pytest.raises(FeedError, match="floating"):
+        _parse(raw)
+
+
+# --- telling someone --------------------------------------------------------
+
+
+def test_new_category_pushes_once_with_its_own_copy(conn, target):
+    _configure(conn, categories={"Padawan Meeting": "explorers",
+                                 "Council Meeting": "explorers",
+                                 "Mos Espa Camporee": "explorers",
+                                 "Elders' Roundtable": "skip"})
+    pushover = Pushover()
+
+    def poll():
+        report = _sync(conn, target)
+        return categories.review(conn, repo.get_source(conn, "cal-explorers"), report,
+                                 secrets=Store(), base_url="http://box:8730",
+                                 sender=pushover)
+
+    first = poll()
+    assert first.notified == ("Group Meeting",)
+    assert pushover.sent == [{
+        "title": 'Explorers: new category "Group Meeting"',
+        "message": "1 event added to the explorers calendar. "
+                   "Keep it there, move it, or skip it.",
+        "url": "http://box:8730/sources/cal-explorers#categories",
+    }]
+    assert "nothing has gone" not in pushover.sent[0]["message"]
+
+    poll()
+    assert len(pushover.sent) == 1, "one push per category, never one per poll"
+    row = conn.execute("SELECT review_notified FROM sources").fetchone()
+    assert row["review_notified"] is None, "the held-events column is untouched"
+
+
+def test_staged_source_records_categories_without_pushing(conn, target):
+    repo.set_staging(conn, "cal-explorers", "onboarding")
+    pushover = Pushover()
+    report = _sync(conn, target)
+    categories.review(conn, repo.get_source(conn, "cal-explorers"), report,
+                      secrets=Store(), sender=pushover)
+
+    assert pushover.sent == []
+    stored = conn.execute("SELECT category_notified FROM sources").fetchone()[0]
+    assert "group meeting" in json.loads(stored)
+
+
+# --- onboarding -------------------------------------------------------------
+
+
+def test_onboarding_sets_persists_across_seasons(conn, tmp_path):
+    created = onboarding.create(
+        conn,
+        onboarding.Draft(
+            url="https://calendar.google.com/calendar/ical/troop7%40group.calendar."
+                "google.com/public/basic.ics",
+            child_id="luke", sport="scouts", team_name="Troop Seven",
+            kind="calendar-feed", tz="America/New_York",
+        ),
+        secrets=SecretStore(path=tmp_path / "secrets.json", environ={}),
+    )
+    config = repo.get_source(conn, created.source_id).config
+
+    assert config["persists_across_seasons"] is True
+    assert config["default_calendar"] == "practices", \
+        "where this team's non-game events already go"
+    assert created.source_id.startswith("cal-")
+
+
+# --- the console ------------------------------------------------------------
+
+
+@pytest.fixture
+def console(tmp_path):
+    from test_web import Client, Feed
+
+    from calsync.web import app as web_app
+
+    secrets_path = tmp_path / "secrets.json"
+    secrets_path.write_text("{}")
+    secrets_path.chmod(0o600)
+    connection = db.open_db(tmp_path / "calsync.db")
+    connection.execute("INSERT INTO children (id, name, initial, birth_order) "
+                       "VALUES ('luke', 'Luke', 'Lu', 1)")
+    connection.commit()
+    connection.close()
+    app = web_app.create_app(tmp_path / "calsync.db",
+                             secrets=SecretStore(path=secrets_path, environ={}),
+                             fetcher=Feed(FIXTURE.read_bytes()), clock=lambda: NOW)
+    client = Client(app)
+    url = "https://calendar.google.com/calendar/ical/troop7%40group.calendar.google.com/public/basic.ics"
+    inspected = client.post("/onboard", {"url": url})
+    assert '<option value="calendar-feed" selected>' in inspected["body"], \
+        "a Google export preselects this kind"
+    made = client.post("/onboard/create", {
+        "url": url, "team_name": "Explorers", "child": "luke", "sport": "scouts",
+        "kind": "calendar-feed", "tz": "America/New_York", "poll_interval_s": "1200",
+    })
+    assert made["status"] == 303, made["body"][:1500]
+    source_id = made["headers"]["Location"].split("/sources/")[1].split("?")[0]
+    return client, tmp_path / "calsync.db", source_id
+
+
+def test_source_page_lists_categories_with_a_destination_each(console):
+    client, _, source_id = console
+    page = client.get(f"/sources/{source_id}")["body"]
+
+    assert 'id="categories"' in page
+    assert "Padawan Meeting (new)" in page
+    assert "Elders&#039; Roundtable (new)" in page or "Elders' Roundtable (new)" in page
+    assert '<option value="skip"' in page and "New calendar…" in page
+
+
+def test_choosing_a_category_stores_it_on_the_source(console):
+    client, path, source_id = console
+    reply = client.post(f"/sources/{source_id}/category",
+                        {"label": "Council  Meeting", "destination": "skip"})
+    assert reply["status"] == 303
+
+    client.post(f"/sources/{source_id}/category",
+                {"label": "Padawan Meeting", "destination": "__new__",
+                 "new_calendar": "Padawans"})
+    connection = db.connect(path)
+    config = repo.get_source(connection, source_id).config
+    assert config["categories"] == {"Council Meeting": "skip", "Padawan Meeting": "padawans"}
+    page = client.get(f"/sources/{source_id}")["body"]
+    assert "Council Meeting (new)" not in page
+
+
+def test_review_lists_new_categories_apart_from_held_events(console):
+    client, path, source_id = console
+    connection = db.connect(path)
+    repo.set_staging(connection, source_id, None)
+    connection.close()
+
+    page = client.get("/review")["body"]
+    assert "New categories" in page
+    assert "already on practices, confirm or change" in page
+    assert "nothing has gone to the family" not in page
+
+
+def test_changing_the_default_calendar_moves_unset_categories(console):
+    client, path, source_id = console
+    client.post(f"/sources/{source_id}/category",
+                {"label": "Padawan Meeting", "destination": "practices"})
+    refused = client.post(f"/sources/{source_id}/default-calendar", {"destination": "skip"})
+    assert refused["status"] != 303
+
+    reply = client.post(f"/sources/{source_id}/default-calendar",
+                        {"destination": "__new__", "new_calendar": "Explorers"})
+    assert reply["status"] == 303
+    connection = db.connect(path)
+    config = repo.get_source(connection, source_id).config
+    assert config["default_calendar"] == "explorers"
+    assert config["categories"] == {"Padawan Meeting": "practices"}, "set ones stay put"

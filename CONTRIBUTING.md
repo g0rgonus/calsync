@@ -261,6 +261,7 @@ The fictional state is `NX`.
 |---|---|
 | Our teams | Rogues, Gungans, Ewoks, Jawas, Jedi (Jedi Academy), Rebel ALLIANCE |
 | Opponents | Tuskens, Hutts, Krayts, Wookiees, Banthas, Rancors, Mynocks, Sarlaccs, Dewbacks, Porgs, Stormtroopers, Gundarks, Nerfs, Scarif, Mustafar, Jakku, Lothal, Ryloth Juniors, Felucia Town SC |
+| Club calendars | Explorers (troop calendar "Explorers Troop 7"); categories Padawan Meeting, Council Meeting, Group Meeting, Elders' Roundtable, Mos Espa Camporee |
 | Clubs and schools | Mos Eisley FC, Coruscant Athletic, Cloud City FC, FC Kashyyyk, Rimward United, Kamino B, Hoth Classical, Endor Academy, Bespin Academy, Dagobah Prep |
 | Leagues and codes | `U10RS`, `RSL`, `ORSL`, `ROGU` |
 | Keys and tools | R2-D2, C-3PO |
