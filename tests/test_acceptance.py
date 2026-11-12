@@ -324,6 +324,37 @@ def test_a_feed_syncs_into_a_real_caldav_server(configured, password):
     assert b"BEGIN:VEVENT" in fetched.body
 
 
+def test_a_series_occurrence_round_trips(configured, password):
+    """A calendar feed's occurrence uid is `<series>/<start>`; the slash must not
+    reach the resource name, where a server reads it as a path."""
+    configured.executescript(
+        """
+        INSERT INTO activities (id, child_id, name, sport_id, tz)
+             VALUES ('rey-scouts-explorers', 'rey', 'Explorers', 'scouts',
+                     'America/New_York');
+        INSERT INTO sources (id, activity_id, kind, shape, staging_collection, config)
+             VALUES ('cal-explorers', 'rey-scouts-explorers', 'calendar-feed', 'feed',
+                     '?', '{"default_calendar": "explorers"}');
+        """.replace("?", f"{RUN}-staging")
+    )
+    target = _target(password)
+    source = repo.get_source(configured, "cal-explorers")
+    when = datetime(2026, 9, 1, 12, tzinfo=timezone.utc)
+    raw = (Path(__file__).parent / "fixtures" / "calendar_feed_sample.ics").read_bytes()
+
+    first = sync_source(configured, source, target, now=when, raw=raw, publish=False)
+    assert first.status == "ok", first.line()
+    occurrence = next(s for uid, s in repo.event_states(configured, "cal-explorers").items()
+                      if "/" in uid)
+    fetched = call("GET", target.resource_url(occurrence.collection, occurrence.remote_id),
+                   password=password)
+    assert fetched.status == 200
+    assert f"UID:{occurrence.uid}".encode() in fetched.body.replace(b"\r\n ", b"")
+
+    second = sync_source(configured, source, target, now=when, raw=raw, publish=False)
+    assert (second.created, second.updated, second.cancelled) == (0, 0, 0), second.line()
+
+
 def test_a_second_sync_writes_nothing(configured, password):
     """The assertion that mattered for ics files matters more against a server."""
     target = _target(password)

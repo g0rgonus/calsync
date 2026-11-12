@@ -15,14 +15,20 @@ from ..models import Activity, PollResult
 #: must raise rather than return zero events for an empty or unreadable feed.
 _PARSERS: dict[str, Callable[..., PollResult]] = {}
 
+#: Kinds whose parser takes the sync window, because it expands repeating
+#: series and needs an edge for a rule with no end.
+_WINDOWED: set[str] = set()
+
 
 class SourceError(RuntimeError):
     """The source could not be handled."""
 
 
-def register(kind: str):
+def register(kind: str, *, windowed: bool = False):
     def wrap(fn):
         _PARSERS[kind] = fn
+        if windowed:
+            _WINDOWED.add(kind)
         return fn
 
     return wrap
@@ -37,6 +43,10 @@ def available() -> list[str]:
 #: offers them as a choice of their own rather than in the feed-kind picker.
 PUSHED = frozenset({"inbound"})
 
+#: Fetched kinds with no fixtures: a club or school calendar has no games, so
+#: promotion waits for events rather than a game (`SyncReport.promotable`).
+EVENTS_ONLY = frozenset({"calendar-feed"})
+
 
 def fetched() -> list[str]:
     """The kinds a pasted feed URL can be read as."""
@@ -50,6 +60,7 @@ def parse(
     *,
     source_id: str,
     config: dict | None = None,
+    window: tuple | None = None,
 ) -> PollResult:
     """Parse a payload with this source's adapter.
 
@@ -64,7 +75,8 @@ def parse(
         raise SourceError(
             f"unknown source kind {kind!r}; available: {', '.join(available()) or 'none'}"
         ) from None
-    return parser(data, activity, source_id=source_id, config=config)
+    extra = {"window": window} if kind in _WINDOWED else {}
+    return parser(data, activity, source_id=source_id, config=config, **extra)
 
 
-from . import inbound, player360, teamreach  # noqa: E402,F401  (populate the registry)
+from . import calendar_feed, inbound, player360, teamreach  # noqa: E402,F401  (populate the registry)

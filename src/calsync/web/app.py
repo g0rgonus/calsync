@@ -25,7 +25,8 @@ from bottle import Bottle, redirect, request, response, static_file, template
 from .. import __version__
 from .. import config as config_mod
 from .. import (
-    db, dormancy, enrichment, matrix, merging, notify, overlay as overlay_mod,
+    categories as categories_mod, db, dormancy, enrichment, matrix, merging, notify,
+    overlay as overlay_mod,
     repo, retire,
     sources, targeting,
     warmup, withheld as withheld_mod, zones,
@@ -44,7 +45,7 @@ from ..onboarding import (
     create as create_source,
     propose_ids,
 )
-from ..routing import slugify
+from ..routing import SKIP, slugify
 from ..secrets import SecretError, SecretStore
 from ..settings import Settings, check_setting, set_setting
 from ..targets import TargetError
@@ -446,6 +447,7 @@ def create_app(
                 held=_held_rows(
                     conn, source_id, report, zone=_zone(activity.tz), now=clock(),
                 ),
+                **_category_table(conn, source, report),
                 flash=_flash(),
             )
 
@@ -508,6 +510,53 @@ def create_app(
             repo.teach_event_type(conn, source_id, label, is_game=kind == "game")
         redirect(f"/sources/{source_id}?ok=" + _q(
             f"{label} now counts as a {kind} for this team."))
+
+    @app.post("/sources/<source_id>/category")
+    def set_category(source_id):
+        """Send one category of a calendar feed to a calendar, or skip it.
+
+        A person's decision; the poll only reports which categories exist. The
+        next sync moves or removes the written events (invariant 6).
+        """
+        label = " ".join(_field("label").split())
+        chosen = _destination()
+        if not label:
+            raise Refused("which category?")
+        with connect() as conn:
+            source = _require_source(conn, source_id)
+            config = dict(source.config or {})
+            if not config.get("default_calendar"):
+                raise Refused("this source is not routed by category")
+            wanted = label.casefold()
+            mapping = {k: v for k, v in (config.get("categories") or {}).items()
+                       if " ".join(k.split()).casefold() != wanted}
+            mapping[label] = chosen
+            config["categories"] = mapping
+            conn.execute("UPDATE sources SET config = ? WHERE id = ?",
+                         (json.dumps(config), source_id))
+            conn.commit()
+        where = "kept off every calendar" if chosen == SKIP else f"going to {chosen}"
+        redirect(f"/sources/{source_id}?ok=" + _q(
+            f"{label} is {where}. The next sync moves what is already written.")
+            + "#categories")
+
+    @app.post("/sources/<source_id>/default-calendar")
+    def set_default_calendar(source_id):
+        """Where a category nobody has set goes. Moving it moves those events."""
+        chosen = _destination()
+        if chosen == SKIP:
+            raise Refused("the default has to be a calendar; skip a category instead")
+        with connect() as conn:
+            source = _require_source(conn, source_id)
+            config = dict(source.config or {})
+            if not config.get("default_calendar"):
+                raise Refused("this source is not routed by category")
+            config["default_calendar"] = chosen
+            conn.execute("UPDATE sources SET config = ? WHERE id = ?",
+                         (json.dumps(config), source_id))
+            conn.commit()
+        redirect(f"/sources/{source_id}?ok=" + _q(
+            f"New categories now go to {chosen}.") + "#categories")
 
     @app.post("/sources/<source_id>/venue")
     def add_venue(source_id):
@@ -647,7 +696,9 @@ def create_app(
             if not report.promotable and not force:
                 if report.pushed and report.events_seen == 0:
                     reason = "nothing has been sent yet"
-                elif not report.pushed and report.fixtures_seen == 0:
+                elif report.events_only and report.events_seen == 0:
+                    reason = "no events have appeared yet"
+                elif not (report.pushed or report.events_only) and report.fixtures_seen == 0:
                     reason = "no games have appeared yet"
                 else:
                     reason = "the parse still has gaps"
@@ -1623,7 +1674,11 @@ def create_app(
         # Only the sources with something waiting, so the page is empty when
         # there is nothing to do rather than a list of everything that is fine.
         wanted = [s for s in sources_ if held.get(s.id)]
-        reports = _check_all(db_path, secrets, fetcher, clock, wanted)
+        # And calendar feeds, whose new categories are already on a calendar:
+        # a different act from the questions, listed apart from them.
+        routed = [s for s in sources_ if (s.config or {}).get("default_calendar")]
+        reports = _check_all(db_path, secrets, fetcher, clock,
+                             wanted + [s for s in routed if s not in wanted])
 
         queues = []
         with connect() as conn:
@@ -1641,6 +1696,13 @@ def create_app(
             return render(
                 "review.tpl",
                 queues=queues,
+                new_categories=[
+                    {"source": s, "activity": repo.get_activity(conn, s.activity_id),
+                     "label": label, "count": reports[s.id].categories[label],
+                     "calendar": s.config["default_calendar"]}
+                    for s in routed if reports.get(s.id) and not s.staging_collection
+                    for label in categories_mod.new(reports[s.id], s.config)
+                ],
                 enrichment=enrichment_collection,
                 # Answers waiting on a decision, across every source. Listed
                 # separately from the questions because they are a different
@@ -2272,6 +2334,19 @@ def _reads_as_a_time(value: str) -> bool:
     return 0 <= hour <= 23 and 0 <= minute <= 59
 
 
+def _destination() -> str:
+    """A category's or default's chosen calendar from the form: an existing
+    one, ``skip``, or the name typed beside "New calendar…"."""
+    chosen = _field("destination").strip()
+    if chosen == "__new__":
+        chosen = slugify(_field("new_calendar"))
+        if chosen == "unsorted":
+            raise Refused("give the new calendar a name")
+    if not chosen:
+        raise Refused("choose a calendar")
+    return chosen
+
+
 def _field(name: str, default: str = "") -> str:
     """One form value, decoded as UTF-8.
 
@@ -2446,6 +2521,34 @@ def _preview(conn, source, secrets, fetcher, clock):
         conn, source, _NoTarget(), now=clock(), secrets=secrets,
         fetcher=fetcher, dry_run=True,
     )
+
+
+def _category_table(conn, source, report) -> dict:
+    """The source page's category rows, and the calendars a row can choose.
+
+    Empty for a source not routed by category, which hides the section.
+    """
+    config = source.config or {}
+    default = config.get("default_calendar")
+    if not default:
+        return {"category_rows": [], "calendars": [], "default_calendar": None}
+    set_to = {" ".join(k.split()).casefold(): v
+              for k, v in (config.get("categories") or {}).items()}
+    rows = [{
+        "label": label,
+        "count": count,
+        "chosen": set_to.get(label.casefold()),
+        "new": label.casefold() not in set_to,
+    } for label, count in sorted(report.categories.items(),
+                                  key=lambda item: (-item[1], item[0].casefold()))]
+    settings = Settings.load(conn)
+    holding = {s.staging_collection for s in repo.list_sources(conn) if s.staging_collection}
+    if settings.enrichment_collection:
+        holding.add(slugify(settings.enrichment_collection))
+    calendars = set(repo.written_collections(conn, exclude=holding)) | {default}
+    calendars |= {v for v in set_to.values() if v and v != SKIP}
+    return {"category_rows": rows, "calendars": sorted(calendars),
+            "default_calendar": default}
 
 
 def _held_rows(

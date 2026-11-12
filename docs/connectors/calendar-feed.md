@@ -1,8 +1,6 @@
 # Calendar feed
 
-**Status: specified, not built.**
-
-A source. calsync polls a public calendar's iCal export (a Google Calendar
+A source, kind `calendar-feed`. calsync polls a public calendar's iCal export (a Google Calendar
 public address, or any `.ics` URL) and routes each event to a calendar by its
 category, which a person sets once per category.
 
@@ -19,6 +17,9 @@ from the embed and build the public address:
 ```
 https://calendar.google.com/calendar/ical/<calendar_id>/public/basic.ics
 ```
+
+Onboarding preselects this kind for a Google Calendar export (its `PRODID`),
+and names the source `cal-…`.
 
 **There is no credential.** Anyone holding the URL can read the calendar. Treat
 it as private all the same.
@@ -65,7 +66,8 @@ works on a phone, and it needs no front-end library.
    `staging_collection` wins over everything, as for every source. Nothing from
    this feed reaches a family calendar before promotion, whatever its
    category says.
-2. **Skip** keeps the event off every calendar (below).
+2. **Skip** keeps the event off every calendar (below), the staging calendar
+   included: a person has already said nobody goes.
 3. **The category's destination**, if a person has set one.
 4. **The source's default calendar**, for a category nobody has set yet.
 
@@ -95,10 +97,15 @@ the source could not leave staging until each one was answered.
 
 ### Telling someone
 
-A new category sends **one push per category**, never one per poll. It uses
-`enrichment.review`'s fingerprint pattern on a column of its own,
-`sources.category_notified`, so it and the held-events announcement never
-silence each other.
+A new category sends **one push per category**, never one per poll. The
+categories already announced are kept on a column of their own,
+`sources.category_notified` (a JSON list, since one push per category needs to
+know which were sent), so it and the held-events announcement never silence
+each other. A category that stops being new drops off the list.
+
+While the source is staged nothing is pushed, and its categories are recorded
+as announced: the person onboarding it is looking at the table, and the first
+poll would otherwise send a push for every category.
 
 The copy says what already happened, because the event is already on a
 calendar:
@@ -143,7 +150,8 @@ opponent or home/away.
 ## Rules
 
 - **Change detection hashes content fields** (invariant 9): `DTSTART`, `DTEND`,
-  `SUMMARY`, `LOCATION`, `DESCRIPTION`. `STATUS` is not hashed. A
+  `SUMMARY`, `LOCATION`, `DESCRIPTION`. For an occurrence the times hashed are
+  its own, so editing one occurrence changes that one only. `STATUS` is not hashed. A
   `STATUS:CANCELLED` event sets `Event.cancelled` and is honoured without a
   guard (invariant 4).
 - **An empty or unparseable feed raises** (invariant 10).
@@ -190,7 +198,12 @@ is the occurrence's start as the rule produced it, before any override:
 `YYYYMMDDTHHMMSSZ` in UTC for a timed series, `YYYYMMDD` for an all-day one. A
 `RECURRENCE-ID` override keeps the uid of the occurrence it replaces, so moving
 one meeting is an update, not a delete and a create. A VEVENT with no `RRULE`
-keeps its own `UID` unchanged.
+keeps its own `UID` unchanged. The `UID` written keeps the `/`; the CalDAV
+resource name swaps it for `_` and adds a short hash of the whole uid, so it
+cannot collide with a uid that already had an `_` there.
+
+An override whose series is not in the feed is still keyed by its
+`RECURRENCE-ID`, so its uid holds when the series appears.
 
 ## Shape of the change
 
@@ -198,6 +211,8 @@ keeps its own `UID` unchanged.
   holds `categories: {label: destination}` (a calendar or `skip`) and
   `default_calendar`. Routing reads them in `routing.collection_for`, after the
   staging override, so another feed kind can opt in later without a rewrite.
+- **Left out of cross-team merging** (`correlate.py`). A merged event is filed
+  by the collection template, which would undo the category's destination.
 - **The adapter stays pure.** It sets `Event.source_category` and returns every
   category it saw with a count in a new `PollResult.categories`, not in
   `diagnostics`. The sync compares that with the config to find new ones.

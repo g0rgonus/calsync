@@ -16,6 +16,7 @@ against the URL it was given.
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -25,8 +26,9 @@ from . import config as config_mod
 from . import repo, sources
 from .inbound import events as inbound
 from .fetch import FetchError, render_url
-from .routing import slugify
+from .routing import slugify, templated
 from .secrets import SecretError, SecretStore
+from .settings import Settings
 
 #: Query parameter names that carry a credential. Matched loosely on purpose:
 #: over-vaulting a harmless parameter costs nothing, and under-vaulting one puts
@@ -38,7 +40,8 @@ OPAQUE_MIN = 12
 
 #: Short prefixes so a source id reads like ``tr-rogues`` rather than
 #: ``teamreach-rogues-spring-2026``. Anything unlisted uses its own kind.
-_KIND_PREFIX = {"teamreach": "tr", "player360": "p360", "inbound": "in"}
+_KIND_PREFIX = {"teamreach": "tr", "player360": "p360", "inbound": "in",
+                "calendar-feed": "cal"}
 
 _WORDY = re.compile(r"^[a-z][a-z-]*$", re.IGNORECASE)
 
@@ -339,6 +342,21 @@ def clone_forward(conn, child_id: str, sport: str) -> "Draft | None":
     )
 
 
+def _route_by_category(conn, source_id: str, activity_id: str) -> None:
+    """A club or school calendar goes quiet each summer rather than ending, and
+    its events start where this team's non-games already go."""
+    activity = repo.get_activity(conn, activity_id)
+    child = repo.get_child(conn, activity.child_id)
+    source = repo.get_source(conn, source_id)
+    config = dict(source.config or {})
+    config["persists_across_seasons"] = True
+    config["default_calendar"] = templated(False, activity, child, Settings.load(conn))
+    config.setdefault("categories", {})
+    conn.execute("UPDATE sources SET config = ? WHERE id = ?",
+                 (json.dumps(config), source_id))
+    conn.commit()
+
+
 def create(conn, draft: Draft, *, secrets: SecretStore, actor: str = "console") -> Created:
     """Create the activity and the source, staged to the onboarding calendar.
 
@@ -415,6 +433,9 @@ def create(conn, draft: Draft, *, secrets: SecretStore, actor: str = "console") 
     # Staged, not live. A new feed goes to the onboarding calendar until its
     # fixtures appear and parse, which may be weeks.
     repo.set_staging(conn, source_id, draft.staging_collection or None)
+
+    if draft.kind in sources.EVENTS_ONLY:
+        _route_by_category(conn, source_id, activity_id)
 
     key = None
     if pushed:

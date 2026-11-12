@@ -21,6 +21,8 @@ writes, and the settings that change it, are in [docs/events.md](docs/events.md)
 
 - [360Player](docs/connectors/360player.md): a team's ICS feed
 - [TeamReach](docs/connectors/teamreach.md): a team's ICS feed
+- [Calendar feed](docs/connectors/calendar-feed.md): a club, troop or school calendar's
+  public iCal export, routed to calendars by category
 - [Pushed](docs/connectors/pushed.md): an agent or script sends the events over
   the inbound API
 

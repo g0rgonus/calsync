@@ -12,7 +12,7 @@ import time
 import sys
 from pathlib import Path
 
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 
 #: Additive column migrations, applied when absent. `schema.sql` uses
@@ -88,6 +88,10 @@ ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("shared_candidates", "content", "TEXT NOT NULL DEFAULT ''"),
     ("merge_lease", "token", "TEXT NOT NULL DEFAULT ''"),
     ("merge_lease", "rerun", "INTEGER NOT NULL DEFAULT 0"),
+    # v19: the categories of a calendar feed already announced as new, as a
+    # JSON list. Its own column so it and `review_notified` never silence each
+    # other.
+    ("sources", "category_notified", "TEXT"),
     # v5 adds `event_content`, which is a new table rather than new columns, so
     # `schema.sql`'s CREATE TABLE IF NOT EXISTS covers it and nothing belongs
     # here. Existing rows backfill themselves: the sync loop treats missing

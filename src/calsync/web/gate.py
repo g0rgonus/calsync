@@ -188,9 +188,32 @@ def _pushed(report: SyncReport) -> Condition:
     )
 
 
+def _events_only(report: SyncReport) -> Condition:
+    if report.events_seen > 0:
+        return Condition(
+            key="games",
+            label="Events seen",
+            state=MET,
+            headline=(
+                f"{report.events_seen} "
+                f"{_plural(report.events_seen, 'event', 'events')} in the feed."
+            ),
+            detail="This calendar has no games; its categories decide where events go.",
+        )
+    return Condition(
+        key="games",
+        label="Events seen",
+        state=WAITING,
+        headline="No events in the sync window yet.",
+        detail="The source stays on the onboarding calendar until one appears.",
+    )
+
+
 def _games(report: SyncReport) -> Condition:
     if report.pushed:
         return _pushed(report)
+    if report.events_only:
+        return _events_only(report)
     if report.fixtures_seen > 0:
         return Condition(
             key="games",
@@ -233,7 +256,8 @@ def conditions(report: SyncReport, activity: Activity) -> tuple[Condition, ...]:
                 ("team", "Team matched"),
                 ("types", "Types known"),
                 ("venues", "Venues placed"),
-                ("games", "Events received" if report.pushed else "Games seen"),
+                ("games", "Events received" if report.pushed
+                 else "Events seen" if report.events_only else "Games seen"),
             )
         )
     return (_team(report, activity), _types(report), _venues(report), _games(report))
@@ -257,5 +281,7 @@ def summarise(conditions_: tuple[Condition, ...]) -> tuple[str, str]:
     if waiting:
         if waiting[0].label == "Events received":
             return "waiting", "waiting for a push"
+        if waiting[0].label == "Events seen":
+            return "waiting", "waiting for events"
         return "waiting", "waiting for games"
     return "ready", "ready to promote"
