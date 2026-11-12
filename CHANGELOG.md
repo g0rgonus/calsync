@@ -6,6 +6,13 @@ All notable changes to calsync are recorded here, in the
 
 ## [Unreleased]
 
+### Changed
+- The web console icon is Family Cells: a shared calendar with one colour per
+  person, in place of the pitch-and-pool tile. This is the favicon, the 32px
+  icon and the Apple touch icon only.
+- Mac app icon pinned to existing artwork (`mac/icon.svg`, which `install.sh`
+  rasterises into `calsync.icns`).
+
 ## [1.1.0] - 2026-11-12
 
 ### Added
