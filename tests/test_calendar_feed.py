@@ -592,10 +592,20 @@ def console(tmp_path):
                        "VALUES ('luke', 'Luke', 'Lu', 1)")
     connection.commit()
     connection.close()
+    class HookedFeed(Feed):
+        during = None
+
+        def __call__(self, assembled, **kw):
+            if self.during:
+                self.during()
+            return super().__call__(assembled, **kw)
+
+    feed = HookedFeed(FIXTURE.read_bytes())
     app = web_app.create_app(tmp_path / "calsync.db",
                              secrets=SecretStore(path=secrets_path, environ={}),
-                             fetcher=Feed(FIXTURE.read_bytes()), clock=lambda: NOW)
+                             fetcher=feed, clock=lambda: NOW)
     client = Client(app)
+    client.feed = feed
     url = "https://calendar.google.com/calendar/ical/troop7%40group.calendar.google.com/public/basic.ics"
     inspected = client.post("/onboard", {"url": url})
     assert '<option value="calendar-feed" selected>' in inspected["body"], \
@@ -742,6 +752,44 @@ def test_reordering_or_deleting_a_rule_is_previewed(console):
                           {"op": "delete", "index": "0"})["body"]
     assert "Padawan Meeting (new)" in deleted
     assert _config(path, source_id)["rules"] == two
+
+
+def test_rules_are_not_previewed_or_saved_against_an_unreadable_feed(console):
+    client, path, source_id = console
+    client.feed.error = OSError("feed down")
+    change = {"op": "add", "match": "contains", "text": "meeting", "destination": "skip"}
+
+    assert client.post(f"/sources/{source_id}/rules/preview", change)["status"] != 200
+    saved = client.post(f"/sources/{source_id}/rules", {"rules": json.dumps([
+        {"match": "contains", "text": "meeting", "destination": "skip"}])})
+    assert saved["status"] != 303
+    assert "rules" not in _config(path, source_id)
+
+
+def test_saving_rules_keeps_a_category_set_during_the_fetch(console):
+    client, path, source_id = console
+
+    def someone_else_sets_a_category():
+        connection = db.connect(path)
+        config = repo.get_source(connection, source_id).config
+        config["categories"] = {"Council Meeting": "council"}
+        connection.execute("UPDATE sources SET config = ? WHERE id = ?",
+                           (json.dumps(config), source_id))
+        connection.commit()
+        connection.close()
+        client.feed.during = None
+
+    client.feed.during = someone_else_sets_a_category
+    client.post(f"/sources/{source_id}/rules", {"rules": json.dumps([MEETINGS])})
+
+    config = _config(path, source_id)
+    assert config["rules"] == [MEETINGS]
+    assert config["categories"] == {"Council Meeting": "council"}
+
+
+def test_keep_all_refuses_labels_that_are_not_a_list(console):
+    client, _, source_id = console
+    assert client.post(f"/sources/{source_id}/keep-all", {"labels": "7"})["status"] != 303
 
 
 def test_category_a_rule_stops_matching_is_new_without_a_push(console):

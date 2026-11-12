@@ -553,7 +553,7 @@ def create_app(
             if not config.get("default_calendar"):
                 raise Refused("this source is not routed by category")
             proposed = _changed_rules(list(config.get("rules") or []))
-            report = _preview(conn, source, secrets, fetcher, clock)
+            report = _readable(_preview(conn, source, secrets, fetcher, clock))
             activity = repo.get_activity(conn, source.activity_id)
             return render(
                 "rules_preview.tpl", source=source, activity=activity,
@@ -571,10 +571,11 @@ def create_app(
             raise Refused(str(exc)) from None
         with connect() as conn:
             source = _require_source(conn, source_id)
-            config = dict(source.config or {})
+            report = _readable(_preview(conn, source, secrets, fetcher, clock))
+            # Read after the fetch, so a category changed meanwhile is kept.
+            config = dict(_require_source(conn, source_id).config or {})
             if not config.get("default_calendar"):
                 raise Refused("this source is not routed by category")
-            report = _preview(conn, source, secrets, fetcher, clock)
             after = {**config, "rules": proposed}
             # A category the change leaves new is news nobody needs pushed: the
             # preview named it and the person saving has just seen it.
@@ -597,9 +598,12 @@ def create_app(
         default, without setting a destination: they go on following the
         default and any rule added later."""
         try:
-            labels = [" ".join(str(x).split()) for x in json.loads(_field("labels") or "[]")]
+            parsed = json.loads(_field("labels") or "[]")
         except ValueError:
-            raise Refused("which categories?") from None
+            parsed = None
+        if not isinstance(parsed, list):
+            raise Refused("which categories?")
+        labels = [" ".join(str(x).split()) for x in parsed]
         labels = [label for label in labels if label]
         if not labels:
             raise Refused("which categories?")
@@ -2672,6 +2676,15 @@ def _category_table(conn, source, report) -> dict:
             "default_calendar": default, "rules": _rule_rows(rules, report),
             "new_labels": [row["label"] for row in rows if row["new"]],
             "json_labels": json.dumps([row["label"] for row in rows if row["new"]])}
+
+
+def _readable(report):
+    """The dry run, or a refusal: a feed that could not be read matches
+    nothing, and a rule change previewed against it would look harmless."""
+    if report.status == "error":
+        raise Refused("the feed could not be read just now, so what a rule "
+                      "change would move is unknown; try again shortly")
+    return report
 
 
 def _describe_rule(rule: dict) -> str:
