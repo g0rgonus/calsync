@@ -15,12 +15,14 @@ window.
 from __future__ import annotations
 
 import hashlib
+from collections import Counter
 from datetime import datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from dateutil import rrule as du
 from icalendar import Calendar
 
+from .. import models, routing
 from ..models import Activity, Event, PollResult, Venue
 from ..normalize import venue as venue_norm
 from . import register
@@ -34,6 +36,10 @@ HASH_FIELDS = ("DTSTART", "DTEND", "SUMMARY", "LOCATION", "DESCRIPTION")
 
 #: As in the inbound expander: a season of daily meetings is about 300.
 MAX_OCCURRENCES = 400
+
+#: How many events at one time make it a category's usual time, below which a
+#: different time is just a different time.
+USUAL_AT_LEAST = 3
 
 _FREQ = {"DAILY": du.DAILY, "WEEKLY": du.WEEKLY, "MONTHLY": du.MONTHLY, "YEARLY": du.YEARLY}
 _DAYS = {"MO": du.MO, "TU": du.TU, "WE": du.WE, "TH": du.TH, "FR": du.FR, "SA": du.SA, "SU": du.SU}
@@ -369,13 +375,65 @@ def parse_feed(
         events=events,
         raw_sha256=hashlib.sha256(raw_bytes).hexdigest(),
     )
-    # Counted under the first spelling seen, so "padawan meeting" and
-    # "Padawan Meeting" are one category.
+
+    def inside(event):
+        return window is None or window[0] <= event.starts_at <= window[1]
+
+    # Only what the sync could write: a category whose events are all past the
+    # window is not a question for anyone. Counted under the first spelling
+    # seen, so "padawan meeting" and "Padawan Meeting" are one category.
     spelled: dict[str, str] = {}
     for event in events:
+        if not inside(event):
+            continue
         name = spelled.setdefault(category_key(event.source_category), event.source_category)
         result.categories[name] = result.categories.get(name, 0) + 1
+
+    suspect = _suspect_times([e for e in events if routing.destination(e, config) != routing.SKIP],
+                             inside, set((config or {}).get("times_confirmed") or ()))
+    for event, question in suspect:
+        event.unresolved = event.unresolved + (models.SUSPECT_TIME,)
+    result.report("suspect_times", [question for _, question in suspect])
     return result
+
+
+def suspect_time(event: Event, usual: tuple[int, int]) -> str:
+    """The question for one event, which is also how its answer is stored: a
+    changed time is a new question."""
+    local = event.starts_at.astimezone(ZoneInfo(event.tz))
+    return (f"{event.source_category}, {local:%a %d %b %Y} at {local:%H:%M} "
+            f"(usually {usual[0]:02d}:{usual[1]:02d})")
+
+
+def _suspect_times(events, inside, confirmed: set[str]) -> list[tuple[Event, str]]:
+    """Timed events twelve hours off their category's usual start.
+
+    Calendars are typed by hand and AM for PM is the slip that matters: a
+    meeting written at 06:30 instead of 18:30 rings an alarm before dawn and
+    is missed in the evening. Only an exact twelve-hour gap is flagged; any
+    other time is a different meeting, not a typo.
+    """
+    def hm(event):
+        local = event.starts_at.astimezone(ZoneInfo(event.tz))
+        return local.hour, local.minute
+
+    timed: dict[str, list[Event]] = {}
+    for event in events:
+        if not event.all_day and not event.cancelled:
+            timed.setdefault(category_key(event.source_category), []).append(event)
+
+    out = []
+    for group in timed.values():
+        (usual, seen), = Counter(hm(e) for e in group).most_common(1)
+        if seen < USUAL_AT_LEAST:
+            continue
+        for event in group:
+            hour, minute = hm(event)
+            if minute == usual[1] and abs(hour - usual[0]) == 12 and inside(event):
+                question = suspect_time(event, usual)
+                if question not in confirmed:
+                    out.append((event, question))
+    return out
 
 
 def _slots(rule: du.rrule, window, zone, all_day: bool, tz: str):

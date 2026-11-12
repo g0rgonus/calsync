@@ -49,6 +49,13 @@
 %       end
     </div>
 %     end
+%   elif condition.answer == 'time':
+%     for item in condition.items:
+    <form method="post" action="/sources/{{ source.id }}/confirm-time" class="btn-row" style="margin-bottom:0.6rem">
+      <input type="hidden" name="question" value="{{ item }}">
+      <button class="btn btn-answer" type="submit">This time is right</button>
+    </form>
+%     end
 %   elif condition.answer == 'venue':
 %     for item in condition.items:
     <form method="post" action="/sources/{{ source.id }}/venue" class="card" style="margin-bottom:0.8rem">

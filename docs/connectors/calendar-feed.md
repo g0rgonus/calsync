@@ -43,8 +43,10 @@ Meeting`, `Elders' Roundtable`. Titles match ignoring case and surrounding or
 doubled spaces. Near-duplicates (`Padawan Meeting` and `Padawan Meetings`) are
 separate categories; merging them would be an alias feature, not part of this.
 
-The source page lists every category the feed has published, with how many
-events each has, and a destination for each:
+The source page lists every category with events in the sync window, with how
+many each has, and a destination for each. A category whose events are all in
+the past is not listed: nothing will be written for it, so there is nothing to
+decide.
 
 | Category | Events | Goes to |
 |---|---|---|
@@ -133,6 +135,21 @@ held-events copy, which says nothing has gone to the family's calendars.
 
 A destination is a person's decision. Nothing in the poll path sets one; the
 poll only reports which categories exist.
+
+### A time twelve hours off
+
+Calendars are typed by hand, and AM for PM is the slip that costs something: a
+Den Meeting at 06:30 rings an alarm before dawn and is missed that evening. A
+timed event exactly twelve hours from its category's usual start (the most
+common start, seen at least three times) waits in `enrichment` (invariant 20)
+and is asked about on the source page and `/review`, under **Times look
+right**, which takes the place of "Types known" for this kind. Skipped
+categories are not checked.
+
+**This time is right** stores the question itself in `times_confirmed`, so an
+edit to that event's time is asked about again. If the calendar is corrected,
+the question goes away and the event is released on the next sync. Like any
+held event, it holds promotion until answered.
 
 ## What it writes
 

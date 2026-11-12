@@ -6,6 +6,15 @@ All notable changes to calsync are recorded here, in the
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-11-12
+
+### Fixed
+- A calendar feed's category table and new-category list count only events in
+  the sync window. Past categories were listed as new and waiting for an answer.
+- A calendar-feed event exactly twelve hours off its category's usual start
+  (06:30 where the meetings are at 18:30) is held off the calendars and asked
+  about, rather than written with an alarm before dawn.
+
 ## [1.1.0] - 2026-11-12
 
 ### Added

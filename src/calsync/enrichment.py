@@ -184,8 +184,8 @@ def _message(activity_name: str, held: int, items: tuple[str, ...]) -> tuple[str
     noun = "event" if held == 1 else "events"
     title = f"{activity_name}: {held} {noun} waiting"
     lines = [
-        f"calsync could not tell which calendar {'it' if held == 1 else 'they'} "
-        "belong in, so nothing has gone to the family's calendars.",
+        f"calsync is holding {'it' if held == 1 else 'them'} until someone answers, "
+        "so nothing has gone to the family's calendars.",
         "",
     ]
     # Bounded: a notification is a lock screen, not a report. The page has them
