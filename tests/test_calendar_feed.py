@@ -338,6 +338,24 @@ def test_rule_place_fills_and_category_place_beats_it(conn, target):
     assert _venue_of(conn, GROUP) == "Mos Espa Den"
 
 
+def test_merging_a_venue_moves_default_places_and_deleting_drops_them(conn, target):
+    hall, den = _hall(conn), _hall(conn, "Mos Espa Den")
+    _configure(conn, places={"Group Meeting": hall, "Council Meeting": den},
+               rules=[{**MEETINGS, "place": hall}, {**MEETINGS, "place": den}])
+
+    repo.merge_venues(conn, losing_id=hall, winning_id=den)
+    config = repo.get_source(conn, "cal-explorers").config
+    assert config["places"] == {"Group Meeting": den, "Council Meeting": den}
+    assert [r["place"] for r in config["rules"]] == [den, den]
+
+    repo.delete_venue(conn, den)
+    config = repo.get_source(conn, "cal-explorers").config
+    assert config["places"] == {}
+    assert all("place" not in r for r in config["rules"])
+    _sync(conn, target)
+    assert _venue_of(conn, GROUP) is None
+
+
 def test_setting_a_default_place_refreshes_without_a_hash_change(conn, target):
     _sync(conn, target)
     before = repo.event_states(conn, "cal-explorers")[GROUP]
@@ -941,6 +959,10 @@ def test_default_places_are_set_from_the_source_page(console):
                            "destination": "practices", "place": str(hall)})["body"]
     assert "at Naboo Scout Hall when the feed gives no place" in preview
     client.post(f"/sources/{source_id}/rules", {"rules": _hidden(preview, "rules")})
+    assert _config(path, source_id)["rules"][0]["place"] == hall
+    unknown = client.post(f"/sources/{source_id}/rules", {"rules": json.dumps([
+        {"match": "contains", "text": "meeting", "destination": "practices", "place": 999}])})
+    assert unknown["status"] != 303
     assert _config(path, source_id)["rules"][0]["place"] == hall
 
 

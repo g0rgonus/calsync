@@ -581,6 +581,9 @@ def create_app(
             raise Refused(str(exc)) from None
         with connect() as conn:
             source = _require_source(conn, source_id)
+            if any(repo.get_venue(conn, r["place"]) is None
+                   for r in proposed if "place" in r):
+                raise Refused("choose a place from the venue list")
             report = _readable(_preview(conn, source, secrets, fetcher, clock))
             # Read after the fetch, so a category changed meanwhile is kept.
             config = dict(_require_source(conn, source_id).config or {})
