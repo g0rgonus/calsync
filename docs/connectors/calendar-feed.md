@@ -134,6 +134,103 @@ held-events copy, which says nothing has gone to the family's calendars.
 A destination is a person's decision. Nothing in the poll path sets one; the
 poll only reports which categories exist.
 
+## Rules, default places and bulk answers
+
+**Status: specified, not built.**
+
+A hand-typed club calendar does not repeat its titles. Its first production
+feed had 27 categories in a year, 23 of them used once: "Den Meeting - Special",
+"Pack Meeting - Christmas", "Pinewood Derby Workshop (Option 1)", "Labor Day -
+No Meeting". Each was a new category for a person to answer, and none of its
+events carried a `LOCATION`. Three things take most of that work away.
+
+### Title rules
+
+A rule sends every category whose title matches it to a calendar, or to Skip:
+
+| Matches | Text | Goes to |
+|---|---|---|
+| starts with | Den Meeting | practices |
+| starts with | Pack Meeting | practices |
+| contains | no meeting | Skip |
+| contains | Roundtable | Skip |
+
+- **Two kinds of match, no patterns:** *starts with* and *contains*, ignoring
+  case and spacing like category names do. A parent writes these on a phone; a
+  regular expression is a support call.
+- **Ordered, first match wins.** The source page lets a rule move up or down.
+- **Stored on the source:** `rules: [{"match": "starts_with" | "contains",
+  "text": …, "destination": …}]` in `sources.config`, read by
+  `routing.collection_for` like `categories`.
+- **A category placed by a rule is not new.** It is not marked *new*, not
+  listed on `/review`, and sends no push. That is the point: a rule is the
+  answer given once for every category it will ever match.
+- **A rule never merges categories.** "Den Meeting" and "Den Meeting - Special"
+  stay two rows with their own counts; the rule only routes them. Merging is
+  still an alias feature (below).
+
+`routing.collection_for` becomes, in order: staging; an event held in
+`enrichment`; the category's own destination if a person set one (Skip
+included); the first rule that matches; the default calendar. A category's
+own destination beats a rule, so one exception does not need a rule of its
+own.
+
+### Showing what each rule matches
+
+Rules are only safe if their reach is visible. "contains Meeting" also catches
+"Committee Meeting / Popcorn Replacement Order Due".
+
+- **Each category row says what placed it**: *set by you*, *rule: starts
+  with "Den Meeting"*, or *default (new)*. A category that more than one rule
+  matches names the first, and says it also matches the others.
+- **Each rule lists the categories it matches** in the sync window, with their
+  event counts, and a rule matching nothing says so: it is either waiting for a
+  title that has not appeared, or a typo.
+- **Adding or editing a rule shows its matches before it is saved.** The form
+  posts to a preview of the table, and Save applies it. Changing a rule moves
+  written events, so a person sees what will move first.
+
+### A default place by category
+
+`DESCRIPTION` and `LOCATION` are optional in a Google calendar, and a pack
+that meets in the same hall every week leaves `LOCATION` empty. An event with
+no `LOCATION` takes a **default place**, set per category or per rule, chosen
+from the venue table so it carries an address and a pin.
+
+- **The feed's own `LOCATION` always wins.** The default fills a gap and never
+  overrides what the calendar says.
+- **Stored on the source:** `places: {category: venue_id}` and an optional
+  `place` on a rule. A category's own place beats its rule's.
+- **Not part of the content hash** (invariant 9 hashes what the feed said).
+  Setting or changing a default re-renders the events through the receipt
+  comparison in `sync.py`, as teaching a venue alias already does, and counts
+  as *refreshed*.
+- **Recorded as the source layer** in `event_content` (invariant 25), with the
+  venue it came from, so readers see the place the calendar shows.
+- A held venue question never arises from a default: it is a venue row by
+  construction.
+
+### Answering new categories at once
+
+`/review` and the category table get **Keep all at {default}**: it sets every
+category currently marked new to the default calendar, as if each had been
+confirmed. It acts on the categories listed when the page was drawn, sent with
+the form, so a category that arrived since is not answered without being seen.
+
+### Tests to write
+
+- `rule_routes_matching_categories`
+- `first_matching_rule_wins`
+- `category_destination_beats_rule`
+- `rule_placed_category_is_not_new_and_sends_no_push`
+- `changing_a_rule_moves_written_events`
+- `rule_preview_lists_matches_without_saving`
+- `category_row_names_what_placed_it`
+- `default_place_fills_missing_location`
+- `feed_location_beats_default_place`
+- `setting_a_default_place_refreshes_without_a_hash_change`
+- `keep_all_answers_only_the_categories_shown`
+
 ## What it writes
 
 Every event is a non-game that keeps the feed's own label: `Luke ⚜️ Padawan
@@ -223,7 +320,8 @@ An override whose series is not in the feed is still keyed by its
 - **Sports feeds.** Their game/practice split also sets alarms, warm-ups and
   home/away, and their unknown labels are held on purpose. Opting them in to
   category routing is a later decision.
-- **Category aliases** and merging near-duplicates.
+- **Category aliases** and merging near-duplicates. Title rules route
+  near-duplicates together but keep them as separate categories.
 - **Filtering by anything but the title** (location, description, time).
 
 ## Tests to write
