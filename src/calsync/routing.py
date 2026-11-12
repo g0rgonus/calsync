@@ -88,6 +88,22 @@ def is_new(label: str, config: dict | None) -> bool:
     return _key(label) not in {_key(k) for k in (config.get("categories_seen") or ())}
 
 
+def default_place(label: str, config: dict | None) -> int | None:
+    """The venue an event with no ``LOCATION`` takes: its category's own place,
+    or else the place of the first rule that matches it."""
+    config = config or {}
+    if not config.get("default_calendar"):
+        return None
+    wanted = _key(label)
+    for place_label, venue_id in (config.get("places") or {}).items():
+        if _key(place_label) == wanted and venue_id is not None:
+            return int(venue_id)
+    matched = matching_rules(label, config)
+    if matched and config["rules"][matched[0]].get("place") is not None:
+        return int(config["rules"][matched[0]]["place"])
+    return None
+
+
 def validate_rules(rules) -> list[dict]:
     """A rule list as stored, or ValueError naming what is wrong with it."""
     if not isinstance(rules, list):
@@ -105,8 +121,12 @@ def validate_rules(rules) -> list[dict]:
             raise ValueError(f"rule {n} has no text to match")
         if not chosen:
             raise ValueError(f"rule {n} goes nowhere")
+        place = rule.get("place")
+        if place is not None and (isinstance(place, bool) or not isinstance(place, int)):
+            raise ValueError(f"rule {n}'s place is not a venue")
         clean.append({"match": match, "text": text,
-                      "destination": SKIP if chosen == SKIP else slugify(chosen)})
+                      "destination": SKIP if chosen == SKIP else slugify(chosen),
+                      **({"place": place} if place is not None else {})})
     return clean
 
 

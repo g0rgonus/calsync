@@ -1574,6 +1574,7 @@ def merge_venues(conn: sqlite3.Connection, *, losing_id: int, winning_id: int) -
         "UPDATE activities SET home_venue_id = ? WHERE home_venue_id = ?",
         (winning_id, losing_id),
     )
+    _repoint_places(conn, losing_id, winning_id)
     # Cascades the losing row's aliases; they have already been copied across.
     conn.execute("DELETE FROM venues WHERE id = ?", (losing_id,))
     conn.commit()
@@ -1588,8 +1589,43 @@ def delete_venue(conn: sqlite3.Connection, venue_id: int) -> None:
     events simply re-render without a pin and the place shows up as unresolved
     again on the source page, which is visible and reversible.
     """
+    _repoint_places(conn, venue_id, None)
     conn.execute("DELETE FROM venues WHERE id = ?", (venue_id,))
     conn.commit()
+
+
+def _repoint_places(conn: sqlite3.Connection, old: int, new: int | None) -> None:
+    """Move calendar-feed default places off a venue that is going away: to the
+    venue it merged into, or dropped with it. Config holds ids, not a foreign
+    key, so nothing else would notice. Left uncommitted for the caller."""
+    for row in conn.execute("SELECT id, config FROM sources WHERE config IS NOT NULL").fetchall():
+        config = json.loads(row["config"])
+        if not isinstance(config, dict):
+            continue
+        places = dict(config.get("places") or {})
+        rules = [dict(r) for r in (config.get("rules") or [])]
+        changed = False
+        for label, venue_id in list(places.items()):
+            if venue_id == old:
+                changed = True
+                if new is None:
+                    del places[label]
+                else:
+                    places[label] = new
+        for rule in rules:
+            if rule.get("place") == old:
+                changed = True
+                if new is None:
+                    del rule["place"]
+                else:
+                    rule["place"] = new
+        if changed:
+            if "places" in config:
+                config["places"] = places
+            if "rules" in config:
+                config["rules"] = rules
+            conn.execute("UPDATE sources SET config = ? WHERE id = ?",
+                         (json.dumps(config), row["id"]))
 
 
 def list_activities(conn: sqlite3.Connection) -> list[Activity]:

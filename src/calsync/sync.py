@@ -392,7 +392,15 @@ def sync_source(
         # may well supply an address inline, so "has an address" proves nothing —
         # what matters is whether we know the place, which is what carries a
         # confirmed pin and survives the venue being spelled differently later.
-        if _enrich_venue(conn, event):
+        # A default place fills only a gap: the feed's own LOCATION always wins.
+        # It is a venue row, so it is never a venue question, and it is not in
+        # the hash: the receipt comparison below re-renders when it changes.
+        if (event.venue is None and event.source_category is not None
+                and (place := routing.default_place(event.source_category, source.config))
+                is not None and (venue := repo.get_venue(conn, place)) is not None):
+            event.venue = venue
+            placed.add(event.uid)
+        elif _enrich_venue(conn, event):
             placed.add(event.uid)
         elif (not withheld.is_withheld(event.uid, off)
                 and "location" not in overrides.get(event.uid, {})):

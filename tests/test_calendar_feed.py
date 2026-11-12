@@ -292,6 +292,85 @@ def test_category_in_categories_seen_stays_not_new_when_a_rule_drops_it():
     assert routing.is_new("Group Meeting", kept)
 
 
+# --- default places ---------------------------------------------------------
+
+GROUP = "1n2o3p4q5r6s7t8u9v0w1x2y3z@google.com"
+
+
+def _hall(conn, name="Naboo Scout Hall"):
+    venue_id = repo.upsert_venue(conn, name=name, address="12 Palace Way, Theed NX 40110",
+                                 lat=40.1, lon=-75.2, pin_confirmed=True)
+    conn.commit()
+    return venue_id
+
+
+def _venue_of(conn, uid):
+    return repo.event_contents(conn, "cal-explorers")[uid]["venue_name"]
+
+
+def test_default_place_fills_missing_location(conn, target, tmp_path):
+    _configure(conn, places={"group meeting": _hall(conn)})
+    report = _sync(conn, target)
+
+    assert _venue_of(conn, GROUP) == "Naboo Scout Hall", "recorded as what the source said"
+    assert "unresolved_venues" not in report.diagnostics or \
+        "Naboo Scout Hall" not in report.diagnostics["unresolved_venues"]
+    (written,) = [p for p in (tmp_path / "out").rglob("*.ics") if GROUP in p.name]
+    assert "Naboo Scout Hall" in written.read_text()
+
+
+def test_feed_location_beats_default_place(conn, target):
+    _configure(conn, places={"Council Meeting": _hall(conn)})
+    _sync(conn, target)
+
+    assert _venue_of(conn, next(u for u in _live(conn) if u.startswith(MONTHLY))) \
+        == "Lars Homestead Elementary School"
+
+
+def test_rule_place_fills_and_category_place_beats_it(conn, target):
+    hall, den = _hall(conn), _hall(conn, "Mos Espa Den")
+    _configure(conn, rules=[{**MEETINGS, "place": hall}])
+    _sync(conn, target)
+    assert _venue_of(conn, GROUP) == "Naboo Scout Hall"
+
+    _configure(conn, places={"Group Meeting": den})
+    _sync(conn, target)
+    assert _venue_of(conn, GROUP) == "Mos Espa Den"
+
+
+def test_merging_a_venue_moves_default_places_and_deleting_drops_them(conn, target):
+    hall, den = _hall(conn), _hall(conn, "Mos Espa Den")
+    _configure(conn, places={"Group Meeting": hall, "Council Meeting": den},
+               rules=[{**MEETINGS, "place": hall}, {**MEETINGS, "place": den}])
+
+    repo.merge_venues(conn, losing_id=hall, winning_id=den)
+    config = repo.get_source(conn, "cal-explorers").config
+    assert config["places"] == {"Group Meeting": den, "Council Meeting": den}
+    assert [r["place"] for r in config["rules"]] == [den, den]
+
+    repo.delete_venue(conn, den)
+    config = repo.get_source(conn, "cal-explorers").config
+    assert config["places"] == {}
+    assert all("place" not in r for r in config["rules"])
+    _sync(conn, target)
+    assert _venue_of(conn, GROUP) is None
+
+
+def test_setting_a_default_place_refreshes_without_a_hash_change(conn, target):
+    _sync(conn, target)
+    before = repo.event_states(conn, "cal-explorers")[GROUP]
+    assert _venue_of(conn, GROUP) is None
+
+    _configure(conn, places={"Group Meeting": _hall(conn)})
+    report = _sync(conn, target)
+
+    after = repo.event_states(conn, "cal-explorers")[GROUP]
+    assert after.content_hash == before.content_hash
+    assert report.refreshed == 1
+    assert report.updated == 0 and report.created == 0
+    assert _venue_of(conn, GROUP) == "Naboo Scout Hall"
+
+
 # --- the feed ---------------------------------------------------------------
 
 
@@ -854,6 +933,37 @@ def test_keep_all_answers_only_the_categories_shown(console):
     page = client.get(f"/sources/{source_id}")["body"]
     assert "Padawan Meeting (new)" not in page
     assert "Group Meeting (new)" in page, "one the page did not show stays new"
+
+
+def test_default_places_are_set_from_the_source_page(console):
+    client, path, source_id = console
+    connection = db.connect(path)
+    hall = _hall(connection)
+    repo.set_staging(connection, source_id, None)
+    connection.close()
+
+    client.post(f"/sources/{source_id}/category",
+                {"label": "Group Meeting", "destination": "practices", "place": str(hall)})
+    assert _config(path, source_id)["places"] == {"Group Meeting": hall}
+    client.post(f"/sources/{source_id}/category",
+                {"label": "Group Meeting", "destination": "practices"})
+    assert _config(path, source_id)["places"] == {"Group Meeting": hall}, \
+        "a form without a place leaves it alone"
+    refused = client.post(f"/sources/{source_id}/category",
+                          {"label": "Group Meeting", "destination": "practices",
+                           "place": "999"})
+    assert refused["status"] != 303
+
+    preview = client.post(f"/sources/{source_id}/rules/preview",
+                          {"op": "add", "match": "contains", "text": "meeting",
+                           "destination": "practices", "place": str(hall)})["body"]
+    assert "at Naboo Scout Hall when the feed gives no place" in preview
+    client.post(f"/sources/{source_id}/rules", {"rules": _hidden(preview, "rules")})
+    assert _config(path, source_id)["rules"][0]["place"] == hall
+    unknown = client.post(f"/sources/{source_id}/rules", {"rules": json.dumps([
+        {"match": "contains", "text": "meeting", "destination": "practices", "place": 999}])})
+    assert unknown["status"] != 303
+    assert _config(path, source_id)["rules"][0]["place"] == hall
 
 
 def test_an_agent_can_propose_a_time_is_right(conn, target):

@@ -160,8 +160,8 @@ a wrong time is the calendar's to correct.
 
 ## Rules, default places and bulk answers
 
-**Status: title rules, showing their reach, and Keep all are built. Default
-places and the API are specified, not built.**
+**Status: title rules, showing their reach, Keep all and default places are
+built. The API is specified, not built.**
 
 A hand-typed club calendar does not repeat its titles. Its first production
 feed had 27 categories in a year, 23 of them used once: "Den Meeting - Special",
@@ -244,7 +244,8 @@ from the venue table so it carries an address and a pin.
 - **The feed's own `LOCATION` always wins.** The default fills a gap and never
   overrides what the calendar says.
 - **Stored on the source:** `places: {category: venue_id}` and an optional
-  `place` on a rule. A category's own place beats its rule's.
+  `place` on a rule. A category's own place beats the place of the first rule
+  that matches it, whatever placed its destination.
 - **Not part of the content hash** (invariant 9 hashes what the feed said).
   Setting or changing a default re-renders the events through the receipt
   comparison in `sync.py`, as teaching a venue alias already does, and counts

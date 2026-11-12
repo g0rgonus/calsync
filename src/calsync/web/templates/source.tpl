@@ -207,6 +207,12 @@
             <option value="__new__">New calendar…</option>
           </select>
           <input type="text" name="new_calendar" placeholder="name, if new" size="10">
+          <select name="place" aria-label="Where {{ row['label'] }} is when the feed gives no place">
+            <option value="">{{ 'Place from its rule' if row['place'] and not row['own_place'] else 'No default place' }}</option>
+% for v in venues:
+            <option value="{{ v['id'] }}"{{ ' selected' if v['id'] == row['own_place'] else '' }}>{{ v['canonical_name'] }}</option>
+% end
+          </select>
           <button class="btn btn-quiet" type="submit">{{ 'Confirm' if row['new'] else 'Save' }}</button>
         </form>
       </td>
@@ -225,7 +231,8 @@
   <h3 id="rules">Title rules</h3>
   <p class="note">
     A rule sends every category whose title starts with or contains its text
-    to a calendar, or skips it. The first rule that matches wins; a category
+    to a calendar, or skips it, and can give them a default place for events
+    the feed gives no place. The first rule that matches wins; a category
     you set yourself beats any rule. Every change is previewed before it saves.
   </p>
 % for i, rule in enumerate(rules):
@@ -245,6 +252,12 @@
         <option value="__new__">New calendar…</option>
       </select>
       <input type="text" name="new_calendar" placeholder="name, if new" size="10">
+      <select name="place" aria-label="Rule {{ i + 1 }}'s default place">
+        <option value="">No default place</option>
+% for v in venues:
+        <option value="{{ v['id'] }}"{{ ' selected' if v['id'] == rule.get('place') else '' }}>{{ v['canonical_name'] }}</option>
+% end
+      </select>
       <button class="btn btn-quiet" name="op" value="edit" type="submit">Preview</button>
       <button class="btn btn-quiet" name="op" value="up" type="submit"{{ ' disabled' if i == 0 else '' }}>Up</button>
       <button class="btn btn-quiet" name="op" value="down" type="submit"{{ ' disabled' if i == len(rules) - 1 else '' }}>Down</button>
@@ -273,6 +286,12 @@
       <option value="__new__">New calendar…</option>
     </select>
     <input type="text" name="new_calendar" placeholder="name, if new" size="10">
+    <select name="place" aria-label="The new rule's default place">
+      <option value="">No default place</option>
+% for v in venues:
+      <option value="{{ v['id'] }}">{{ v['canonical_name'] }}</option>
+% end
+    </select>
     <button class="btn btn-quiet" name="op" value="add" type="submit">Preview rule</button>
   </form>
 
