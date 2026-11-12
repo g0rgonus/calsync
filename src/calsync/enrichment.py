@@ -557,6 +557,9 @@ def apply(conn, task: repo.Task) -> str:
 
     if task.type == "route_category":
         label = task.context[0]
+        # A person may have placed it since the answer came in; theirs stands.
+        if routing.own_category(source.config, label)["destination"]:
+            raise AnswerError(f"{label!r} was placed by hand since this answer came in")
         chosen = _need(answer, "destination")
         chosen = routing.SKIP if chosen.casefold() == routing.SKIP else routing.slugify(chosen)
         place = answer.get("place")

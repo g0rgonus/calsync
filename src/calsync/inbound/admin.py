@@ -201,6 +201,15 @@ def _calendar(value) -> str | None:
     return routing.SKIP if value.strip().casefold() == routing.SKIP else routing.slugify(value)
 
 
+def validate_label(label: str) -> str:
+    """A category from the URL: not blank, and no longer than a title could be."""
+    label = " ".join(label.split())
+    if not label or len(label) > MAX_QUESTION:
+        raise Invalid([_err("label", "bad_label",
+                            f"a category's title, 1 to {MAX_QUESTION} characters")])
+    return label
+
+
 def validate_category(body) -> dict:
     """Where one category goes, and optionally its default place. A null
     destination clears it; leaving place out keeps the stored one."""

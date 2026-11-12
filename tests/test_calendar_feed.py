@@ -1011,8 +1011,16 @@ def test_approved_route_category_writes_the_category(conn, target):
     assert _live(conn)[GROUP].collection == "gatherings"
     assert _venue_of(conn, GROUP) == "Naboo Scout Hall"
 
+    late = _route_task(conn, target, "Mos Espa Camporee", {"destination": "skip"})
+    _configure(conn, categories={**repo.get_source(conn, "cal-explorers").config["categories"],
+                                 "Mos Espa Camporee": "explorers"})
+    with pytest.raises(enrichment.AnswerError, match="placed by hand"):
+        enrichment.apply(conn, late)
+    assert repo.get_source(conn, "cal-explorers").config["categories"][
+        "Mos Espa Camporee"] == "explorers", "a person's choice stands"
+
     with pytest.raises(enrichment.AnswerError, match="no venue"):
-        enrichment.apply(conn, _route_task(conn, target, "Mos Espa Camporee",
+        enrichment.apply(conn, _route_task(conn, target, "Elders' Roundtable",
                                            {"destination": "skip", "place": 999}))
 
 

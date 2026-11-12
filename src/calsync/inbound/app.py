@@ -1369,9 +1369,12 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
     @app.put(ADMIN + "/teams/<source_id>/categories/<label:path>")
     def set_category(source_id, label):
         """Where one category goes, and its default place."""
-        label = " ".join(label.split())
         with connect() as conn:
             caller = admin_write(conn)
+        try:
+            label = admin.validate_label(label)
+        except inbound.Invalid as exc:
+            raise Problem(422, "invalid", "nothing was changed", errors=exc.errors) from None
         change = validated(admin.validate_category)
         with transaction() as conn:
             source = routed_source(conn, source_id)

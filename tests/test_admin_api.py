@@ -809,3 +809,49 @@ def test_admin_rules_preview_changes_nothing(routed):
     assert sent == []
     bad = client.call("POST", f"{CAL}/rules/preview", {"rules": [{"match": "regex"}]})
     assert bad["status"] == 422
+
+
+ROUTING_CALLS = [
+    ("PUT", "/categories/Group Meeting", {"destination": "skip"}),
+    ("PUT", "/default-calendar", {"calendar": "club"}),
+    ("PUT", "/rules", {"rules": []}),
+    ("POST", "/rules/preview", {"rules": []}),
+    ("PUT", "/times-confirmed", {"times_confirmed": []}),
+]
+
+
+@pytest.mark.parametrize("method,path,change", ROUTING_CALLS)
+@pytest.mark.parametrize("key", [TEAM_KEY, None])
+def test_routing_calls_need_an_admin_key(routed, method, path, change, key):
+    client, sent, db_path = routed
+    before = _config(db_path)
+    assert client.call(method, CAL + path, change, key=key)["status"] == 401
+    assert _config(db_path) == before and sent == []
+
+
+def test_a_staged_teams_routing_changes_send_no_push(routed):
+    client, sent, db_path = routed
+    conn = conn_for(db_path)
+    repo.set_staging(conn, "cal-explorers", "onboarding")
+    conn.close()
+    for method, path, change in ROUTING_CALLS:
+        assert client.call(method, CAL + path, change)["status"] == 200, path
+    assert sent == []
+
+
+@pytest.mark.parametrize("path,change", [
+    ("/default-calendar", {"calendar": "skip"}),
+    ("/default-calendar", {"calendar": ""}),
+    ("/times-confirmed", {"times_confirmed": "Padawan Meeting"}),
+    ("/times-confirmed", {"times_confirmed": [""]}),
+    ("/times-confirmed", {"times_confirmed": [7]}),
+    ("/rules", {"rules": [MEETINGS] * 51}),
+    ("/rules", {"rules": [{**MEETINGS, "text": "x" * 81}]}),
+    ("/categories/ ", {"destination": "skip"}),
+    ("/categories/" + "x" * 301, {"destination": "skip"}),
+])
+def test_routing_calls_refuse_what_they_cannot_store(routed, path, change):
+    client, sent, db_path = routed
+    before = _config(db_path)
+    assert client.call("PUT", CAL + path, change)["status"] == 422
+    assert _config(db_path) == before and sent == []
