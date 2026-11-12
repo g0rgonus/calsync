@@ -281,5 +281,7 @@ def summarise(conditions_: tuple[Condition, ...]) -> tuple[str, str]:
     if waiting:
         if waiting[0].label == "Events received":
             return "waiting", "waiting for a push"
+        if waiting[0].label == "Events seen":
+            return "waiting", "waiting for events"
         return "waiting", "waiting for games"
     return "ready", "ready to promote"

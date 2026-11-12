@@ -264,6 +264,28 @@ def test_exdate_in_utc_removes_a_local_occurrence():
     assert f"{SERIES}/20260929T230000Z" in uids
 
 
+def test_override_without_its_series_keeps_the_occurrence_uid():
+    whole = {e.uid: e for e in _parse().events}
+    raw = FIXTURE.read_bytes()
+    master_start = raw.index(b"BEGIN:VEVENT")
+    master_end = raw.index(b"END:VEVENT", master_start) + len(b"END:VEVENT\n")
+    alone = {e.uid: e for e in _parse(raw[:master_start] + raw[master_end:]).events}
+
+    moved = f"{SERIES}/20261013T230000Z"
+    assert moved in alone, "keyed by RECURRENCE-ID, not by its new start"
+    assert alone[moved].starts_at == whole[moved].starts_at
+
+
+def test_events_only_card_waits_for_events():
+    from calsync.web import gate
+
+    report = SyncReport(source_id="cal", events_only=True)
+    activity = Activity(id="a", child_id="luke", name="Explorers", sport="scouts",
+                        emoji="⚜️", tz="America/New_York")
+    assert gate.summarise(gate.conditions(report, activity)) == \
+        ("waiting", "waiting for events")
+
+
 def test_series_over_the_cap_raises():
     raw = FIXTURE.read_bytes().replace(b"RRULE:FREQ=MONTHLY;BYDAY=1WE", b"RRULE:FREQ=DAILY")
     with pytest.raises(FeedError, match="more than 400"):

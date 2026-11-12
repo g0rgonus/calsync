@@ -199,10 +199,11 @@ is the occurrence's start as the rule produced it, before any override:
 `RECURRENCE-ID` override keeps the uid of the occurrence it replaces, so moving
 one meeting is an update, not a delete and a create. A VEVENT with no `RRULE`
 keeps its own `UID` unchanged. The `UID` written keeps the `/`; the CalDAV
-resource name swaps it for `_`, as the `.ics` directory target does.
+resource name swaps it for `_` and adds a short hash of the whole uid, so it
+cannot collide with a uid that already had an `_` there.
 
-An override whose series is not in the feed is kept as a one-off under
-`<UID>/<its start>`.
+An override whose series is not in the feed is still keyed by its
+`RECURRENCE-ID`, so its uid holds when the series appears.
 
 ## Shape of the change
 

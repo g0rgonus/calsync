@@ -8,11 +8,21 @@ stays testable without a server.
 from __future__ import annotations
 
 from typing import Callable, Protocol
+from hashlib import sha256
 from urllib.parse import quote
 
 from ..render import RenderedEvent
 from . import Capabilities, TargetError, TargetRef, register
 from .ics_file import to_ics
+
+
+def resource_name(uid: str) -> str:
+    """A uid as a resource name. A slash names a sub-collection and Radicale
+    refuses an escaped one, so a slashed uid swaps it and gains a hash of the
+    whole uid, which keeps `a/b` and `a_b` apart. Others are unchanged."""
+    if "/" not in uid:
+        return uid
+    return f"{uid.replace('/', '_')}-{sha256(uid.encode()).hexdigest()[:12]}"
 
 
 class Response(Protocol):
@@ -56,10 +66,7 @@ class CalDavTarget:
         )
 
     def resource_url(self, collection: str, uid: str) -> str:
-        # A calendar feed's occurrence uid is `<series>/<start>`. A bare slash
-        # names a sub-collection and Radicale refuses an escaped one, so the
-        # resource name swaps it, as the .ics directory target does.
-        return f"{self.base_url}/{quote(collection)}/{quote(uid.replace('/', '_'))}.ics"
+        return f"{self.base_url}/{quote(collection)}/{quote(resource_name(uid))}.ics"
 
     @staticmethod
     def _header(response, name: str) -> str | None:

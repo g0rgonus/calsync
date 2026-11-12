@@ -160,6 +160,15 @@ def _occurrence_id(start: datetime, all_day: bool) -> str:
     return start.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
+def _override_key(override, *, floating, uid: str, tz: str) -> str:
+    """The occurrence a RECURRENCE-ID override replaces, as its uid suffix."""
+    prop = override.get("RECURRENCE-ID")
+    if prop.params.get("RANGE"):
+        raise FeedError(f"VEVENT {uid}: RECURRENCE-ID RANGE is not supported")
+    original, zone = _local(prop.dt, floating=floating, uid=uid, key="RECURRENCE-ID")
+    return _occurrence_id(_anchor(original, zone, tz), not isinstance(original, datetime))
+
+
 def _excluded(component, *, zone, floating, uid) -> set:
     """EXDATEs as wall-clock values in the series' zone (or dates), to compare
     with the rule's. An EXDATE may be written in UTC for a local series."""
@@ -307,11 +316,8 @@ def parse_feed(
         # Overrides keyed by the occurrence they replace.
         replaced: dict[str, object] = {}
         for override in overrides.pop(uid, []):
-            original, o_zone = _local(override.get("RECURRENCE-ID").dt,
-                                      floating=floating, uid=uid, key="RECURRENCE-ID")
-            if override.get("RECURRENCE-ID").params.get("RANGE"):
-                raise FeedError(f"VEVENT {uid}: RECURRENCE-ID RANGE is not supported")
-            replaced[_occurrence_id(_anchor(original, o_zone, activity.tz), all_day)] = override
+            replaced[_override_key(override, floating=floating, uid=uid,
+                                   tz=activity.tz)] = override
 
         produced = 0
         for slot in _slots(rule, window, zone, all_day, activity.tz):
@@ -346,15 +352,17 @@ def parse_feed(
                                      length=o_length, all_day=o_all_day,
                                      activity=activity, source_id=source_id))
 
-    # An override with no series in this feed is a one-off under its own uid.
+    # An override whose series is not in this feed. Keyed by its RECURRENCE-ID
+    # like any other, so its uid holds when the series appears.
     for uid, orphans in overrides.items():
         for override in orphans:
+            key = _override_key(override, floating=floating, uid=uid, tz=activity.tz)
             o_start, o_length, o_all_day, _, _ = _times(
                 override, floating=floating, uid=uid, tz=activity.tz)
-            key = _occurrence_id(o_start, o_all_day)
-            events.append(_event(override, uid=f"{uid}/{key}", starts_at=o_start,
-                                 length=o_length, all_day=o_all_day,
-                                 activity=activity, source_id=source_id))
+            if window is None or window[0] <= o_start <= window[1]:
+                events.append(_event(override, uid=f"{uid}/{key}", starts_at=o_start,
+                                     length=o_length, all_day=o_all_day,
+                                     activity=activity, source_id=source_id))
 
     result = PollResult(
         source_id=source_id,

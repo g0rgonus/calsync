@@ -387,3 +387,13 @@ def test_an_all_day_event_carries_no_alarm(settings):
     assert rendered.alarm_minutes is None
     assert "BEGIN:VALARM" not in to_ics(rendered).decode()
     assert "All day" in rendered.body
+
+
+def test_caldav_resource_names_keep_slashed_uids_apart():
+    from calsync.targets.caldav import resource_name
+
+    assert resource_name("31000001@teamreach") == "31000001@teamreach", "unchanged"
+    slashed = resource_name("series@google.com/20261013T230000Z")
+    assert "/" not in slashed
+    assert slashed != resource_name("series@google.com_20261013T230000Z")
+    assert resource_name("a/b") != resource_name("a_b")
