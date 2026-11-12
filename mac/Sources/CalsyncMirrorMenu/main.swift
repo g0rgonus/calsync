@@ -190,13 +190,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.button?.toolTip = status.title
     }
 
-    /// The plain "in sync" mark is the Family Cells template, which AppKit tints
-    /// for a light or a dark menu bar. Syncing and every other state keep the
-    /// SF Symbol `StatusPresenter` chose: a pause, a hold and a spin have to
-    /// read as different from idle without opening the menu. No template in
-    /// the bundle means that symbol too.
+    /// `showsMark` is the Family Cells template, which AppKit tints for a light
+    /// or a dark menu bar. Syncing and every other state keep the SF Symbol:
+    /// a pause, a hold and a spin have to read as different from idle without
+    /// opening the menu. No template in the bundle means that symbol.
     func statusImage(for status: MenuStatus) -> NSImage? {
-        if !syncing, status.symbol == "calendar", let mark = MenuBarMark.image {
+        if !syncing, status.showsMark, let mark = MenuBarMark.image {
             mark.accessibilityDescription = status.title
             return mark
         }
@@ -386,20 +385,21 @@ extension AppDelegate: NSMenuDelegate {
 
 /// Idle menu-bar mark, built once from the two bitmaps `install.sh` copies in.
 ///
-/// 18 points, with the 36px file as the retina representation. Nil when those
-/// files are not in the bundle: the caller draws the calendar symbol instead,
-/// so a build that skipped the copy still has an icon.
+/// 16 points, with the 32px file as the retina representation. The drawing is
+/// on a 16px grid; 18px puts the header and the ring punches on half pixels.
+/// Nil when the 16pt file is not in the bundle: the caller draws the symbol
+/// instead, so a build that skipped the copy still has an icon.
 private enum MenuBarMark {
     static let image: NSImage? = load()
 
     private static func load() -> NSImage? {
         guard let resources = Bundle.main.resourceURL else { return nil }
-        let standard = resources.appendingPathComponent("menubar-template-18.png")
+        let standard = resources.appendingPathComponent("menubar-template-16.png")
         guard let rep = NSBitmapImageRep(contentsOf: standard) else { return nil }
-        let image = NSImage(size: NSSize(width: 18, height: 18))
+        let image = NSImage(size: NSSize(width: 16, height: 16))
         rep.size = image.size
         image.addRepresentation(rep)
-        let retina = resources.appendingPathComponent("menubar-template-36.png")
+        let retina = resources.appendingPathComponent("menubar-template-32.png")
         if let hi = NSBitmapImageRep(contentsOf: retina) {
             // Same point size, twice the pixels: what AppKit treats as @2x.
             hi.size = image.size

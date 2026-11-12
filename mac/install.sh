@@ -126,14 +126,15 @@ if [ -f "$ICON_SRC" ] && command -v qlmanage >/dev/null 2>&1; then
     rm -rf "$ICON_TMP"
 fi
 
-# Idle menu-bar mark: 18pt, and the 36px bitmap for a retina display. The app
-# loads these by filename. With no 18pt file it uses the calendar symbol, so
-# a missing copy costs an icon, not the sync. Syncing and every other state
-# keep their SF Symbols.
-if [ -f "$HERE/Resources/menubar-template-18.png" ] \
-        && [ -f "$HERE/Resources/menubar-template-36.png" ]; then
-    cp "$HERE/Resources/menubar-template-18.png" \
-        "$HERE/Resources/menubar-template-36.png" \
+# Idle menu-bar mark. 16pt, because the drawing is on a 16px grid — 18px puts
+# the header and the ring punches on half pixels — and the 32px bitmap for a
+# retina display. The app loads these by filename. With no 16pt file it uses
+# the calendar symbol, so a missing copy costs an icon, not the sync. Syncing
+# and every other state keep their SF Symbols.
+if [ -f "$HERE/Resources/menubar-template-16.png" ] \
+        && [ -f "$HERE/Resources/menubar-template-32.png" ]; then
+    cp "$HERE/Resources/menubar-template-16.png" \
+        "$HERE/Resources/menubar-template-32.png" \
         "$APP/Contents/Resources/"
 fi
 

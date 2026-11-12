@@ -29,13 +29,19 @@ public struct MenuStatus: Equatable {
     /// Whether this is a state somebody should act on. Drives the icon's
     /// emphasis, and whether a notification is worth posting.
     public var needsAttention: Bool
+    /// Plain in-sync, and nothing else. The menu draws the Family Cells
+    /// template for this and keeps `symbol` for every other state. `symbol`
+    /// is the fallback when the bitmap is missing, not the way the menu
+    /// decides which image to draw.
+    public var showsMark: Bool
 
     public init(symbol: String, title: String, detail: String? = nil,
-                needsAttention: Bool = false) {
+                needsAttention: Bool = false, showsMark: Bool = false) {
         self.symbol = symbol
         self.title = title
         self.detail = detail
         self.needsAttention = needsAttention
+        self.showsMark = showsMark
     }
 }
 
@@ -136,7 +142,8 @@ public enum StatusPresenter {
                 symbol: waiting ? "calendar.badge.exclamationmark" : "calendar",
                 title: waiting ? (review?.summary ?? "In sync") : "In sync",
                 detail: detail,
-                needsAttention: false)
+                needsAttention: false,
+                showsMark: !waiting)
         }
     }
 
