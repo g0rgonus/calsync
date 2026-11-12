@@ -43,8 +43,10 @@ Meeting`, `Elders' Roundtable`. Titles match ignoring case and surrounding or
 doubled spaces. Near-duplicates (`Padawan Meeting` and `Padawan Meetings`) are
 separate categories; merging them would be an alias feature, not part of this.
 
-The source page lists every category the feed has published, with how many
-events each has, and a destination for each:
+The source page lists every category with events in the sync window, with how
+many each has, and a destination for each. A category whose events are all in
+the past is not listed: nothing will be written for it, so there is nothing to
+decide.
 
 | Category | Events | Goes to |
 |---|---|---|
@@ -134,6 +136,28 @@ held-events copy, which says nothing has gone to the family's calendars.
 A destination is a person's decision. Nothing in the poll path sets one; the
 poll only reports which categories exist.
 
+### A time twelve hours off
+
+Calendars are typed by hand, and AM for PM is the slip that costs something: a
+Den Meeting at 06:30 rings an alarm before dawn and is missed that evening. A
+timed event exactly twelve hours from its category's usual start (the most
+common start, seen at least three times and not tied with another) waits in
+`enrichment` (invariant 20)
+and is asked about on the source page and `/review`, under **Times look
+right**, which takes the place of "Types known" for this kind. Skipped
+categories are not checked, and nor is an event whose start a person has
+corrected (`overlay.py`), which is why the sync runs the check rather than the
+parse.
+
+**This time is right** stores the question itself in `times_confirmed`, so an
+edit to that event's time is asked about again. If the calendar is corrected,
+the question goes away and the event is released on the next sync. Like any
+held event, it holds promotion until answered.
+
+It is also an agent task, `confirm_time`, answered `{"time_is_right": true}`
+and applied only once a person approves it (invariant 21). There is no "no":
+a wrong time is the calendar's to correct.
+
 ## Rules, default places and bulk answers
 
 **Status: specified, not built.**
@@ -176,9 +200,8 @@ A rule sends every category whose title matches it to a calendar, or to Skip:
 Where an event goes becomes, in order:
 
 1. staging;
-2. an event held in `enrichment`. 1.1.1 moves this ahead of the category's
-   destination, for the twelve-hour check (above). On `main` before it, a
-   destination is returned first;
+2. an event held in `enrichment`, such as a time twelve hours off (above),
+   as `routing.collection_for` already does;
 3. the category's own destination, if a person set one;
 4. the first rule that matches;
 5. the default calendar.
@@ -202,10 +225,13 @@ Rules are only safe if their reach is visible. "contains Meeting" also catches
   editing, moving up or down, and deleting. Each changes which rule matches
   first and so moves written events. The form posts to a preview of the table,
   and Save applies it.
-- **A category a rule stops matching falls back to the default and is new
-  again.** It is marked *new* and listed on `/review`, but sends no push: the
-  preview named it, and the person saving has just seen it. It is recorded in
-  `category_notified` when the change is saved.
+- **A category a rule stops matching falls back to the default.** It is new
+  again only if it is not in `categories_seen`. A category already there was
+  accepted at the default by **Keep all** (below), and the default is where it
+  lands, so there is nothing new to decide. A category that is new again is
+  marked and listed on `/review`, but sends no push: the preview named it, and
+  the person saving has just seen it. It is recorded in `category_notified`
+  when the change is saved.
 
 ### A default place by category
 
@@ -262,9 +288,13 @@ same live dry run the source page draws:
 
 - **`route_category`**, one task per new category, answered
   `{"destination": "practices" | "skip" | "<new calendar>", "place": venue_id?}`.
-  Dispatched like any other task, but not a diagnostic and not a promotion
-  hold. Approving writes the same `categories` entry the source page writes.
-- **`confirm_time`**, already built, for a held time.
+  New categories are not diagnostics, so `enrichment.tasks()` gains a second
+  path beside its diagnostic one: a task for each category in the poll's
+  `categories` that `routing.is_new()` calls new, once the source is promoted.
+  It holds nothing and does not block promotion. Its answer shape is added to
+  the `/v1` contract's `ANSWER_SHAPES` and to `enrichment.validate`. Approving
+  writes the same `categories` entry the source page writes.
+- **`confirm_time`**, as built, for a held time.
 - **Approving several at once.** `/review` gets one approve button for every
   answered task of a source. A batch of one-offs becomes one decision about an
   agent's choices, not twenty about where things go.
@@ -272,18 +302,20 @@ same live dry run the source page draws:
 An agent never sends a rule as a proposal. A rule decides for categories that
 have not appeared yet, which is a person's call.
 
-**Admin calls**, for a person's own tooling, each idempotent and following the
-home-venue call's pattern: logged with `log_admin`, pushed unless the source is
-staged (invariant 29), and returning the value it replaced so that sending it
-back is the undo.
+**Admin calls**, for a person's own tooling, each idempotent. Like the
+home-venue call, each is logged with `log_admin` and pushed unless the source
+is staged (invariant 29). Unlike it, each returns `{"current": …,
+"previous": …}`: home-venue returns only the value it wrote, and an agent
+undoing a change needs the one it replaced. Sending `previous` back is the
+undo. Home-venue is left as it is.
 
 | Call | Body |
 |---|---|
-| `PUT /admin/teams/{id}/categories/{label}` | `{"destination": …, "place": venue_id?}`; `null` destination clears it |
-| `PUT /admin/teams/{id}/default-calendar` | `{"calendar": …}` |
-| `PUT /admin/teams/{id}/rules` | the whole ordered list, so order and undo are one value |
-| `POST /admin/teams/{id}/rules/preview` | a proposed list; returns what each category would get and which events would move, changing nothing |
-| `PUT /admin/teams/{id}/times-confirmed` | the whole list of confirmed questions |
+| `PUT /inbound/v1/admin/teams/{source_id}/categories/{label}` | `{"destination": …, "place": venue_id?}`; `null` destination clears it |
+| `PUT /inbound/v1/admin/teams/{source_id}/default-calendar` | `{"calendar": …}` |
+| `PUT /inbound/v1/admin/teams/{source_id}/rules` | the whole ordered list, so order and undo are one value |
+| `POST /inbound/v1/admin/teams/{source_id}/rules/preview` | a proposed list; returns what each category would get and which events would move, changing nothing |
+| `PUT /inbound/v1/admin/teams/{source_id}/times-confirmed` | the whole list of confirmed questions |
 
 `{label}` is URL-encoded and matched like a category, ignoring case and
 spacing. The inbound contract and OpenAPI document are generated from the
@@ -296,6 +328,9 @@ route table, so these appear there with no hand-written docs (invariant 30).
 - `approved_route_category_writes_the_category`
 - `approve_all_applies_a_sources_answers`
 - `admin_category_change_pushes_and_returns_the_previous_value`
+- `sending_previous_back_undoes_the_change`
+- `route_category_answer_shape_is_in_the_contract`
+- `category_in_categories_seen_stays_not_new_when_a_rule_drops_it`
 - `admin_rules_preview_changes_nothing`
 - `skip_rule_removes_written_events_without_tripping_guard`
 - `rule_placed_category_is_not_new`

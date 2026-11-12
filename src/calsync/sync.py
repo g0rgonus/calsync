@@ -26,7 +26,7 @@ from .render import render
 from .routing import collection_for
 from .secrets import SecretError, SecretStore
 from .settings import Settings
-from .sources import SourceError
+from .sources import SourceError, calendar_feed
 from .targets import TargetError, TargetRef
 
 
@@ -362,6 +362,17 @@ def sync_source(
     # reason as `off`: a venue somebody has already corrected is not a question
     # worth asking about the place the feed named.
     overrides = repo.overrides_for(conn, source.id)
+
+    # After the overrides, because a start a person has corrected is not one
+    # to ask about.
+    if source.kind in sources.EVENTS_ONLY:
+        calendar_feed.hold_suspect_times(
+            result, config=source.config,
+            inside=lambda e: _in_window(e, now=now, settings=settings),
+            corrected={uid for uid, units in overrides.items() if "time" in units},
+        )
+        if result.diagnostics.get("suspect_times"):
+            report.diagnostics["suspect_times"] = list(result.diagnostics["suspect_times"])
 
     events = []
     called_off: set[str] = set()

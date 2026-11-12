@@ -148,6 +148,10 @@ ANSWER_SHAPES: dict[str, dict] = {
         "question": "is this label a game or a practice?",
         "answer": {"label": "Skills Session", "is_game": False},
     },
+    "confirm_time": {
+        "question": "is this time right, twelve hours off the usual one?",
+        "answer": {"time_is_right": True},
+    },
     "normalize_venue": {
         "question": "where is this?",
         "answer": {

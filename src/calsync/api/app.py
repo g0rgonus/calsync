@@ -375,6 +375,7 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None) -> Bo
 _ANSWER_SHAPES = {
     "resolve_activity": {"alias": "Rogues"},
     "classify_kind": {"label": "Skills Session", "is_game": False},
+    "confirm_time": {"time_is_right": True},
     "normalize_venue": {"name": "Anchorhead Meadow Park",
                         "address": "optional",
                         "same_as": "or the name of a venue already known"},

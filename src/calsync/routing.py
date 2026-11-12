@@ -84,24 +84,23 @@ def collection_for(
     if override:
         return slugify(override)
 
+    # A held event outranks its category's calendar: the question is whether
+    # it should be on any calendar at that time at all (invariant 20).
+    if event.needs_enrichment and settings.enrichment_collection:
+        return slugify(settings.enrichment_collection)
+
     # ``config`` is the source's. A skipped category is dropped on the way to
     # the write (`sync.py`), so it never reaches a calendar from here.
     chosen = destination(event, config)
     if chosen is not None and chosen != SKIP:
         return slugify(chosen)
 
-    # Before the type split, because an event we cannot classify has no honest
-    # answer to "game or practice" — that is the whole question. Held here it is
-    # visible, tracked in `event_state`, and reachable in a calendar client,
-    # rather than filed under a guess. Releasing it is a collection change,
-    # which the sync loop already treats as a move.
-    #
-    # Deliberately *after* the staging override: a source still being onboarded
-    # is already held somewhere, and splitting its events across two holding
-    # calendars would make the promotion gate harder to read, not safer.
-    if event.needs_enrichment and settings.enrichment_collection:
-        return slugify(settings.enrichment_collection)
-
+    # The hold above comes before the type split because an event we cannot
+    # classify has no honest answer to "game or practice". Held, it is visible,
+    # tracked in `event_state` and reachable in a calendar client; releasing it
+    # is a collection change, which the sync loop treats as a move. It comes
+    # after the staging override: a source still being onboarded is already
+    # held, and two holding calendars would make the gate harder to read.
     return templated(event.is_game, activity, child, settings)
 
 

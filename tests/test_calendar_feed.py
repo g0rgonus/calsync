@@ -286,6 +286,93 @@ def test_events_only_card_waits_for_events():
         ("waiting", "waiting for events")
 
 
+def test_categories_count_only_the_sync_window():
+    late = (datetime(2026, 11, 2, tzinfo=timezone.utc), datetime(2026, 12, 31, tzinfo=timezone.utc))
+    result = _parse(window=late)
+
+    assert "Mos Espa Camporee" not in result.categories, "October only, so past the window"
+    assert "Group Meeting" not in result.categories
+    assert result.categories["Padawan Meeting"] == len(
+        [e for e in result.events if e.source_category == "Padawan Meeting"
+         and late[0] <= e.starts_at <= late[1]])
+
+
+#: A Padawan Meeting typed at 07:00 where the series is always 19:00.
+SLIP = b"""BEGIN:VEVENT
+DTSTART;TZID=America/New_York:20261124T070000
+DTEND;TZID=America/New_York:20261124T083000
+UID:slip@google.com
+SUMMARY:Padawan Meeting
+END:VEVENT
+BEGIN:VEVENT
+DTSTART;TZID=America/New_York:20261125T073000
+DTEND;TZID=America/New_York:20261125T083000
+UID:breakfast@google.com
+SUMMARY:Padawan Meeting
+END:VEVENT
+END:VCALENDAR
+"""
+
+
+def _with_slip():
+    return FIXTURE.read_bytes().replace(b"END:VCALENDAR\n", SLIP)
+
+
+def test_twelve_hours_off_is_held_and_asked(conn, target):
+    report = _sync(conn, target, raw=_with_slip())
+
+    assert report.diagnostics["suspect_times"] == [
+        "Padawan Meeting, Tue 24 Nov 2026 at 07:00 (usually 19:00)"]
+    assert _live(conn)["slip@google.com"].collection == "enrichment"
+    assert _live(conn)["breakfast@google.com"].collection == "explorers", \
+        "07:30 is another time"
+    assert report.awaiting_review == 1
+    assert not report.promotable
+
+
+def test_a_confirmed_time_is_released(conn, target):
+    _sync(conn, target, raw=_with_slip())
+    _configure(conn, times_confirmed=[
+        "Padawan Meeting, Tue 24 Nov 2026 at 07:00 (usually 19:00)"])
+    report = _sync(conn, target, raw=_with_slip())
+
+    assert "suspect_times" not in report.diagnostics
+    assert _live(conn)["slip@google.com"].collection == "explorers"
+    assert report.moved == 1
+
+
+def test_a_corrected_start_is_not_asked_about(conn, target):
+    _sync(conn, target, raw=_with_slip())
+    repo.set_override(conn, "slip@google.com", "time", {
+        "starts_at": "2026-11-24T19:00:00-05:00", "ends_at": "2026-11-24T20:30:00-05:00",
+        "all_day": 0}, reason="the den leader confirmed 7pm", actor="anakin")
+    conn.commit()
+    report = _sync(conn, target, raw=_with_slip())
+
+    assert "suspect_times" not in report.diagnostics
+    assert _live(conn)["slip@google.com"].collection == "explorers"
+
+
+def test_a_tie_has_no_usual_time(conn, target):
+    # Five at 07:00 beside five at 19:00: the series cut to three, plus its
+    # two moved occurrences, which keep their 19:00 start.
+    raw = FIXTURE.read_bytes().replace(b"UNTIL=20270526T035959Z", b"COUNT=3")
+    raw = raw.replace(b"END:VCALENDAR\n", b"".join(
+        b"BEGIN:VEVENT\nDTSTART;TZID=America/New_York:2026120%dT070000\n"
+        b"DTEND;TZID=America/New_York:2026120%dT080000\nUID:am%d@google.com\n"
+        b"SUMMARY:Padawan Meeting\nEND:VEVENT\n" % (d, d, d) for d in (1, 2, 3, 4, 5))
+        + b"END:VCALENDAR\n")
+    report = _sync(conn, target, raw=raw, dry_run=True)
+
+    assert "suspect_times" not in report.diagnostics
+
+
+def test_a_skipped_category_is_not_asked_about(conn, target):
+    _configure(conn, categories={"Padawan Meeting": "skip"})
+    report = _sync(conn, target, raw=_with_slip(), dry_run=True)
+    assert "suspect_times" not in report.diagnostics
+
+
 def test_series_over_the_cap_raises():
     raw = FIXTURE.read_bytes().replace(b"RRULE:FREQ=MONTHLY;BYDAY=1WE", b"RRULE:FREQ=DAILY")
     with pytest.raises(FeedError, match="more than 400"):
@@ -475,3 +562,30 @@ def test_changing_the_default_calendar_moves_unset_categories(console):
     config = repo.get_source(connection, source_id).config
     assert config["default_calendar"] == "explorers"
     assert config["categories"] == {"Padawan Meeting": "practices"}, "set ones stay put"
+
+
+def test_confirming_a_time_from_the_console(console):
+    client, path, source_id = console
+    question = "Padawan Meeting, Tue 24 Nov 2026 at 07:00 (usually 19:00)"
+    reply = client.post(f"/sources/{source_id}/confirm-time", {"question": question})
+    assert reply["status"] == 303
+    connection = db.connect(path)
+    assert repo.get_source(connection, source_id).config["times_confirmed"] == [question]
+
+
+def test_an_agent_can_propose_a_time_is_right(conn, target):
+    from calsync import enrichment
+
+    report = _sync(conn, target, raw=_with_slip())
+    (task,) = [t for t in enrichment.tasks("cal-explorers", report) if t.kind == "suspect_times"]
+    assert task.type == "confirm_time"
+
+    with pytest.raises(enrichment.AnswerError):
+        enrichment.validate("confirm_time", {"time_is_right": False})
+
+    approved = repo.Task(id=task.id, source_id="cal-explorers", kind=task.kind,
+                         type=task.type, context=task.context, candidates=(),
+                         state="approved", answer={"time_is_right": True})
+    enrichment.apply(conn, approved)
+    assert repo.get_source(conn, "cal-explorers").config["times_confirmed"] == list(task.context)
+    assert "suspect_times" not in _sync(conn, target, raw=_with_slip()).diagnostics
