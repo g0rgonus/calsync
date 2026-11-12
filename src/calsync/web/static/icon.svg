@@ -1,66 +1,92 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-<!-- calsync's mark: half pitch, half pool.
+<!-- calsync's mark: a family calendar.
 
-     A chalk line across the middle, a centre circle sitting above it, lane
-     lines below. The line does two jobs at once: it is the halfway line seen
-     from the pitch and the edge of the water seen from the pool. That split is
-     the whole point of the drawing, because this console carries swimming,
-     dance, chess and robotics as readily as it carries soccer, and a mark that
-     was only a football pitch would quietly claim otherwise.
-
-     Both halves are drawn from directly overhead, which is the only way the
-     two readings sit together. It is also why the lanes run edge to edge and
-     are clipped by the tile rather than inset: inset, the green left standing
-     either side turned into walls and the whole thing read as a picnic basket.
+     A chalk tile, a turf-green header with two binder rings, a 2x2 grid, and
+     four busts — one colour per person. The drawing used to be a pitch sitting
+     on a pool, and that was right when the console was only a sports feed. It
+     now carries a household, so the mark is a calendar the family shares.
 
      Everything is sized for 16x16, where one CSS pixel is exactly four units
-     here, and that budget decides the drawing rather than decorating it. Five
-     strokes, and the horizontal ones sit on multiples of four so each lands on
-     a whole pixel: rendered at 16 the three lanes come out at full value with
-     full-value gaps between them, no antialiasing at all. Nudge any of those
-     y values off the grid and they grey out.
+     here, and that budget decides the drawing rather than decorating it. The
+     header is sixteen units (four pixels). The body is the forty-eight below.
+     A one-pixel gutter cannot sit on the centre of a sixteen-pixel tile and
+     still leave two cells of equal whole pixels, because sixteen minus one is
+     odd; an eight-unit (two-pixel) cross can, and lands on whole pixels
+     either side of centre. The four cells are then 28 by 20 (seven by five).
+     Nudge any of those values off the grid and the gutters grey out.
 
-     Three lanes, not six. Six is the obvious reading of "lane lines" and it
-     smears below about 24px, for a reason arithmetic settles rather than taste:
-     the pool half is eight pixels tall at 16x16, and six lines plus five gaps
-     will not fit in eight pixels at any stroke weight. Three lines and four
-     gaps fit exactly, and three still reads as stripes. Do not add a fourth,
-     and do not add the pitch's touchlines. What survives at 16px is a green
-     tile, a bright bar across it, a bump above and stripes below, and that is
-     the whole identity.
+     Each bust is the same drawing, only the fill changes: a twelve-unit head
+     (three pixels) centred in the cell, and a ten-unit semicircle of
+     shoulders whose diameter sits on the cell's bottom edge. The head and
+     the shoulders overlap by two units, which is what keeps a neck rather
+     than a gap. Do not add a face, do not thin the heads, and do not drop
+     the gutters to four units — at 16px those changes turn the four people
+     into a single smear or a lopsided window.
+
+     What survives at 16px is a green bar, two rings in it, a chalk body
+     split into four, and a bust in each cell, and that is the whole identity.
 
      No width or height attributes on purpose. Rasterisers that honour an
      intrinsic size draw a 64px icon into the corner of whatever box they were
      asked for; with only a viewBox they scale it to fill, which is what both
      install.sh and a browser tab want. -->
 <style>
-  /* The ground, and the one value not lifted straight from app.css's palette.
-     Turf green is nearly black and is right on a page, but it sinks into a
-     dark browser's tab strip; lifting it here keeps the tile's silhouette
-     without touching the chalk, which stays far past legible either way
-     (12:1 against the light ground, 8.9:1 against this one). The marks never
-     move between the two, so it is the same drawing, only better lit. */
-  .ground { fill: #123529; }
-  @media (prefers-color-scheme: dark) { .ground { fill: #1c4d39; } }
+  /* Paper, header and gutters follow app.css (chalk and turf). The person
+     colours are the four event-dot values chosen for this mark.
+
+     A chalk tile would blaze in a dark browser's tab strip, which is the
+     inverse of the old pitch-green problem, so dark mode inverts the paper
+     to the console's dark card and lifts the header one step so the tile
+     still has a silhouette. The busts keep their colours; they already
+     clear the dark card. The rings and gutters move with the paper. */
+  .paper  { fill: #f2f5f0; }
+  .header { fill: #123529; }
+  .ring   { fill: #0a120e; }
+  .grid   { fill: #b7c3b4; }
+  .tl     { fill: #2c7a51; }
+  .tr     { fill: #446a8d; }
+  .bl     { fill: #d4a017; }
+  .br     { fill: #c45c6a; }
+  @media (prefers-color-scheme: dark) {
+    .paper  { fill: #16221c; }
+    .header { fill: #1c4d39; }
+    .ring   { fill: #0a120e; }
+    .grid   { fill: #2b3a31; }
+  }
 </style>
 <defs>
   <clipPath id="tile"><rect width="64" height="64" rx="10"/></clipPath>
 </defs>
 <g clip-path="url(#tile)">
-  <rect class="ground" width="64" height="64"/>
-  <g fill="none" stroke="#f2f5f0">
-    <!-- The halfway line, and the water's edge. Eight units, so at 16px it is
-         two whole pixels either side of centre rather than one and two halves. -->
-    <path d="M0 32H64" stroke-width="8"/>
-    <!-- The centre circle: the half of it that is above the line. Its ends stop
-         on the line's own centre, so the two meet rather than butt together. -->
-    <path d="M19 32A13 13 0 0 1 45 32" stroke-width="6"/>
-    <!-- The lanes: four units of chalk every eight. Equal chalk and turf is
-         heavier than it would be drawn by eye, and it is not a free choice —
-         four units is one pixel at 16x16, the thinnest line that exists there,
-         and eight is the closest the three of them can be spaced and still
-         land on whole pixels (10, 12 and 14). -->
-    <path d="M0 42H64M0 50H64M0 58H64" stroke-width="4"/>
+  <rect class="paper" width="64" height="64"/>
+  <!-- Four pixels of header. The rings are 2x3 lozenges, padded one pixel
+       from the top and flush with the body so they meet the chalk on a
+       whole pixel rather than a half. -->
+  <rect class="header" width="64" height="16"/>
+  <rect class="ring" x="12" y="4" width="8" height="12" rx="4"/>
+  <rect class="ring" x="44" y="4" width="8" height="12" rx="4"/>
+  <!-- The 2x2 gutter. Eight units, so at 16px it is two whole pixels either
+       side of centre rather than one and two halves. -->
+  <rect class="grid" x="28" y="16" width="8" height="48"/>
+  <rect class="grid" x="0" y="36" width="64" height="8"/>
+  <!-- Top-left, top-right, bottom-left, bottom-right. Each cell is 28x20,
+       inset from the gutter; the same head-and-shoulders drawing sits in
+       each cell so the four of them share one silhouette. -->
+  <g class="tl">
+    <circle cx="14" cy="22" r="6"/>
+    <path d="M4 36A10 10 0 0 1 24 36Z"/>
+  </g>
+  <g class="tr">
+    <circle cx="50" cy="22" r="6"/>
+    <path d="M40 36A10 10 0 0 1 60 36Z"/>
+  </g>
+  <g class="bl">
+    <circle cx="14" cy="50" r="6"/>
+    <path d="M4 64A10 10 0 0 1 24 64Z"/>
+  </g>
+  <g class="br">
+    <circle cx="50" cy="50" r="6"/>
+    <path d="M40 64A10 10 0 0 1 60 64Z"/>
   </g>
 </g>
 </svg>

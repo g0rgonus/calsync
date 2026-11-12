@@ -54,25 +54,48 @@ cp "$HERE/.build/release/CalsyncMirrorMenu" "$APP/Contents/MacOS/Calsync Mirror"
 # qlmanage, sips and iconutil are all stock, so none of this is a new
 # dependency. Three details are not obvious:
 #
-#   - The dark rule is stripped before rendering. QuickLook honours
-#     prefers-color-scheme, so without that the icon would come out whichever
-#     colour the appearance setting happened to be at install time, and nobody
-#     would ever connect the two.
+#   - The dark block is stripped before rendering, the whole @media rule.
+#     QuickLook honours prefers-color-scheme, so without that the icon would
+#     come out whichever colour the appearance setting happened to be at
+#     install time, and nobody would ever connect the two. The override is
+#     several lines; anything short of the whole rule leaves the dark fills
+#     in force, and they sit later in the stylesheet so they would win.
 #   - Every size renders through its own filename. QuickLook caches thumbnails
 #     by path and will otherwise hand back the first size it made for all ten.
 #   - The whole step is optional. A blank icon is cosmetic; failing the install
 #     over one would cost you the sync, which is not.
 #
-# The menu bar status item keeps its SF Symbol, and must. A template image is
-# the only thing that renders correctly in both a light and a dark menu bar,
-# and this icns has no business anywhere near it.
+# The colour icon stays out of the menu bar. A template image is the only
+# thing that renders correctly in both a light and a dark menu bar, and this
+# icns is not one. The idle mark is the monochrome template copied below.
 ICON_SRC="$HERE/../src/calsync/web/static/icon.svg"
 ICON_PLIST=""
 if [ -f "$ICON_SRC" ] && command -v qlmanage >/dev/null 2>&1; then
     ICON_TMP="$(mktemp -d)"
     ICONSET="$ICON_TMP/calsync.iconset"
     mkdir -p "$ICONSET"
-    sed '/prefers-color-scheme/d' "$ICON_SRC" > "$ICON_TMP/mark.svg"
+    # Brace depth: the dark override has nested braces, so the whole rule has
+    # to go rather than the line that names it.
+    awk '
+      function braces(s,    t, opened, closed) {
+        t = s
+        opened = gsub(/{/, "{", t)
+        closed = gsub(/}/, "}", t)
+        return opened - closed
+      }
+      skip {
+        depth += braces($0)
+        if (depth <= 0) skip = 0
+        next
+      }
+      /prefers-color-scheme/ {
+        skip = 1
+        depth = braces($0)
+        if (depth <= 0) skip = 0
+        next
+      }
+      { print }
+    ' "$ICON_SRC" > "$ICON_TMP/mark.svg"
 
     icon_ok=1
     for spec in 16:icon_16x16 32:icon_16x16@2x 32:icon_32x32 64:icon_32x32@2x \
@@ -101,6 +124,17 @@ if [ -f "$ICON_SRC" ] && command -v qlmanage >/dev/null 2>&1; then
         echo "   just show as a blank page in Finder)"
     fi
     rm -rf "$ICON_TMP"
+fi
+
+# Idle menu-bar mark: 18pt, and the 36px bitmap for a retina display. The app
+# loads these by filename. With no 18pt file it uses the calendar symbol, so
+# a missing copy costs an icon, not the sync. Syncing and every other state
+# keep their SF Symbols.
+if [ -f "$HERE/Resources/menubar-template-18.png" ] \
+        && [ -f "$HERE/Resources/menubar-template-36.png" ]; then
+    cp "$HERE/Resources/menubar-template-18.png" \
+        "$HERE/Resources/menubar-template-36.png" \
+        "$APP/Contents/Resources/"
 fi
 
 cat > "$APP/Contents/Info.plist" <<PLISTEOF

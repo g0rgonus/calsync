@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+<!-- calsync's menu-bar template: the Family Cells mark in a single ink.
+
+     Same 64-unit drawing as icon.svg, stripped to a monochrome template for
+     a macOS status item. The paper fill, the person colours and the gutters
+     are gone; what remains is a header bar with two ring punches, and four
+     identical busts in a 2x2. The gutters are omitted because a two-pixel
+     black cross at 16px swallows the necks. The busts themselves keep the
+     grid.
+
+     The ring punches are even-odd holes in the header path, not a mask.
+     A mask is the more obvious cut, but it is also the less portable one
+     (some rasterisers, including the one used to preview these assets,
+     ignore it and leave a solid bar).
+
+     Sized for 16x16 the same way icon.svg is: one CSS pixel is four units,
+     every edge on a whole pixel. Rendered as a template image (isTemplate),
+     so the fills are solid black and the rest is transparent; AppKit tints
+     the ink to the menu bar. No width or height attributes, for the same
+     reason as icon.svg. -->
+<path fill="#000" fill-rule="evenodd" d="
+  M0 0H64V16H0Z
+  M12 8A4 4 0 0 1 20 8V12A4 4 0 0 1 12 12Z
+  M44 8A4 4 0 0 1 52 8V12A4 4 0 0 1 44 12Z"/>
+<g fill="#000">
+  <circle cx="14" cy="22" r="6"/>
+  <path d="M4 36A10 10 0 0 1 24 36Z"/>
+  <circle cx="50" cy="22" r="6"/>
+  <path d="M40 36A10 10 0 0 1 60 36Z"/>
+  <circle cx="14" cy="50" r="6"/>
+  <path d="M4 64A10 10 0 0 1 24 64Z"/>
+  <circle cx="50" cy="50" r="6"/>
+  <path d="M40 64A10 10 0 0 1 60 64Z"/>
+</g>
+</svg>

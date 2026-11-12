@@ -44,6 +44,13 @@ deletions withheld, a long outage, and events waiting on a human.
   !  3 events held, 1 answer to approve
 ```
 
+The idle icon is the Family Cells template in `Resources/` (an 18pt image and
+its 36px retina pair). It is a template image, so the menu bar tints it.
+Syncing and every other state keep their SF Symbol, which is what makes a
+pause, a hold or a spin readable without opening the menu. `install.sh` copies
+the bitmaps into the app; if they are absent the idle state uses the calendar
+symbol.
+
 It **cannot resolve anything of calsync's**. Status, pause, Sync Now and links
 out are all about this machine; answering a question or approving an answer
 happens in the console, by a person, because that is where the review gate is.

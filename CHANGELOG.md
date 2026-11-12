@@ -6,6 +6,14 @@ All notable changes to calsync are recorded here, in the
 
 ## [Unreleased]
 
+### Changed
+- The mark is Family Cells: a shared calendar with one colour per person, in
+  place of the pitch-and-pool tile. The console favicon, the Apple touch icon
+  and the Mac app icon all take it from the same SVG. `install.sh` strips the
+  whole dark-mode block before rasterising, so the `.icns` stays the light
+  tile. The menu bar's idle image is the monochrome template; syncing and the
+  other states keep their SF Symbols.
+
 ## [1.1.0] - 2026-11-12
 
 ### Added
