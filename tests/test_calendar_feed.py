@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from calsync import categories, db, onboarding, repo, sources
+from calsync import categories, db, onboarding, repo, routing, sources
 from calsync.models import Activity
 from calsync.secrets import SecretStore
 from calsync.sources.calendar_feed import FeedError
@@ -191,6 +191,105 @@ def test_moving_a_category_moves_its_events(conn, target):
     assert council and {s.collection for s in council.values()} == {"council"}
     assert report.moved == len(council)
     assert report.created == 0 and report.cancelled == 0
+
+
+# --- title rules ------------------------------------------------------------
+
+MEETINGS = {"match": "contains", "text": "meeting", "destination": "meetings"}
+
+
+def _collections(conn, prefix):
+    return {s.collection for uid, s in _live(conn).items() if uid.startswith(prefix)}
+
+
+def test_rule_routes_matching_categories(conn, target):
+    _configure(conn, rules=[MEETINGS])
+    _sync(conn, target)
+
+    assert _collections(conn, SERIES) == {"meetings"}
+    assert _collections(conn, MONTHLY) == {"meetings"}
+    assert routing.placement("Group  Meeting", repo.get_source(conn, "cal-explorers").config) \
+        == ("meetings", "rule", 0), "ignores case and spacing like a category"
+    assert routing.placement("Mos Espa Camporee", repo.get_source(conn, "cal-explorers").config) \
+        == ("explorers", "default", None)
+
+
+def test_first_matching_rule_wins(conn, target):
+    _configure(conn, rules=[{"match": "starts_with", "text": "council", "destination": "council"},
+                            MEETINGS])
+    _sync(conn, target)
+
+    assert _collections(conn, MONTHLY) == {"council"}
+    assert _collections(conn, SERIES) == {"meetings"}
+
+
+def test_category_destination_beats_rule(conn, target):
+    _configure(conn, rules=[MEETINGS], categories={"Council Meeting": "council"})
+    _sync(conn, target)
+
+    assert _collections(conn, MONTHLY) == {"council"}
+    assert _collections(conn, SERIES) == {"meetings"}
+
+
+def test_rule_placed_category_is_not_new():
+    config = {"default_calendar": "explorers", "rules": [MEETINGS]}
+    assert not routing.is_new("Den Meeting - Special", config)
+    assert routing.is_new("Mos Espa Camporee", config)
+
+
+def test_rule_placed_category_is_not_new_and_sends_no_push(conn, target):
+    _configure(conn, rules=[MEETINGS],
+               categories={"Mos Espa Camporee": "explorers", "Elders' Roundtable": "skip"})
+    pushover = Pushover()
+    report = _sync(conn, target)
+    outcome = categories.review(conn, repo.get_source(conn, "cal-explorers"), report,
+                                secrets=Store(), sender=pushover)
+
+    assert outcome.new == ()
+    assert pushover.sent == []
+
+
+def test_skip_rule_removes_written_events_without_tripping_guard(conn, target):
+    _sync(conn, target)
+    assert len([uid for uid in _live(conn) if uid.startswith(SERIES)]) > 3
+
+    _configure(conn, rules=[{"match": "starts_with", "text": "Padawan", "destination": "skip"}])
+    report = _sync(conn, target)
+
+    assert report.status == "ok" and not report.held
+    assert not [uid for uid in _live(conn) if uid.startswith(SERIES)]
+    rows = conn.execute("SELECT withheld FROM event_state WHERE uid LIKE ?",
+                        (SERIES + "%",)).fetchall()
+    assert all(r["withheld"] is None for r in rows), "never stored as withheld"
+
+
+def test_hold_beats_category_and_rule(conn, target):
+    _configure(conn, rules=[MEETINGS])
+    _sync(conn, target, raw=_with_slip())
+    assert _live(conn)["slip@google.com"].collection == "enrichment"
+
+    _configure(conn, categories={"Padawan Meeting": "padawans"})
+    _sync(conn, target, raw=_with_slip())
+    assert _live(conn)["slip@google.com"].collection == "enrichment"
+    assert _collections(conn, SERIES) == {"padawans"}
+
+
+def test_changing_a_rule_moves_written_events(conn, target):
+    _configure(conn, rules=[MEETINGS])
+    _sync(conn, target)
+    _configure(conn, rules=[{**MEETINGS, "destination": "gatherings"}])
+    report = _sync(conn, target)
+
+    assert _collections(conn, MONTHLY) == {"gatherings"}
+    assert report.moved > 0
+    assert report.created == 0 and report.cancelled == 0
+
+
+def test_category_in_categories_seen_stays_not_new_when_a_rule_drops_it():
+    kept = {"default_calendar": "explorers", "categories_seen": ["Council  meeting"]}
+    assert not routing.is_new("Council Meeting", {**kept, "rules": [MEETINGS]})
+    assert not routing.is_new("Council Meeting", kept), "kept at the default already"
+    assert routing.is_new("Group Meeting", kept)
 
 
 # --- the feed ---------------------------------------------------------------
@@ -493,10 +592,20 @@ def console(tmp_path):
                        "VALUES ('luke', 'Luke', 'Lu', 1)")
     connection.commit()
     connection.close()
+    class HookedFeed(Feed):
+        during = None
+
+        def __call__(self, assembled, **kw):
+            if self.during:
+                self.during()
+            return super().__call__(assembled, **kw)
+
+    feed = HookedFeed(FIXTURE.read_bytes())
     app = web_app.create_app(tmp_path / "calsync.db",
                              secrets=SecretStore(path=secrets_path, environ={}),
-                             fetcher=Feed(FIXTURE.read_bytes()), clock=lambda: NOW)
+                             fetcher=feed, clock=lambda: NOW)
     client = Client(app)
+    client.feed = feed
     url = "https://calendar.google.com/calendar/ical/troop7%40group.calendar.google.com/public/basic.ics"
     inspected = client.post("/onboard", {"url": url})
     assert '<option value="calendar-feed" selected>' in inspected["body"], \
@@ -571,6 +680,180 @@ def test_confirming_a_time_from_the_console(console):
     assert reply["status"] == 303
     connection = db.connect(path)
     assert repo.get_source(connection, source_id).config["times_confirmed"] == [question]
+
+
+def _config(path, source_id):
+    connection = db.connect(path)
+    try:
+        return repo.get_source(connection, source_id).config
+    finally:
+        connection.close()
+
+
+def _hidden(page, name):
+    import html
+    return html.unescape(re.search(rf'name="{name}" value="([^"]*)"', page).group(1))
+
+
+def test_category_row_names_what_placed_it(console):
+    client, path, source_id = console
+    client.post(f"/sources/{source_id}/category",
+                {"label": "Mos Espa Camporee", "destination": "skip"})
+    preview = client.post(f"/sources/{source_id}/rules/preview",
+                          {"op": "add", "match": "contains", "text": "meeting",
+                           "destination": "practices"})["body"]
+    client.post(f"/sources/{source_id}/rules", {"rules": _hidden(preview, "rules")})
+    preview = client.post(f"/sources/{source_id}/rules/preview",
+                          {"op": "add", "match": "starts_with", "text": "council",
+                           "destination": "practices"})["body"]
+    client.post(f"/sources/{source_id}/rules", {"rules": _hidden(preview, "rules")})
+    page = client.get(f"/sources/{source_id}")["body"]
+
+    assert "set by you" in page
+    assert "rule: contains &quot;meeting&quot;" in page
+    assert "also starts with &quot;council&quot;" in page, \
+        "a category two rules match names the first and the other"
+    assert "Elders&#039; Roundtable (new)" in page
+
+
+def test_rule_preview_lists_matches_without_saving(console):
+    client, path, source_id = console
+    reply = client.post(f"/sources/{source_id}/rules/preview",
+                        {"op": "add", "match": "contains", "text": "Meeting",
+                         "destination": "__new__", "new_calendar": "Meetings"})
+    page = reply["body"]
+
+    assert reply["status"] == 200, page[:800]
+    assert "Council Meeting (11)" in page and "Group Meeting (1)" in page
+    assert "events move on the next sync" in page
+    assert "rules" not in _config(path, source_id), "a preview changes nothing"
+
+    client.post(f"/sources/{source_id}/rules", {"rules": _hidden(page, "rules")})
+    assert _config(path, source_id)["rules"] == [
+        {"match": "contains", "text": "Meeting", "destination": "meetings"}]
+    nothing = client.post(f"/sources/{source_id}/rules/preview",
+                          {"op": "add", "match": "starts_with", "text": "Banquet",
+                           "destination": "practices"})["body"]
+    assert "Matches nothing in the window" in nothing
+
+
+def test_reordering_or_deleting_a_rule_is_previewed(console):
+    client, path, source_id = console
+    two = [{"match": "contains", "text": "meeting", "destination": "meetings"},
+           {"match": "starts_with", "text": "council", "destination": "council"}]
+    client.post(f"/sources/{source_id}/rules", {"rules": json.dumps(two)})
+
+    moved = client.post(f"/sources/{source_id}/rules/preview", {"op": "up", "index": "1"})["body"]
+    assert re.search(r"Council Meeting</td>\s*<td>11</td>\s*<td>meetings</td>\s*<td>council</td>",
+                     moved), "moving a rule up shows what it takes"
+    assert _config(path, source_id)["rules"] == two
+
+    deleted = client.post(f"/sources/{source_id}/rules/preview",
+                          {"op": "delete", "index": "0"})["body"]
+    assert "Padawan Meeting (new)" in deleted
+    assert _config(path, source_id)["rules"] == two
+
+
+def test_rules_are_not_previewed_or_saved_against_an_unreadable_feed(console):
+    client, path, source_id = console
+    client.feed.error = OSError("feed down")
+    change = {"op": "add", "match": "contains", "text": "meeting", "destination": "skip"}
+
+    assert client.post(f"/sources/{source_id}/rules/preview", change)["status"] != 200
+    saved = client.post(f"/sources/{source_id}/rules", {"rules": json.dumps([
+        {"match": "contains", "text": "meeting", "destination": "skip"}])})
+    assert saved["status"] != 303
+    assert "rules" not in _config(path, source_id)
+
+
+def test_saving_rules_keeps_a_category_set_during_the_fetch(console):
+    client, path, source_id = console
+
+    def someone_else_sets_a_category():
+        connection = db.connect(path)
+        config = repo.get_source(connection, source_id).config
+        config["categories"] = {"Council Meeting": "council"}
+        connection.execute("UPDATE sources SET config = ? WHERE id = ?",
+                           (json.dumps(config), source_id))
+        connection.commit()
+        connection.close()
+        client.feed.during = None
+
+    client.feed.during = someone_else_sets_a_category
+    client.post(f"/sources/{source_id}/rules", {"rules": json.dumps([MEETINGS])})
+
+    config = _config(path, source_id)
+    assert config["rules"] == [MEETINGS]
+    assert config["categories"] == {"Council Meeting": "council"}
+
+
+def test_keep_all_refuses_labels_that_are_not_a_list(console):
+    client, _, source_id = console
+    assert client.post(f"/sources/{source_id}/keep-all", {"labels": "7"})["status"] != 303
+
+
+def test_category_a_rule_stops_matching_is_new_without_a_push(console):
+    client, path, source_id = console
+    connection = db.connect(path)
+    repo.set_staging(connection, source_id, None)
+    connection.close()
+    client.post(f"/sources/{source_id}/rules", {"rules": json.dumps([
+        {"match": "contains", "text": "meeting", "destination": "practices"}])})
+    connection = db.connect(path)
+    connection.execute("UPDATE sources SET category_notified = NULL")
+    connection.commit()
+    connection.close()
+
+    client.post(f"/sources/{source_id}/rules", {"rules": "[]"})
+    connection = db.connect(path)
+    stored = json.loads(connection.execute(
+        "SELECT category_notified FROM sources WHERE id = ?", (source_id,)).fetchone()[0])
+    assert {"padawan meeting", "council meeting", "group meeting"} <= set(stored), \
+        "recorded as announced when saved, so no push follows"
+    assert "Padawan Meeting" in client.get("/review")["body"], "but still listed as new"
+
+
+def test_keep_all_leaves_categories_unset(console):
+    client, path, source_id = console
+    page = client.get(f"/sources/{source_id}")["body"]
+    reply = client.post(f"/sources/{source_id}/keep-all",
+                        {"labels": _hidden(page, "labels")})
+
+    assert reply["status"] == 303
+    config = _config(path, source_id)
+    assert config["categories"] == {}, "no destination is set"
+    assert "Padawan Meeting" in config["categories_seen"]
+    page = client.get(f"/sources/{source_id}")["body"]
+    assert "(new)" not in page
+    assert "Keep all" not in page
+
+
+def test_rule_added_after_keep_all_routes_those_categories(console):
+    client, path, source_id = console
+    page = client.get(f"/sources/{source_id}")["body"]
+    client.post(f"/sources/{source_id}/keep-all", {"labels": _hidden(page, "labels")})
+    client.post(f"/sources/{source_id}/rules", {"rules": json.dumps([
+        {"match": "contains", "text": "meeting", "destination": "meetings"}])})
+
+    config = _config(path, source_id)
+    assert routing.placement("Council Meeting", config) == ("meetings", "rule", 0)
+    assert routing.placement("Mos Espa Camporee", config)[0] == "practices"
+
+
+def test_keep_all_answers_only_the_categories_shown(console):
+    client, path, source_id = console
+    connection = db.connect(path)
+    repo.set_staging(connection, source_id, None)
+    connection.close()
+    review = client.get("/review")["body"]
+    assert "Keep all of" in review
+    client.post(f"/sources/{source_id}/keep-all",
+                {"labels": json.dumps(["Padawan Meeting", "Council Meeting"]),
+                 "back": "review"})
+
+    page = client.get(f"/sources/{source_id}")["body"]
+    assert "Padawan Meeting (new)" not in page
+    assert "Group Meeting (new)" in page, "one the page did not show stays new"
 
 
 def test_an_agent_can_propose_a_time_is_right(conn, target):

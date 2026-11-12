@@ -34,26 +34,80 @@ def _key(text: str) -> str:
     return " ".join(text.split()).casefold()
 
 
+#: How a rule may match a category's title. No patterns: a parent writes these
+#: on a phone, and a regular expression is a support call.
+MATCHES = ("starts_with", "contains")
+
+
+def _rule_matches(rule: dict, label: str) -> bool:
+    text, wanted = _key(rule.get("text") or ""), _key(label)
+    if not text:
+        return False
+    if rule.get("match") == "starts_with":
+        return wanted.startswith(text)
+    return rule.get("match") == "contains" and text in wanted
+
+
+def matching_rules(label: str, config: dict | None) -> list[int]:
+    """The indexes of every rule that matches, in order; the first one wins."""
+    rules = (config or {}).get("rules") or []
+    return [i for i, rule in enumerate(rules) if _rule_matches(rule, label)]
+
+
+def placement(label: str, config: dict | None) -> tuple[str | None, str, int | None]:
+    """Where a category goes and what placed it: ``set``, ``rule`` (with its
+    index) or ``default``. A category's own destination beats a rule, so one
+    exception needs no rule of its own."""
+    config = config or {}
+    wanted = _key(label)
+    for chosen_label, chosen in (config.get("categories") or {}).items():
+        if _key(chosen_label) == wanted and chosen:
+            return chosen, "set", None
+    matched = matching_rules(label, config)
+    if matched:
+        return config["rules"][matched[0]]["destination"], "rule", matched[0]
+    return config.get("default_calendar"), "default", None
+
+
 def destination(event: Event, config: dict | None) -> str | None:
     """Where a person sent this event's category, or the source's default.
 
     None for a source not routed by category: it has no ``default_calendar``.
     """
-    config = config or {}
-    default = config.get("default_calendar")
-    if not default or event.source_category is None:
+    if not (config or {}).get("default_calendar") or event.source_category is None:
         return None
-    wanted = _key(event.source_category)
-    for label, chosen in (config.get("categories") or {}).items():
-        if _key(label) == wanted and chosen:
-            return chosen
-    return default
+    return placement(event.source_category, config)[0]
 
 
 def is_new(label: str, config: dict | None) -> bool:
-    """A category nobody has set a destination for yet."""
-    wanted = _key(label)
-    return not any(_key(k) == wanted for k in ((config or {}).get("categories") or {}))
+    """A category nobody has answered: no destination of its own, no rule, and
+    not kept at the default by "Keep all"."""
+    config = config or {}
+    if placement(label, config)[1] != "default":
+        return False
+    return _key(label) not in {_key(k) for k in (config.get("categories_seen") or ())}
+
+
+def validate_rules(rules) -> list[dict]:
+    """A rule list as stored, or ValueError naming what is wrong with it."""
+    if not isinstance(rules, list):
+        raise ValueError("rules are a list")
+    clean = []
+    for n, rule in enumerate(rules, 1):
+        if not isinstance(rule, dict):
+            raise ValueError(f"rule {n} is not a rule")
+        match = rule.get("match")
+        text = " ".join(str(rule.get("text") or "").split())
+        chosen = str(rule.get("destination") or "").strip()
+        if match not in MATCHES:
+            raise ValueError(f"rule {n} has to start with or contain its text")
+        if not text:
+            raise ValueError(f"rule {n} has no text to match")
+        if not chosen:
+            raise ValueError(f"rule {n} goes nowhere")
+        clean.append({"match": match, "text": text,
+                      "destination": SKIP if chosen == SKIP else slugify(chosen)})
+    return clean
 
 
 def skipped(events, config: dict | None) -> set[str]:

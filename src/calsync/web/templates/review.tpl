@@ -115,6 +115,13 @@
   Already on a calendar. Confirm where each one goes, or change it on its
   team's page.
 </p>
+% for keep in keep_all:
+<form method="post" action="/sources/{{ keep['source'].id }}/keep-all" style="margin-bottom:1rem">
+  <input type="hidden" name="labels" value="{{ keep['labels'] }}">
+  <input type="hidden" name="back" value="review">
+  <button class="btn btn-answer" type="submit">Keep all of {{ keep['source'].id }}'s at {{ keep['calendar'] }}</button>
+</form>
+% end
 % for row in new_categories:
 <div class="card" style="margin-bottom:1rem">
   <p style="margin:0 0 0.6rem">

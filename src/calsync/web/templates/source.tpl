@@ -185,15 +185,20 @@
   <p class="note" style="margin:0">No categories in the feed's sync window yet.</p>
 % else:
   <table class="polls">
-    <tr><th>Category</th><th>Events</th><th>Goes to</th></tr>
+    <tr><th>Category</th><th>Events</th><th>Placed by</th><th>Goes to</th></tr>
 % for row in category_rows:
     <tr>
       <td>{{ row['label'] }}{{ ' (new)' if row['new'] else '' }}</td>
       <td>{{ row['count'] }}</td>
+      <td class="note">{{ row['placed'] }}
+% if row['also']:
+        <br>also {{ '; '.join(row['also']) }}
+% end
+      </td>
       <td>
         <form method="post" action="/sources/{{ source.id }}/category">
           <input type="hidden" name="label" value="{{ row['label'] }}">
-% current = row['chosen'] or default_calendar
+% current = row['goes'] or default_calendar
           <select name="destination" aria-label="Where {{ row['label'] }} goes">
 % for name in calendars:
             <option value="{{ name }}"{{ ' selected' if name == current else '' }}>{{ name }}</option>
@@ -208,7 +213,69 @@
     </tr>
 % end
   </table>
+% if new_labels:
+  <form method="post" action="/sources/{{ source.id }}/keep-all" style="margin-top:1rem">
+    <input type="hidden" name="labels" value="{{ json_labels }}">
+    <button class="btn btn-answer" type="submit">Keep all {{ len(new_labels) }} new at {{ default_calendar }}</button>
+    <span class="note">They stay unset, so they follow the default and any rule you add later.</span>
+  </form>
 % end
+% end
+
+  <h3 id="rules">Title rules</h3>
+  <p class="note">
+    A rule sends every category whose title starts with or contains its text
+    to a calendar, or skips it. The first rule that matches wins; a category
+    you set yourself beats any rule. Every change is previewed before it saves.
+  </p>
+% for i, rule in enumerate(rules):
+  <div class="agenda-row">
+    <form method="post" action="/sources/{{ source.id }}/rules/preview">
+      <input type="hidden" name="index" value="{{ i }}">
+      <select name="match" aria-label="How rule {{ i + 1 }} matches">
+        <option value="starts_with"{{ ' selected' if rule['match'] == 'starts_with' else '' }}>starts with</option>
+        <option value="contains"{{ ' selected' if rule['match'] == 'contains' else '' }}>contains</option>
+      </select>
+      <input type="text" name="text" value="{{ rule['text'] }}" aria-label="Rule {{ i + 1 }} text" size="16">
+      <select name="destination" aria-label="Where rule {{ i + 1 }} sends">
+% for name in calendars:
+        <option value="{{ name }}"{{ ' selected' if name == rule['destination'] else '' }}>{{ name }}</option>
+% end
+        <option value="skip"{{ ' selected' if rule['destination'] == 'skip' else '' }}>Skip</option>
+        <option value="__new__">New calendar…</option>
+      </select>
+      <input type="text" name="new_calendar" placeholder="name, if new" size="10">
+      <button class="btn btn-quiet" name="op" value="edit" type="submit">Preview</button>
+      <button class="btn btn-quiet" name="op" value="up" type="submit"{{ ' disabled' if i == 0 else '' }}>Up</button>
+      <button class="btn btn-quiet" name="op" value="down" type="submit"{{ ' disabled' if i == len(rules) - 1 else '' }}>Down</button>
+      <button class="btn btn-quiet" name="op" value="delete" type="submit">Delete</button>
+    </form>
+    <p class="note">
+% if rule['matches']:
+      Matches {{ ', '.join(f'{label} ({count})' for label, count in rule['matches']) }}.
+% else:
+      Matches nothing in the window: waiting for a title that has not appeared, or a typo.
+% end
+    </p>
+  </div>
+% end
+  <form method="post" action="/sources/{{ source.id }}/rules/preview" style="margin-top:0.6rem">
+    <select name="match" aria-label="How the new rule matches">
+      <option value="starts_with">starts with</option>
+      <option value="contains">contains</option>
+    </select>
+    <input type="text" name="text" placeholder="title text" aria-label="New rule text" size="16">
+    <select name="destination" aria-label="Where the new rule sends">
+% for name in calendars:
+      <option value="{{ name }}">{{ name }}</option>
+% end
+      <option value="skip">Skip</option>
+      <option value="__new__">New calendar…</option>
+    </select>
+    <input type="text" name="new_calendar" placeholder="name, if new" size="10">
+    <button class="btn btn-quiet" name="op" value="add" type="submit">Preview rule</button>
+  </form>
+
   <form method="post" action="/sources/{{ source.id }}/default-calendar" style="margin-top:1rem">
     <label>Default calendar
       <select name="destination">
