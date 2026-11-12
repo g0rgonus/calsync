@@ -605,7 +605,8 @@ def test_the_contract_carries_the_answer_shapes(client):
     """So a client corrects itself from the contract, not from a rejection."""
     shapes = client.get("/v1")["json"]["answer_shapes"]
 
-    assert set(shapes) == {"resolve_activity", "classify_kind", "normalize_venue"}
+    assert set(shapes) == {"resolve_activity", "classify_kind", "normalize_venue",
+                           "confirm_time"}
     assert shapes["resolve_activity"]["answer"] == {"alias": "Rogues"}
 
 

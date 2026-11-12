@@ -554,3 +554,21 @@ def test_confirming_a_time_from_the_console(console):
     assert reply["status"] == 303
     connection = db.connect(path)
     assert repo.get_source(connection, source_id).config["times_confirmed"] == [question]
+
+
+def test_an_agent_can_propose_a_time_is_right(conn, target):
+    from calsync import enrichment
+
+    report = _sync(conn, target, raw=_with_slip())
+    (task,) = [t for t in enrichment.tasks("cal-explorers", report) if t.kind == "suspect_times"]
+    assert task.type == "confirm_time"
+
+    with pytest.raises(enrichment.AnswerError):
+        enrichment.validate("confirm_time", {"time_is_right": False})
+
+    approved = repo.Task(id=task.id, source_id="cal-explorers", kind=task.kind,
+                         type=task.type, context=task.context, candidates=(),
+                         state="approved", answer={"time_is_right": True})
+    enrichment.apply(conn, approved)
+    assert repo.get_source(conn, "cal-explorers").config["times_confirmed"] == list(task.context)
+    assert "suspect_times" not in _sync(conn, target, raw=_with_slip()).diagnostics

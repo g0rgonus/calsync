@@ -53,6 +53,7 @@ TASK_TYPES = {
     "unknown_types": "classify_kind",
     "unknown_categories": "classify_kind",
     "unresolved_venues": "normalize_venue",
+    "suspect_times": "confirm_time",
 }
 
 QUESTIONS = {
@@ -60,6 +61,7 @@ QUESTIONS = {
     "unknown_types": "is this label a game or a practice?",
     "unknown_categories": "is this category a game or a practice?",
     "unresolved_venues": "where is this, and is it another name for a place we know?",
+    "suspect_times": "is this time right, twelve hours off the usual one?",
 }
 
 
@@ -458,6 +460,12 @@ def validate(task_type: str, answer: dict) -> None:
         # Either it is a new place, or another name for one we know.
         if not (answer or {}).get("same_as"):
             _need(answer, "name")
+    elif task_type == "confirm_time":
+        # Only "yes" has an action: a wrong time is the calendar's to correct,
+        # and the event stays held until it is.
+        if (answer or {}).get("time_is_right") is not True:
+            raise AnswerError("answer needs 'time_is_right': true; a wrong time "
+                              "is fixed in the calendar, not here")
     else:
         raise AnswerError(f"no answer shape is defined for {task_type!r}")
 
@@ -505,5 +513,16 @@ def apply(conn, task: repo.Task) -> str:
         )
         repo.add_venue_alias(conn, venue_id, seen)
         return f"created venue {name!r} and recorded {seen!r} as a name for it"
+
+    if task.type == "confirm_time":
+        question = task.context[0]
+        config = dict(source.config or {})
+        confirmed = list(config.get("times_confirmed") or [])
+        if question not in confirmed:
+            confirmed.append(question)
+        config["times_confirmed"] = confirmed
+        conn.execute("UPDATE sources SET config = ? WHERE id = ?",
+                     (json.dumps(config), source.id))
+        return f"kept {question!r} at that time"
 
     raise AnswerError(f"cannot apply a {task.type!r} answer")

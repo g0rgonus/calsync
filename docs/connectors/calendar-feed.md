@@ -151,6 +151,10 @@ edit to that event's time is asked about again. If the calendar is corrected,
 the question goes away and the event is released on the next sync. Like any
 held event, it holds promotion until answered.
 
+It is also an agent task, `confirm_time`, answered `{"time_is_right": true}`
+and applied only once a person approves it (invariant 21). There is no "no":
+a wrong time is the calendar's to correct.
+
 ## What it writes
 
 Every event is a non-game that keeps the feed's own label: `Luke ⚜️ Padawan
