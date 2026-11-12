@@ -42,6 +42,7 @@ from zoneinfo import ZoneInfo
 
 from bottle import Bottle, HTTPResponse, request, response
 
+from .. import categories as categories_mod
 from .. import db, merging, notify, onboarding, repo, retire, routing, sources, targeting, warmup
 from .. import withheld as withheld_mod
 from ..api.app import _QuietHandler, _Threaded, _event_json, events_body
@@ -108,7 +109,8 @@ def _dump(body, status: int = 200, headers=None) -> HTTPResponse:
 
 def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
                write_target=None, log=None, writes_per_minute: int = WRITES_PER_MINUTE,
-               monotonic=time.monotonic, notify_sender=notify.send) -> Bottle:
+               monotonic=time.monotonic, notify_sender=notify.send,
+               fetcher=None) -> Bottle:
     """Build the inbound API.
 
     ``write_target`` is the seam the console has: a test injects a target, a
@@ -880,8 +882,9 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
         return out
 
     def preview(conn, source):
+        # ``fetcher`` is a test's network seam, as in the console.
         return sync_source(conn, source, NoTarget(), now=clock(), secrets=secrets,
-                           dry_run=True)
+                           dry_run=True, **({"fetcher": fetcher} if fetcher else {}))
 
     def not_ready(report) -> str:
         if report.pushed and report.events_seen == 0:
@@ -917,7 +920,38 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
                            for c in gate.conditions(report, activity)],
                 "events": events,
                 "clashes": clashes(conn, mine, settings),
+                **routed_review(conn, source, report),
             })
+
+    def routed_review(conn, source, report) -> dict:
+        """A calendar feed's categories, rules and held times, from the same
+        dry run the source page draws. Empty for a team not routed by category."""
+        config = source.config or {}
+        if not config.get("default_calendar"):
+            return {"categories": [], "rules": [], "default_calendar": None,
+                    "calendars": [], "held_times": []}
+        rules = config.get("rules") or []
+        categories = []
+        for label, count in sorted(report.categories.items(),
+                                   key=lambda item: (-item[1], item[0].casefold())):
+            goes, how, index = routing.placement(label, config)
+            matched = routing.matching_rules(label, config)
+            categories.append({
+                "label": label, "events": count, "destination": goes,
+                "placed_by": how, "rule": index,
+                "also_matches": [i for i in matched if i != index],
+                "place": routing.default_place(label, config),
+                "new": routing.is_new(label, config),
+            })
+        return {
+            "categories": categories,
+            "rules": [{**rule, "matches": sorted(
+                label for label in report.categories
+                if routing.matching_rules(label, {"rules": [rule]}))} for rule in rules],
+            "default_calendar": config["default_calendar"],
+            "calendars": categories_mod.calendars(conn, config),
+            "held_times": list(report.diagnostics.get("suspect_times", ())),
+        }
 
     @app.post(ADMIN + "/teams/<source_id>/live")
     def make_live(source_id):
@@ -1302,6 +1336,140 @@ def create_app(db_path, *, secrets: SecretStore | None = None, clock=None,
                             f"{caller.label} cleared {activity.name}'s home venue.")
             return _dump({"source_id": source_id, "home_venue_id": venue_id,
                           "home_venue": activity.home_venue})
+
+    # --- admin: calendar-feed routing ---------------------------------------------------
+    #
+    # Each returns {"current", "previous"} in the shape of its own body, so
+    # sending "previous" back is the undo.
+
+    def routed_source(conn, source_id: str) -> repo.Source:
+        source = admin_source(conn, source_id)
+        if not (source.config or {}).get("default_calendar"):
+            raise Problem(409, "not_routed", "this team is not routed by category")
+        return source
+
+    def validated(check):
+        try:
+            return check(body())
+        except inbound.Invalid as exc:
+            raise Problem(422, "invalid", "nothing was changed", errors=exc.errors) from None
+
+    def save_routing(conn, caller, source, config, action, detail, message) -> None:
+        conn.execute("UPDATE sources SET config = ? WHERE id = ?",
+                     (json.dumps(config), source.id))
+        repo.log_admin(conn, caller.label, action, f"team:{source.id}", detail)
+        conn.commit()
+        if not source.staging_collection:
+            alert(conn, f"{caller.label} {message}")
+
+    def need_venue(conn, venue_id) -> None:
+        if venue_id is not None and repo.get_venue(conn, venue_id) is None:
+            raise Problem(404, "no_such_venue", "no venue has that id")
+
+    @app.put(ADMIN + "/teams/<source_id>/categories/<label:path>")
+    def set_category(source_id, label):
+        """Where one category goes, and its default place."""
+        label = " ".join(label.split())
+        with connect() as conn:
+            caller = admin_write(conn)
+        change = validated(admin.validate_category)
+        with transaction() as conn:
+            source = routed_source(conn, source_id)
+            need_venue(conn, change.get("place"))
+            config = source.config or {}
+            previous = routing.own_category(config, label)
+            config = routing.with_category(config, label, change["destination"],
+                                           change.get("place", routing.KEEP))
+            current = routing.own_category(config, label)
+            where = ("kept it off every calendar" if current["destination"] == routing.SKIP
+                     else f"sent it to {current['destination']}" if current["destination"]
+                     else "cleared where it goes")
+            save_routing(conn, caller, source, config, "team_category",
+                         {"label": label, **current},
+                         f"changed {team_name(conn, source)}'s {label}: {where}.")
+            return _dump({"source_id": source_id, "label": label,
+                          "current": current, "previous": previous})
+
+    @app.put(ADMIN + "/teams/<source_id>/default-calendar")
+    def set_default_calendar(source_id):
+        """Where a category nobody has set goes."""
+        with connect() as conn:
+            caller = admin_write(conn)
+        chosen = validated(admin.validate_default_calendar)
+        with transaction() as conn:
+            source = routed_source(conn, source_id)
+            config = dict(source.config)
+            previous = {"calendar": config["default_calendar"]}
+            config["default_calendar"] = chosen
+            save_routing(conn, caller, source, config, "team_default_calendar",
+                         {"calendar": chosen},
+                         f"sent {team_name(conn, source)}'s unset categories to {chosen}.")
+            return _dump({"source_id": source_id, "current": {"calendar": chosen},
+                          "previous": previous})
+
+    @app.put(ADMIN + "/teams/<source_id>/rules")
+    def set_rules(source_id):
+        """The whole ordered rule list, so order and undo are one value."""
+        with connect() as conn:
+            caller = admin_write(conn)
+        rules = validated(admin.validate_rules)
+        with transaction() as conn:
+            source = routed_source(conn, source_id)
+            for rule in rules:
+                need_venue(conn, rule.get("place"))
+            config = dict(source.config)
+            previous = {"rules": list(config.get("rules") or [])}
+            config["rules"] = rules
+            save_routing(conn, caller, source, config, "team_rules", {"rules": rules},
+                         f"changed {team_name(conn, source)}'s title rules "
+                         f"({len(rules)} now).")
+            return _dump({"source_id": source_id, "current": {"rules": rules},
+                          "previous": previous})
+
+    @app.post(ADMIN + "/teams/<source_id>/rules/preview")
+    def preview_rules(source_id):
+        """What a rule list would do to each category, changing nothing."""
+        with connect() as conn:
+            admin_write(conn)
+        rules = validated(admin.validate_rules)
+        with connect() as conn:
+            source = routed_source(conn, source_id)
+            report = preview(conn, source)
+            if report.status == "error":
+                raise Problem(503, "feed_unreadable",
+                              "the feed could not be read, so what would move is unknown")
+            before = source.config
+            after = {**before, "rules": rules}
+            categories = []
+            for label, count in sorted(report.categories.items(), key=lambda i: i[0].casefold()):
+                old, new = routing.placement(label, before), routing.placement(label, after)
+                categories.append({
+                    "label": label, "events": count, "from": old[0], "to": new[0],
+                    "placed_by": new[1], "rule": new[2],
+                    "new": routing.is_new(label, after),
+                })
+            moving = [c for c in categories if c["from"] != c["to"]]
+            return _dump({"source_id": source_id, "categories": categories,
+                          "moving": [c["label"] for c in moving],
+                          "events_moving": sum(c["events"] for c in moving)})
+
+    @app.put(ADMIN + "/teams/<source_id>/times-confirmed")
+    def set_times_confirmed(source_id):
+        """The whole list of held times answered as right."""
+        with connect() as conn:
+            caller = admin_write(conn)
+        times = validated(admin.validate_times)
+        with transaction() as conn:
+            source = routed_source(conn, source_id)
+            config = dict(source.config)
+            previous = {"times_confirmed": list(config.get("times_confirmed") or [])}
+            config["times_confirmed"] = times
+            save_routing(conn, caller, source, config, "team_times_confirmed",
+                         {"times_confirmed": times},
+                         f"changed {team_name(conn, source)}'s confirmed times "
+                         f"({len(times)} now).")
+            return _dump({"source_id": source_id, "current": {"times_confirmed": times},
+                          "previous": previous})
 
     return app
 

@@ -527,20 +527,11 @@ def create_app(
             config = dict(source.config or {})
             if not config.get("default_calendar"):
                 raise Refused("this source is not routed by category")
-            wanted = label.casefold()
-            mapping = {k: v for k, v in (config.get("categories") or {}).items()
-                       if " ".join(k.split()).casefold() != wanted}
-            mapping[label] = chosen
-            config["categories"] = mapping
             # Only from a form that offers a place: /review's "Keep" does not,
             # and must not clear one.
-            if "place" in request.forms:
-                place = _place(conn)
-                places = {k: v for k, v in (config.get("places") or {}).items()
-                          if " ".join(k.split()).casefold() != wanted}
-                if place is not None:
-                    places[label] = place
-                config["places"] = places
+            config = routing.with_category(
+                config, label, chosen,
+                _place(conn) if "place" in request.forms else routing.KEEP)
             conn.execute("UPDATE sources SET config = ? WHERE id = ?",
                          (json.dumps(config), source_id))
             conn.commit()
@@ -1803,6 +1794,7 @@ def create_app(
 
         queues = []
         with connect() as conn:
+            pending = repo.list_tasks(conn, state=repo.ANSWERED)
             for source in wanted:
                 activity = repo.get_activity(conn, source.activity_id)
                 report = reports.get(source.id)
@@ -1836,7 +1828,16 @@ def create_app(
                 # Answers waiting on a decision, across every source. Listed
                 # separately from the questions because they are a different
                 # act: answering is work, deciding is a glance.
-                pending=repo.list_tasks(conn, state=repo.ANSWERED),
+                pending=pending,
+                # One decision per source about an agent's choices, not one per
+                # answer. Only the answers drawn here, so a later one is seen first.
+                approve_all=[
+                    {"source_id": sid,
+                     "team": repo.get_activity(conn, repo.get_source(conn, sid).activity_id).name,
+                     "count": len(ids), "ids": json.dumps(ids)}
+                    for sid, ids in sorted(_by_source(pending).items()) if len(ids) > 1
+                    and repo.get_source(conn, sid) is not None
+                ],
                 # First on the page, because it is the one where the calendar
                 # is already wrong: a held poll has written the new events and
                 # kept the old ones, so until somebody looks, it shows both.
@@ -1879,6 +1880,36 @@ def create_app(
             conn.commit()
         redirect("/review?ok=" + _q(
             f"Approved — {did}. The next poll re-renders and releases the events."))
+
+    @app.post("/review/sources/<source_id>/approve-all")
+    def approve_all(source_id):
+        """Approve every answer the page showed for one source, each applied as
+        its own Approve would be. One that cannot be applied stays waiting."""
+        try:
+            ids = json.loads(_field("tasks") or "[]")
+        except ValueError:
+            ids = None
+        if not isinstance(ids, list) or not ids:
+            raise Refused("which answers?")
+        done, failed = 0, []
+        with connect() as conn:
+            for task_id in ids:
+                task = repo.get_task(conn, str(task_id))
+                if task is None or task.source_id != source_id or task.state != repo.ANSWERED:
+                    continue
+                try:
+                    enrichment.apply(conn, task)
+                except (enrichment.AnswerError, repo.NotFound) as exc:
+                    conn.rollback()
+                    failed.append(f"{', '.join(task.context[:1])}: {exc}")
+                    continue
+                repo.decide_task(conn, task.id, repo.APPROVED)
+                conn.commit()
+                done += 1
+        message = f"Approved {done}. The next poll applies them."
+        if failed:
+            message += f" {len(failed)} could not be applied and still wait: " + "; ".join(failed)
+        redirect("/review?ok=" + _q(message))
 
     @app.get("/settings")
     def settings_page():
@@ -2476,6 +2507,13 @@ def _destination() -> str:
     return chosen
 
 
+def _by_source(tasks) -> dict[str, list[str]]:
+    grouped: dict[str, list[str]] = {}
+    for task in tasks:
+        grouped.setdefault(task.source_id, []).append(task.id)
+    return grouped
+
+
 def _place(conn) -> int | None:
     """A default place from the form: a venue row's id, or none."""
     chosen = _field("place").strip()
@@ -2687,17 +2725,10 @@ def _category_table(conn, source, report) -> dict:
             "also": [_describe_rule(rules[i]) for i in routing.matching_rules(label, config)
                      if i != index],
             "new": routing.is_new(label, config),
-            "own_place": _own_place(label, config),
+            "own_place": routing.own_category(config, label)["place"],
             "place": routing.default_place(label, config),
         })
-    settings = Settings.load(conn)
-    holding = {s.staging_collection for s in repo.list_sources(conn) if s.staging_collection}
-    if settings.enrichment_collection:
-        holding.add(slugify(settings.enrichment_collection))
-    calendars = set(repo.written_collections(conn, exclude=holding)) | {default}
-    calendars |= {v for v in set_to.values() if v and v != SKIP}
-    calendars |= {r["destination"] for r in rules if r["destination"] != SKIP}
-    return {"category_rows": rows, "calendars": sorted(calendars),
+    return {"category_rows": rows, "calendars": categories_mod.calendars(conn, config),
             "default_calendar": default, "rules": _rule_rows(rules, report),
             "new_labels": [row["label"] for row in rows if row["new"]],
             "json_labels": json.dumps([row["label"] for row in rows if row["new"]])}
@@ -2710,12 +2741,6 @@ def _readable(report):
         raise Refused("the feed could not be read just now, so what a rule "
                       "change would move is unknown; try again shortly")
     return report
-
-
-def _own_place(label: str, config: dict) -> int | None:
-    wanted = " ".join(label.split()).casefold()
-    return next((v for k, v in (config.get("places") or {}).items()
-                 if " ".join(k.split()).casefold() == wanted), None)
 
 
 def _describe_rule(rule: dict) -> str:

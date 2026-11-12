@@ -160,8 +160,7 @@ a wrong time is the calendar's to correct.
 
 ## Rules, default places and bulk answers
 
-**Status: title rules, showing their reach, Keep all and default places are
-built. The API is specified, not built.**
+**Status: built in 1.2.0 to 1.4.0.**
 
 A hand-typed club calendar does not repeat its titles. Its first production
 feed had 27 categories in a year, 23 of them used once: "Den Meeting - Special",

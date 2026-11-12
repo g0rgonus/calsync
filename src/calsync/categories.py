@@ -16,6 +16,7 @@ import json
 from dataclasses import dataclass, field
 
 from . import notify, repo, routing
+from .settings import Settings
 
 
 @dataclass
@@ -30,6 +31,22 @@ def new(report, config: dict | None) -> tuple[str, ...]:
     """Categories this poll saw that have no destination set yet."""
     return tuple(sorted(label for label in report.categories
                         if routing.is_new(label, config)))
+
+
+def calendars(conn, config: dict | None) -> list[str]:
+    """The calendars a category or rule may name: those already written to,
+    outside any holding calendar, and those the source already names."""
+    config = config or {}
+    settings = Settings.load(conn)
+    holding = {s.staging_collection for s in repo.list_sources(conn) if s.staging_collection}
+    if settings.enrichment_collection:
+        holding.add(routing.slugify(settings.enrichment_collection))
+    found = set(repo.written_collections(conn, exclude=holding))
+    found |= {config["default_calendar"]} if config.get("default_calendar") else set()
+    found |= {v for v in (config.get("categories") or {}).values() if v and v != routing.SKIP}
+    found |= {r["destination"] for r in config.get("rules") or []
+              if r["destination"] != routing.SKIP}
+    return sorted(found)
 
 
 def _key(label: str) -> str:

@@ -966,6 +966,104 @@ def test_default_places_are_set_from_the_source_page(console):
     assert _config(path, source_id)["rules"][0]["place"] == hall
 
 
+def test_route_category_task_dispatched_per_new_category(conn, target):
+    from calsync import enrichment
+
+    _configure(conn, categories={"Padawan Meeting": "padawans"},
+               rules=[{"match": "starts_with", "text": "council", "destination": "council"}])
+    report = _sync(conn, target)
+    config = repo.get_source(conn, "cal-explorers").config
+    routed = [t for t in enrichment.tasks("cal-explorers", report, config=config)
+              if t.type == "route_category"]
+
+    assert sorted(t.context for t in routed) == [
+        ("Elders' Roundtable",), ("Group Meeting",), ("Mos Espa Camporee",)]
+    assert {"explorers", "padawans", "council", "skip"} <= set(routed[0].candidates)
+    assert not any(t.type == "route_category" for t in enrichment.tasks(
+        "cal-explorers", report, config=config, staged=True)), "staged: the person's to answer"
+    assert "new_categories" not in report.diagnostics, "news, not a diagnostic"
+
+
+def _route_task(conn, target, label, answer):
+    from calsync import enrichment
+
+    report = _sync(conn, target)
+    config = repo.get_source(conn, "cal-explorers").config
+    (task,) = [t for t in enrichment.tasks("cal-explorers", report, config=config)
+               if t.type == "route_category" and t.context == (label,)]
+    return repo.Task(id=task.id, source_id="cal-explorers", kind=task.kind, type=task.type,
+                     context=task.context, candidates=task.candidates, state="approved",
+                     answer=answer)
+
+
+def test_approved_route_category_writes_the_category(conn, target):
+    from calsync import enrichment
+
+    hall = _hall(conn)
+    task = _route_task(conn, target, "Group Meeting",
+                       {"destination": "Gatherings", "place": hall})
+    enrichment.apply(conn, task)
+
+    config = repo.get_source(conn, "cal-explorers").config
+    assert config["categories"] == {"Group Meeting": "gatherings"}
+    assert config["places"] == {"Group Meeting": hall}
+    _sync(conn, target)
+    assert _live(conn)[GROUP].collection == "gatherings"
+    assert _venue_of(conn, GROUP) == "Naboo Scout Hall"
+
+    with pytest.raises(enrichment.AnswerError, match="no venue"):
+        enrichment.apply(conn, _route_task(conn, target, "Mos Espa Camporee",
+                                           {"destination": "skip", "place": 999}))
+
+
+def test_route_category_answer_shape_is_in_the_contract():
+    from calsync import enrichment
+    from calsync.api import contract
+
+    enrichment.validate("route_category", contract.ANSWER_SHAPES["route_category"]["answer"])
+    enrichment.validate("route_category", {"destination": "skip"})
+    for bad in ({}, {"destination": " "}, {"destination": "x", "place": "7"},
+                {"destination": "x", "place": True}):
+        with pytest.raises(enrichment.AnswerError):
+            enrichment.validate("route_category", bad)
+
+
+def test_approve_all_applies_a_sources_answers(console):
+    from calsync import enrichment
+
+    client, path, source_id = console
+    connection = db.connect(path)
+    hall = _hall(connection)
+    answers = {"Group Meeting": {"destination": "practices", "place": hall},
+               "Council Meeting": {"destination": "skip"},
+               "Mos Espa Camporee": {"destination": "camp", "place": 999}}
+    for label, answer in answers.items():
+        task_id = f"task_{label[:4].lower()}"
+        repo.record_task(connection, task_id=task_id, source_id=source_id,
+                         kind="new_categories", type="route_category", context=(label,),
+                         candidates=(), dispatched_at="2026-09-01T12:00:00+00:00")
+        enrichment.validate("route_category", answer)
+        repo.record_answer(connection, task_id=task_id, answer=answer, rationale=None,
+                           answered_by="agent", answered_at="2026-09-01T12:05:00+00:00")
+    connection.commit()
+    connection.close()
+
+    page = client.get("/review")["body"]
+    assert "Approve all 3 for Explorers" in page
+    reply = client.post(f"/review/sources/{source_id}/approve-all",
+                        {"tasks": _hidden(page, "tasks")})
+    assert reply["status"] == 303
+    assert "Approved%202" in reply["headers"]["Location"]
+
+    config = _config(path, source_id)
+    assert config["categories"] == {"Group Meeting": "practices", "Council Meeting": "skip"}
+    assert config["places"] == {"Group Meeting": hall}
+    connection = db.connect(path)
+    states = {t.context[0]: t.state for t in repo.list_tasks(connection)}
+    assert states == {"Group Meeting": "approved", "Council Meeting": "approved",
+                      "Mos Espa Camporee": "answered"}, "one that cannot apply still waits"
+
+
 def test_an_agent_can_propose_a_time_is_right(conn, target):
     from calsync import enrichment
 

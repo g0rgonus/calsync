@@ -606,7 +606,7 @@ def test_the_contract_carries_the_answer_shapes(client):
     shapes = client.get("/v1")["json"]["answer_shapes"]
 
     assert set(shapes) == {"resolve_activity", "classify_kind", "normalize_venue",
-                           "confirm_time"}
+                           "confirm_time", "route_category"}
     assert shapes["resolve_activity"]["answer"] == {"alias": "Rogues"}
 
 

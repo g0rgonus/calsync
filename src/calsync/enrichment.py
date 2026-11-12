@@ -28,7 +28,7 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from . import matrix, notify, repo
+from . import matrix, notify, repo, routing
 from .inspection import name_candidates
 from .models import BLOCKING_DIAGNOSTICS
 from .routing import slugify
@@ -54,6 +54,7 @@ TASK_TYPES = {
     "unknown_categories": "classify_kind",
     "unresolved_venues": "normalize_venue",
     "suspect_times": "confirm_time",
+    "new_categories": "route_category",
 }
 
 QUESTIONS = {
@@ -62,6 +63,7 @@ QUESTIONS = {
     "unknown_categories": "is this category a game or a practice?",
     "unresolved_venues": "where is this, and is it another name for a place we know?",
     "suspect_times": "is this time right, twelve hours off the usual one?",
+    "new_categories": "where does this category go?",
 }
 
 
@@ -129,9 +131,15 @@ def _task_id(source_id: str, kind: str, items: tuple[str, ...]) -> str:
     return f"task_{digest.hexdigest()[:16]}"
 
 
-def tasks(source_id: str, report: SyncReport) -> tuple[Task, ...]:
-    """Every question an agent could answer, addressable and stable."""
-    out: list[Task] = []
+def tasks(source_id: str, report: SyncReport, *, config: dict | None = None,
+          staged: bool = False) -> tuple[Task, ...]:
+    """Every question an agent could answer, addressable and stable.
+
+    ``config`` and ``staged`` are the source's, for its new categories: news
+    rather than diagnostics, so they hold nothing and block no promotion, and
+    a staged source's are the onboarding person's to answer.
+    """
+    out: list[Task] = list(_category_tasks(source_id, report, config)) if not staged else []
     for kind in DISPATCHABLE:
         items = tuple(sorted(set(report.diagnostics.get(kind, ()))))
         if not items:
@@ -155,6 +163,21 @@ def tasks(source_id: str, report: SyncReport) -> tuple[Task, ...]:
                 )
             )
     return tuple(out)
+
+
+def _category_tasks(source_id: str, report: SyncReport, config: dict | None):
+    config = config or {}
+    if not config.get("default_calendar"):
+        return
+    places = {config["default_calendar"], routing.SKIP}
+    places |= {v for v in (config.get("categories") or {}).values() if v}
+    places |= {r["destination"] for r in config.get("rules") or []}
+    for label in sorted(report.categories):
+        if routing.is_new(label, config):
+            yield Task(id=_task_id(source_id, "new_categories", (label,)),
+                       type="route_category", kind="new_categories",
+                       question=QUESTIONS["new_categories"], context=(label,),
+                       source_id=source_id, candidates=tuple(sorted(places)))
 
 
 def questions(report: SyncReport) -> tuple[str, ...]:
@@ -354,7 +377,8 @@ def dispatch(
     ).fetchone()
     already = (row["review_dispatched"] if row else None) or ""
 
-    open_tasks = tasks(source.id, report)
+    open_tasks = tasks(source.id, report, config=source.config,
+                       staged=bool(source.staging_collection))
 
     # Cleanup first, and unconditionally. Anything we are no longer asking has
     # been answered by hand or the feed changed, and a task nobody will ever ask
@@ -466,6 +490,12 @@ def validate(task_type: str, answer: dict) -> None:
         if (answer or {}).get("time_is_right") is not True:
             raise AnswerError("answer needs 'time_is_right': true; a wrong time "
                               "is fixed in the calendar, not here")
+    elif task_type == "route_category":
+        _need(answer, "destination")
+        place = (answer or {}).get("place")
+        if place is not None and (isinstance(place, bool) or not isinstance(place, int)
+                                  or place < 1):
+            raise AnswerError("answer's 'place' is a venue id, or left out")
     else:
         raise AnswerError(f"no answer shape is defined for {task_type!r}")
 
@@ -524,5 +554,19 @@ def apply(conn, task: repo.Task) -> str:
         conn.execute("UPDATE sources SET config = ? WHERE id = ?",
                      (json.dumps(config), source.id))
         return f"kept {question!r} at that time"
+
+    if task.type == "route_category":
+        label = task.context[0]
+        chosen = _need(answer, "destination")
+        chosen = routing.SKIP if chosen.casefold() == routing.SKIP else routing.slugify(chosen)
+        place = answer.get("place")
+        if place is not None and repo.get_venue(conn, place) is None:
+            raise AnswerError(f"no venue {place} for its default place")
+        config = routing.with_category(source.config or {}, label, chosen,
+                                       place if "place" in answer else routing.KEEP)
+        conn.execute("UPDATE sources SET config = ? WHERE id = ?",
+                     (json.dumps(config), source.id))
+        where = "kept off every calendar" if chosen == routing.SKIP else f"sent to {chosen}"
+        return f"{label!r} {where}"
 
     raise AnswerError(f"cannot apply a {task.type!r} answer")

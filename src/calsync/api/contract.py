@@ -152,6 +152,13 @@ ANSWER_SHAPES: dict[str, dict] = {
         "question": "is this time right, twelve hours off the usual one?",
         "answer": {"time_is_right": True},
     },
+    "route_category": {
+        "question": "where does this category go?",
+        "answer": {"destination": "practices", "place": 7},
+        "notes": ["destination is a calendar from the task's candidates, skip to keep "
+                  "the category off every calendar, or a new calendar's name. place "
+                  "is optional: a venue id for events the feed gives no place."],
+    },
     "normalize_venue": {
         "question": "where is this?",
         "answer": {
