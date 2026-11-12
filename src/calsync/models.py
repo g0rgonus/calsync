@@ -99,12 +99,14 @@ class Venue:
 UNKNOWN_TYPE = "unknown_type"          # is this label a game or a practice?
 UNKNOWN_CATEGORY = "unknown_category"  # same question, Player360's vocabulary
 UNIDENTIFIED = "unidentified"          # which side of this fixture is us?
+SUSPECT_TIME = "suspect_time"          # 06:30 where this category is always 18:30
 
 #: The `PollResult.diagnostics` kinds matching the per-event blockers above.
 #: `unresolved_venues` is deliberately absent: it is a real gap and it holds
 #: nothing back, so anything deciding "is an event waiting on somebody" must not
 #: count it.
-BLOCKING_DIAGNOSTICS = ("unknown_types", "unknown_categories", "unidentified")
+BLOCKING_DIAGNOSTICS = ("unknown_types", "unknown_categories", "unidentified",
+                        "suspect_times")
 
 
 @dataclass

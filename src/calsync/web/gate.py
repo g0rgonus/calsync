@@ -130,6 +130,32 @@ def _types(report: SyncReport) -> Condition:
     )
 
 
+def _times(report: SyncReport) -> Condition:
+    """For a calendar feed, which has no types: starts that look like AM for PM."""
+    items = tuple(report.diagnostics.get("suspect_times", ()))
+    if not items:
+        return Condition(
+            key="types",
+            label="Times look right",
+            state=MET,
+            headline="No event is twelve hours off its category's usual time.",
+        )
+    count = len(items)
+    return Condition(
+        key="types",
+        label="Times look right",
+        state=ASKING,
+        headline=f"{count} {_plural(count, 'event is', 'events are')} twelve hours off "
+                 "the usual time.",
+        detail=(
+            "Usually AM typed for PM. They wait off the family's calendars until "
+            "you say the time is right, or the calendar is corrected."
+        ),
+        items=items,
+        answer="time",
+    )
+
+
 def _venues(report: SyncReport) -> Condition:
     items = tuple(report.diagnostics.get("unresolved_venues", ()))
     if not items:
@@ -254,13 +280,14 @@ def conditions(report: SyncReport, activity: Activity) -> tuple[Condition, ...]:
             )
             for key, label in (
                 ("team", "Team matched"),
-                ("types", "Types known"),
+                ("types", "Times look right" if report.events_only else "Types known"),
                 ("venues", "Venues placed"),
                 ("games", "Events received" if report.pushed
                  else "Events seen" if report.events_only else "Games seen"),
             )
         )
-    return (_team(report, activity), _types(report), _venues(report), _games(report))
+    kinds = _times(report) if report.events_only else _types(report)
+    return (_team(report, activity), kinds, _venues(report), _games(report))
 
 
 def summarise(conditions_: tuple[Condition, ...]) -> tuple[str, str]:

@@ -540,6 +540,29 @@ def create_app(
             f"{label} is {where}. The next sync moves what is already written.")
             + "#categories")
 
+    @app.post("/sources/<source_id>/confirm-time")
+    def confirm_time(source_id):
+        """Release an event held as twelve hours off its usual time.
+
+        Stored as the question itself, so a later edit to that event's time is
+        asked about again rather than waved through.
+        """
+        question = _field("question").strip()
+        if not question:
+            raise Refused("which event?")
+        with connect() as conn:
+            source = _require_source(conn, source_id)
+            config = dict(source.config or {})
+            confirmed = list(config.get("times_confirmed") or [])
+            if question not in confirmed:
+                confirmed.append(question)
+            config["times_confirmed"] = confirmed
+            conn.execute("UPDATE sources SET config = ? WHERE id = ?",
+                         (json.dumps(config), source_id))
+            conn.commit()
+        redirect(f"/sources/{source_id}?ok=" + _q(
+            "Kept at that time. The next sync puts it on the calendar."))
+
     @app.post("/sources/<source_id>/default-calendar")
     def set_default_calendar(source_id):
         """Where a category nobody has set goes. Moving it moves those events."""
