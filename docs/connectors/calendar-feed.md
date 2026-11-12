@@ -217,8 +217,62 @@ category currently marked new to the default calendar, as if each had been
 confirmed. It acts on the categories listed when the page was drawn, sent with
 the form, so a category that arrived since is not answered without being seen.
 
+### Through the API
+
+Everything above is a decision a parent makes on a phone, and most of it an
+agent can make as well or better: "Pinewood Derby Workshop (Option 2)" goes
+where "(Option 1)" went. The API offers it in the two forms calsync already
+has, with their safeguards unchanged.
+
+**Read**, on `GET /inbound/v1/admin/teams/{id}/review` (admin key), from the
+same live dry run the source page draws:
+
+- `categories`: each with its event count in the window, its destination,
+  what placed it (`set`, `rule` with the rule's index, or `default`), the other
+  rules it also matches, its default place, and whether it is new;
+- `rules`: each with the categories it matches;
+- `default_calendar`, and the calendars a destination may name;
+- `held_times`: the twelve-hour questions, as on the source page.
+
+**Proposals**, for an agent working the review queue (invariant 21):
+
+- **`route_category`**, one task per new category, answered
+  `{"destination": "practices" | "skip" | "<new calendar>", "place": venue_id?}`.
+  Dispatched like any other task, but not a diagnostic and not a promotion
+  hold. Approving writes the same `categories` entry the source page writes.
+- **`confirm_time`**, already built, for a held time.
+- **Approving several at once.** `/review` gets one approve button for every
+  answered task of a source. A batch of one-offs becomes one decision about an
+  agent's choices, not twenty about where things go.
+
+An agent never sends a rule as a proposal. A rule decides for categories that
+have not appeared yet, which is a person's call.
+
+**Admin calls**, for a person's own tooling, each idempotent and following the
+home-venue call's pattern: logged with `log_admin`, pushed unless the source is
+staged (invariant 29), and returning the value it replaced so that sending it
+back is the undo.
+
+| Call | Body |
+|---|---|
+| `PUT /admin/teams/{id}/categories/{label}` | `{"destination": …, "place": venue_id?}`; `null` destination clears it |
+| `PUT /admin/teams/{id}/default-calendar` | `{"calendar": …}` |
+| `PUT /admin/teams/{id}/rules` | the whole ordered list, so order and undo are one value |
+| `POST /admin/teams/{id}/rules/preview` | a proposed list; returns what each category would get and which events would move, changing nothing |
+| `PUT /admin/teams/{id}/times-confirmed` | the whole list of confirmed questions |
+
+`{label}` is URL-encoded and matched like a category, ignoring case and
+spacing. The inbound contract and OpenAPI document are generated from the
+route table, so these appear there with no hand-written docs (invariant 30).
+
 ### Tests to write
 
+- `review_lists_categories_with_what_placed_them`
+- `route_category_task_dispatched_per_new_category`
+- `approved_route_category_writes_the_category`
+- `approve_all_applies_a_sources_answers`
+- `admin_category_change_pushes_and_returns_the_previous_value`
+- `admin_rules_preview_changes_nothing`
 - `rule_routes_matching_categories`
 - `first_matching_rule_wins`
 - `category_destination_beats_rule`
