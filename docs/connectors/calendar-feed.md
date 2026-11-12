@@ -158,6 +158,199 @@ It is also an agent task, `confirm_time`, answered `{"time_is_right": true}`
 and applied only once a person approves it (invariant 21). There is no "no":
 a wrong time is the calendar's to correct.
 
+## Rules, default places and bulk answers
+
+**Status: specified, not built.**
+
+A hand-typed club calendar does not repeat its titles. Its first production
+feed had 27 categories in a year, 23 of them used once: "Den Meeting - Special",
+"Pack Meeting - Christmas", "Pinewood Derby Workshop (Option 1)", "Labor Day -
+No Meeting". Each was a new category for a person to answer, and none of its
+events carried a `LOCATION`. Three things take most of that work away.
+
+### Title rules
+
+A rule sends every category whose title matches it to a calendar, or to Skip:
+
+| Matches | Text | Goes to |
+|---|---|---|
+| starts with | Den Meeting | practices |
+| starts with | Pack Meeting | practices |
+| contains | no meeting | Skip |
+| contains | Roundtable | Skip |
+
+- **Two kinds of match, no patterns:** *starts with* and *contains*, ignoring
+  case and spacing like category names do. A parent writes these on a phone; a
+  regular expression is a support call.
+- **Ordered, first match wins.** The source page lets a rule move up or down.
+- **Stored on the source:** `rules: [{"match": "starts_with" | "contains",
+  "text": …, "destination": …}]` in `sources.config`.
+- **Resolved in `routing.destination()`**, not in `collection_for` alone.
+  `destination()` is what `collection_for`, `skipped()` and so the sync's `off`
+  set all read, so a Skip rule takes written events off the way a skipped
+  category does: through `withheld.enforce`'s `also`, never counted against
+  the guard (invariant 2). `is_new()` reads rules too.
+- **A category placed by a rule is not new.** It is not marked *new*, not
+  listed on `/review`, and sends no push. That is the point: a rule is the
+  answer given once for every category it will ever match.
+- **A rule never merges categories.** "Den Meeting" and "Den Meeting - Special"
+  stay two rows with their own counts; the rule only routes them. Merging is
+  still an alias feature (below).
+
+Where an event goes becomes, in order:
+
+1. staging;
+2. an event held in `enrichment`, such as a time twelve hours off (above),
+   as `routing.collection_for` already does;
+3. the category's own destination, if a person set one;
+4. the first rule that matches;
+5. the default calendar.
+
+Skip, from step 3 or 4, is applied in `sync.py` as today, not by
+`collection_for`. A category's own destination beats a rule, so one exception
+does not need a rule of its own.
+
+### Showing what each rule matches
+
+Rules are only safe if their reach is visible. "contains Meeting" also catches
+"Committee Meeting / Popcorn Replacement Order Due".
+
+- **Each category row says what placed it**: *set by you*, *rule: starts
+  with "Den Meeting"*, or *default (new)*. A category that more than one rule
+  matches names the first, and says it also matches the others.
+- **Each rule lists the categories it matches** in the sync window, with their
+  event counts, and a rule matching nothing says so: it is either waiting for a
+  title that has not appeared, or a typo.
+- **Every change to the rules is previewed before it is saved**: adding,
+  editing, moving up or down, and deleting. Each changes which rule matches
+  first and so moves written events. The form posts to a preview of the table,
+  and Save applies it.
+- **A category a rule stops matching falls back to the default.** It is new
+  again only if it is not in `categories_seen`. A category already there was
+  accepted at the default by **Keep all** (below), and the default is where it
+  lands, so there is nothing new to decide. A category that is new again is
+  marked and listed on `/review`, but sends no push: the preview named it, and
+  the person saving has just seen it. It is recorded in `category_notified`
+  when the change is saved.
+
+### A default place by category
+
+`DESCRIPTION` and `LOCATION` are optional in a Google calendar, and a pack
+that meets in the same hall every week leaves `LOCATION` empty. An event with
+no `LOCATION` takes a **default place**, set per category or per rule, chosen
+from the venue table so it carries an address and a pin.
+
+- **The feed's own `LOCATION` always wins.** The default fills a gap and never
+  overrides what the calendar says.
+- **Stored on the source:** `places: {category: venue_id}` and an optional
+  `place` on a rule. A category's own place beats its rule's.
+- **Not part of the content hash** (invariant 9 hashes what the feed said).
+  Setting or changing a default re-renders the events through the receipt
+  comparison in `sync.py`, as teaching a venue alias already does, and counts
+  as *refreshed*.
+- **Recorded as the source layer** in `event_content` (invariant 25), with the
+  venue it came from, so readers see the place the calendar shows.
+- A held venue question never arises from a default: it is a venue row by
+  construction.
+
+### Answering new categories at once
+
+`/review` and the category table get **Keep all at {default}**. It clears the
+*new* mark from every category the page listed as new, and nothing else.
+
+- **It does not set a destination.** The categories are added to
+  `categories_seen` in `sources.config` and stay unset. They go on following
+  `default_calendar` when it changes and any rule added later. Setting each one
+  to the default would silently exempt them from future rules.
+- `is_new()` becomes: no destination of its own, matched by no rule, and not in
+  `categories_seen`.
+- It acts on the categories listed when the page was drawn, sent with the form,
+  so a category that arrived since is not answered without being seen.
+
+### Through the API
+
+Everything above is a decision a parent makes on a phone, and most of it an
+agent can make as well or better: "Pinewood Derby Workshop (Option 2)" goes
+where "(Option 1)" went. The API offers it in the two forms calsync already
+has, with their safeguards unchanged.
+
+**Read**, on `GET /inbound/v1/admin/teams/{id}/review` (admin key), from the
+same live dry run the source page draws:
+
+- `categories`: each with its event count in the window, its destination,
+  what placed it (`set`, `rule` with the rule's index, or `default`), the other
+  rules it also matches, its default place, and whether it is new;
+- `rules`: each with the categories it matches;
+- `default_calendar`, and the calendars a destination may name;
+- `held_times`: the twelve-hour questions, as on the source page.
+
+**Proposals**, for an agent working the review queue (invariant 21):
+
+- **`route_category`**, one task per new category, answered
+  `{"destination": "practices" | "skip" | "<new calendar>", "place": venue_id?}`.
+  New categories are not diagnostics, so `enrichment.tasks()` gains a second
+  path beside its diagnostic one: a task for each category in the poll's
+  `categories` that `routing.is_new()` calls new, once the source is promoted.
+  It holds nothing and does not block promotion. Its answer shape is added to
+  the `/v1` contract's `ANSWER_SHAPES` and to `enrichment.validate`. Approving
+  writes the same `categories` entry the source page writes.
+- **`confirm_time`**, as built, for a held time.
+- **Approving several at once.** `/review` gets one approve button for every
+  answered task of a source. A batch of one-offs becomes one decision about an
+  agent's choices, not twenty about where things go.
+
+An agent never sends a rule as a proposal. A rule decides for categories that
+have not appeared yet, which is a person's call.
+
+**Admin calls**, for a person's own tooling, each idempotent. Like the
+home-venue call, each is logged with `log_admin` and pushed unless the source
+is staged (invariant 29). Unlike it, each returns `{"current": …,
+"previous": …}`: home-venue returns only the value it wrote, and an agent
+undoing a change needs the one it replaced. Sending `previous` back is the
+undo. Home-venue is left as it is.
+
+| Call | Body |
+|---|---|
+| `PUT /inbound/v1/admin/teams/{source_id}/categories/{label}` | `{"destination": …, "place": venue_id?}`; `null` destination clears it |
+| `PUT /inbound/v1/admin/teams/{source_id}/default-calendar` | `{"calendar": …}` |
+| `PUT /inbound/v1/admin/teams/{source_id}/rules` | the whole ordered list, so order and undo are one value |
+| `POST /inbound/v1/admin/teams/{source_id}/rules/preview` | a proposed list; returns what each category would get and which events would move, changing nothing |
+| `PUT /inbound/v1/admin/teams/{source_id}/times-confirmed` | the whole list of confirmed questions |
+
+`{label}` is URL-encoded and matched like a category, ignoring case and
+spacing. The inbound contract and OpenAPI document are generated from the
+route table, so these appear there with no hand-written docs (invariant 30).
+
+### Tests to write
+
+- `review_lists_categories_with_what_placed_them`
+- `route_category_task_dispatched_per_new_category`
+- `approved_route_category_writes_the_category`
+- `approve_all_applies_a_sources_answers`
+- `admin_category_change_pushes_and_returns_the_previous_value`
+- `sending_previous_back_undoes_the_change`
+- `route_category_answer_shape_is_in_the_contract`
+- `category_in_categories_seen_stays_not_new_when_a_rule_drops_it`
+- `admin_rules_preview_changes_nothing`
+- `skip_rule_removes_written_events_without_tripping_guard`
+- `rule_placed_category_is_not_new`
+- `hold_beats_category_and_rule`
+- `reordering_or_deleting_a_rule_is_previewed`
+- `category_a_rule_stops_matching_is_new_without_a_push`
+- `keep_all_leaves_categories_unset`
+- `rule_added_after_keep_all_routes_those_categories`
+- `rule_routes_matching_categories`
+- `first_matching_rule_wins`
+- `category_destination_beats_rule`
+- `rule_placed_category_is_not_new_and_sends_no_push`
+- `changing_a_rule_moves_written_events`
+- `rule_preview_lists_matches_without_saving`
+- `category_row_names_what_placed_it`
+- `default_place_fills_missing_location`
+- `feed_location_beats_default_place`
+- `setting_a_default_place_refreshes_without_a_hash_change`
+- `keep_all_answers_only_the_categories_shown`
+
 ## What it writes
 
 Every event is a non-game that keeps the feed's own label: `Luke ⚜️ Padawan
@@ -247,7 +440,8 @@ An override whose series is not in the feed is still keyed by its
 - **Sports feeds.** Their game/practice split also sets alarms, warm-ups and
   home/away, and their unknown labels are held on purpose. Opting them in to
   category routing is a later decision.
-- **Category aliases** and merging near-duplicates.
+- **Category aliases** and merging near-duplicates. Title rules route
+  near-duplicates together but keep them as separate categories.
 - **Filtering by anything but the title** (location, description, time).
 
 ## Tests to write
