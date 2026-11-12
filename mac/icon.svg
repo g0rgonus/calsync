@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+<!-- calsync's mark: half pitch, half pool.
+
+     A chalk line across the middle, a centre circle sitting above it, lane
+     lines below. The line does two jobs at once: it is the halfway line seen
+     from the pitch and the edge of the water seen from the pool. That split is
+     the whole point of the drawing, because this console carries swimming,
+     dance, chess and robotics as readily as it carries soccer, and a mark that
+     was only a football pitch would quietly claim otherwise.
+
+     Both halves are drawn from directly overhead, which is the only way the
+     two readings sit together. It is also why the lanes run edge to edge and
+     are clipped by the tile rather than inset: inset, the green left standing
+     either side turned into walls and the whole thing read as a picnic basket.
+
+     Everything is sized for 16x16, where one CSS pixel is exactly four units
+     here, and that budget decides the drawing rather than decorating it. Five
+     strokes, and the horizontal ones sit on multiples of four so each lands on
+     a whole pixel: rendered at 16 the three lanes come out at full value with
+     full-value gaps between them, no antialiasing at all. Nudge any of those
+     y values off the grid and they grey out.
+
+     Three lanes, not six. Six is the obvious reading of "lane lines" and it
+     smears below about 24px, for a reason arithmetic settles rather than taste:
+     the pool half is eight pixels tall at 16x16, and six lines plus five gaps
+     will not fit in eight pixels at any stroke weight. Three lines and four
+     gaps fit exactly, and three still reads as stripes. Do not add a fourth,
+     and do not add the pitch's touchlines. What survives at 16px is a green
+     tile, a bright bar across it, a bump above and stripes below, and that is
+     the whole identity.
+
+     No width or height attributes on purpose. Rasterisers that honour an
+     intrinsic size draw a 64px icon into the corner of whatever box they were
+     asked for; with only a viewBox they scale it to fill, which is what both
+     install.sh and a browser tab want. -->
+<style>
+  /* The ground, and the one value not lifted straight from app.css's palette.
+     Turf green is nearly black and is right on a page, but it sinks into a
+     dark browser's tab strip; lifting it here keeps the tile's silhouette
+     without touching the chalk, which stays far past legible either way
+     (12:1 against the light ground, 8.9:1 against this one). The marks never
+     move between the two, so it is the same drawing, only better lit. */
+  .ground { fill: #123529; }
+  @media (prefers-color-scheme: dark) { .ground { fill: #1c4d39; } }
+</style>
+<defs>
+  <clipPath id="tile"><rect width="64" height="64" rx="10"/></clipPath>
+</defs>
+<g clip-path="url(#tile)">
+  <rect class="ground" width="64" height="64"/>
+  <g fill="none" stroke="#f2f5f0">
+    <!-- The halfway line, and the water's edge. Eight units, so at 16px it is
+         two whole pixels either side of centre rather than one and two halves. -->
+    <path d="M0 32H64" stroke-width="8"/>
+    <!-- The centre circle: the half of it that is above the line. Its ends stop
+         on the line's own centre, so the two meet rather than butt together. -->
+    <path d="M19 32A13 13 0 0 1 45 32" stroke-width="6"/>
+    <!-- The lanes: four units of chalk every eight. Equal chalk and turf is
+         heavier than it would be drawn by eye, and it is not a free choice —
+         four units is one pixel at 16x16, the thinnest line that exists there,
+         and eight is the closest the three of them can be spaced and still
+         land on whole pixels (10, 12 and 14). -->
+    <path d="M0 42H64M0 50H64M0 58H64" stroke-width="4"/>
+  </g>
+</g>
+</svg>

@@ -66,7 +66,7 @@ cp "$HERE/.build/release/CalsyncMirrorMenu" "$APP/Contents/MacOS/Calsync Mirror"
 # The menu bar status item keeps its SF Symbol, and must. A template image is
 # the only thing that renders correctly in both a light and a dark menu bar,
 # and this icns has no business anywhere near it.
-ICON_SRC="$HERE/../src/calsync/web/static/icon.svg"
+ICON_SRC="$HERE/icon.svg"
 ICON_PLIST=""
 if [ -f "$ICON_SRC" ] && command -v qlmanage >/dev/null 2>&1; then
     ICON_TMP="$(mktemp -d)"
