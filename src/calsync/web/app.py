@@ -27,7 +27,7 @@ from .. import config as config_mod
 from .. import (
     categories as categories_mod, db, dormancy, enrichment, matrix, merging, notify,
     overlay as overlay_mod,
-    repo, retire,
+    repo, retire, routing,
     sources, targeting,
     warmup, withheld as withheld_mod, zones,
 )
@@ -539,6 +539,87 @@ def create_app(
         redirect(f"/sources/{source_id}?ok=" + _q(
             f"{label} is {where}. The next sync moves what is already written.")
             + "#categories")
+
+    @app.post("/sources/<source_id>/rules/preview")
+    def preview_rules(source_id):
+        """Show what one change to the title rules would move, before saving.
+
+        Every change is previewed, moving and deleting included: each changes
+        which rule matches first, and so where written events go.
+        """
+        with connect() as conn:
+            source = _require_source(conn, source_id)
+            config = source.config or {}
+            if not config.get("default_calendar"):
+                raise Refused("this source is not routed by category")
+            proposed = _changed_rules(list(config.get("rules") or []))
+            report = _preview(conn, source, secrets, fetcher, clock)
+            activity = repo.get_activity(conn, source.activity_id)
+            return render(
+                "rules_preview.tpl", source=source, activity=activity,
+                rules=_rule_rows(proposed, report),
+                rules_json=json.dumps(proposed),
+                moves=_rule_moves(config, {**config, "rules": proposed}, report),
+            )
+
+    @app.post("/sources/<source_id>/rules")
+    def save_rules(source_id):
+        """Save the whole ordered rule list the preview showed."""
+        try:
+            proposed = routing.validate_rules(json.loads(_field("rules") or "null"))
+        except ValueError as exc:
+            raise Refused(str(exc)) from None
+        with connect() as conn:
+            source = _require_source(conn, source_id)
+            config = dict(source.config or {})
+            if not config.get("default_calendar"):
+                raise Refused("this source is not routed by category")
+            report = _preview(conn, source, secrets, fetcher, clock)
+            after = {**config, "rules": proposed}
+            # A category the change leaves new is news nobody needs pushed: the
+            # preview named it and the person saving has just seen it.
+            renewed = {" ".join(label.split()).casefold() for label in report.categories
+                       if routing.is_new(label, after) and not routing.is_new(label, config)}
+            row = conn.execute("SELECT category_notified FROM sources WHERE id = ?",
+                               (source_id,)).fetchone()
+            announced = set(json.loads(row["category_notified"] or "[]"))
+            conn.execute("UPDATE sources SET config = ?, category_notified = ? WHERE id = ?",
+                         (json.dumps(after),
+                          json.dumps(sorted(announced | renewed)) if announced | renewed
+                          else None, source_id))
+            conn.commit()
+        redirect(f"/sources/{source_id}?ok=" + _q(
+            "Rules saved. The next sync moves what is already written.") + "#rules")
+
+    @app.post("/sources/<source_id>/keep-all")
+    def keep_all(source_id):
+        """Answer the new categories the page showed by keeping them at the
+        default, without setting a destination: they go on following the
+        default and any rule added later."""
+        try:
+            labels = [" ".join(str(x).split()) for x in json.loads(_field("labels") or "[]")]
+        except ValueError:
+            raise Refused("which categories?") from None
+        labels = [label for label in labels if label]
+        if not labels:
+            raise Refused("which categories?")
+        with connect() as conn:
+            source = _require_source(conn, source_id)
+            config = dict(source.config or {})
+            if not config.get("default_calendar"):
+                raise Refused("this source is not routed by category")
+            seen = list(config.get("categories_seen") or [])
+            keys = {" ".join(k.split()).casefold() for k in seen}
+            seen += [label for label in labels if label.casefold() not in keys]
+            config["categories_seen"] = seen
+            conn.execute("UPDATE sources SET config = ? WHERE id = ?",
+                         (json.dumps(config), source_id))
+            conn.commit()
+        noun = "category" if len(labels) == 1 else "categories"
+        back = "/review" if _field("back") == "review" else f"/sources/{source_id}"
+        redirect(f"{back}?ok=" + _q(
+            f"Kept {len(labels)} {noun} on {config['default_calendar']}.")
+            + ("" if back == "/review" else "#categories"))
 
     @app.post("/sources/<source_id>/confirm-time")
     def confirm_time(source_id):
@@ -1726,6 +1807,14 @@ def create_app(
                     for s in routed if reports.get(s.id) and not s.staging_collection
                     for label in categories_mod.new(reports[s.id], s.config)
                 ],
+                # One "Keep all" per source, answering only the labels drawn
+                # here, so one that arrived since is not answered unseen.
+                keep_all=[
+                    {"source": s, "calendar": s.config["default_calendar"],
+                     "labels": json.dumps(list(categories_mod.new(reports[s.id], s.config)))}
+                    for s in routed if reports.get(s.id) and not s.staging_collection
+                    and categories_mod.new(reports[s.id], s.config)
+                ],
                 enrichment=enrichment_collection,
                 # Answers waiting on a decision, across every source. Listed
                 # separately from the questions because they are a different
@@ -2547,31 +2636,111 @@ def _preview(conn, source, secrets, fetcher, clock):
 
 
 def _category_table(conn, source, report) -> dict:
-    """The source page's category rows, and the calendars a row can choose.
-
-    Empty for a source not routed by category, which hides the section.
+    """The source page's category rows and rules, and the calendars a row can
+    choose. Empty for a source not routed by category, which hides the section.
     """
     config = source.config or {}
     default = config.get("default_calendar")
     if not default:
-        return {"category_rows": [], "calendars": [], "default_calendar": None}
+        return {"category_rows": [], "calendars": [], "default_calendar": None,
+                "rules": [], "new_labels": [], "json_labels": "[]"}
     set_to = {" ".join(k.split()).casefold(): v
               for k, v in (config.get("categories") or {}).items()}
-    rows = [{
-        "label": label,
-        "count": count,
-        "chosen": set_to.get(label.casefold()),
-        "new": label.casefold() not in set_to,
-    } for label, count in sorted(report.categories.items(),
-                                  key=lambda item: (-item[1], item[0].casefold()))]
+    rules = config.get("rules") or []
+    rows = []
+    for label, count in sorted(report.categories.items(),
+                               key=lambda item: (-item[1], item[0].casefold())):
+        goes, how, index = routing.placement(label, config)
+        rows.append({
+            "label": label,
+            "count": count,
+            "chosen": set_to.get(label.casefold()),
+            "goes": goes,
+            "placed": _placed_by(how, index, rules),
+            "also": [_describe_rule(rules[i]) for i in routing.matching_rules(label, config)
+                     if i != index],
+            "new": routing.is_new(label, config),
+        })
     settings = Settings.load(conn)
     holding = {s.staging_collection for s in repo.list_sources(conn) if s.staging_collection}
     if settings.enrichment_collection:
         holding.add(slugify(settings.enrichment_collection))
     calendars = set(repo.written_collections(conn, exclude=holding)) | {default}
     calendars |= {v for v in set_to.values() if v and v != SKIP}
+    calendars |= {r["destination"] for r in rules if r["destination"] != SKIP}
     return {"category_rows": rows, "calendars": sorted(calendars),
-            "default_calendar": default}
+            "default_calendar": default, "rules": _rule_rows(rules, report),
+            "new_labels": [row["label"] for row in rows if row["new"]],
+            "json_labels": json.dumps([row["label"] for row in rows if row["new"]])}
+
+
+def _describe_rule(rule: dict) -> str:
+    verb = "starts with" if rule["match"] == "starts_with" else "contains"
+    return f'{verb} "{rule["text"]}"'
+
+
+def _placed_by(how: str, index: int | None, rules: list[dict]) -> str:
+    if how == "set":
+        return "set by you"
+    if how == "rule":
+        return "rule: " + _describe_rule(rules[index])
+    return "default"
+
+
+def _rule_rows(rules: list[dict], report) -> list[dict]:
+    """Each rule with every category it matches in the window, so its reach is
+    visible: "contains Meeting" also catches the committee's meeting."""
+    return [{
+        **rule,
+        "described": _describe_rule(rule),
+        "matches": sorted(((label, count) for label, count in report.categories.items()
+                           if routing.matching_rules(label, {"rules": [rule]})),
+                          key=lambda item: (-item[1], item[0].casefold())),
+    } for rule in rules]
+
+
+def _rule_moves(before: dict, after: dict, report) -> list[dict]:
+    """The categories a rule change would send somewhere else, or newly ask
+    about, with how many events in the window each would move."""
+    moves = []
+    for label, count in sorted(report.categories.items(), key=lambda i: i[0].casefold()):
+        old, new = routing.placement(label, before), routing.placement(label, after)
+        if old[0] == new[0] and routing.is_new(label, before) == routing.is_new(label, after):
+            continue
+        moves.append({"label": label, "count": count, "from": old[0], "to": new[0],
+                      "placed": _placed_by(new[1], new[2], after.get("rules") or []),
+                      "new": routing.is_new(label, after)})
+    return moves
+
+
+def _changed_rules(rules: list[dict]) -> list[dict]:
+    """The rule list with the form's one change applied: add, edit, up, down
+    or delete."""
+    op = _field("op")
+    if op == "add":
+        rules.append({"match": _field("match"), "text": _field("text"),
+                      "destination": _destination()})
+    else:
+        try:
+            index = int(_field("index"))
+            rules[index]
+        except (ValueError, IndexError):
+            raise Refused("which rule?") from None
+        if op == "edit":
+            rules[index] = {"match": _field("match"), "text": _field("text"),
+                            "destination": _destination()}
+        elif op == "up" and index > 0:
+            rules[index - 1], rules[index] = rules[index], rules[index - 1]
+        elif op == "down" and index < len(rules) - 1:
+            rules[index + 1], rules[index] = rules[index], rules[index + 1]
+        elif op == "delete":
+            del rules[index]
+        elif op not in ("up", "down"):
+            raise Refused("change the rules how?")
+    try:
+        return routing.validate_rules(rules)
+    except ValueError as exc:
+        raise Refused(str(exc)) from None
 
 
 def _held_rows(

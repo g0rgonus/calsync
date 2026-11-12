@@ -6,6 +6,19 @@ All notable changes to calsync are recorded here, in the
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-12
+
+### Added
+- Title rules for a calendar feed: *starts with* or *contains*, in order, the
+  first match winning. A rule sends every category it matches to a calendar or
+  to Skip, and a category placed by a rule is not new. A category's own
+  destination still beats any rule.
+- Each category row says what placed it, each rule lists the categories it
+  matches, and every change to the rules is previewed before it is saved.
+- **Keep all at {default}** on the source page and on `/review` answers the new
+  categories shown without setting a destination, so they keep following the
+  default and any rule added later.
+
 ## [1.1.1] - 2026-11-12
 
 ### Fixed
