@@ -11,7 +11,7 @@
 % end
 % for i, rule in enumerate(rules):
   <p style="margin:0 0 0.4rem">
-    {{ i + 1 }}. {{ rule['described'] }} → {{ 'Skip' if rule['destination'] == 'skip' else rule['destination'] }}
+    {{ i + 1 }}. {{ rule['described'] }} → {{ 'Skip' if rule['destination'] == 'skip' else rule['destination'] }}{{ f", at {places[rule['place']]} when the feed gives no place" if rule.get('place') in places else '' }}
   </p>
   <p class="note" style="margin:0 0 0.8rem">
 % if rule['matches']:

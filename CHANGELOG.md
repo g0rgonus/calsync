@@ -6,6 +6,14 @@ All notable changes to calsync are recorded here, in the
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-12
+
+### Added
+- A default place for a calendar feed's category or title rule, chosen from the
+  venue table, for events the feed gives no `LOCATION`. The feed's own place
+  always wins, and a category's own place beats its rule's. Setting or changing
+  one re-renders the events it reaches on the next sync, counted as refreshed.
+
 ## [1.2.0] - 2026-11-12
 
 ### Added

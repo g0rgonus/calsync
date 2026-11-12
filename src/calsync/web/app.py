@@ -532,6 +532,15 @@ def create_app(
                        if " ".join(k.split()).casefold() != wanted}
             mapping[label] = chosen
             config["categories"] = mapping
+            # Only from a form that offers a place: /review's "Keep" does not,
+            # and must not clear one.
+            if "place" in request.forms:
+                place = _place(conn)
+                places = {k: v for k, v in (config.get("places") or {}).items()
+                          if " ".join(k.split()).casefold() != wanted}
+                if place is not None:
+                    places[label] = place
+                config["places"] = places
             conn.execute("UPDATE sources SET config = ? WHERE id = ?",
                          (json.dumps(config), source_id))
             conn.commit()
@@ -552,7 +561,7 @@ def create_app(
             config = source.config or {}
             if not config.get("default_calendar"):
                 raise Refused("this source is not routed by category")
-            proposed = _changed_rules(list(config.get("rules") or []))
+            proposed = _changed_rules(list(config.get("rules") or []), _place(conn))
             report = _readable(_preview(conn, source, secrets, fetcher, clock))
             activity = repo.get_activity(conn, source.activity_id)
             return render(
@@ -560,6 +569,7 @@ def create_app(
                 rules=_rule_rows(proposed, report),
                 rules_json=json.dumps(proposed),
                 moves=_rule_moves(config, {**config, "rules": proposed}, report),
+                places={v["id"]: v["canonical_name"] for v in repo.list_venues(conn)},
             )
 
     @app.post("/sources/<source_id>/rules")
@@ -2463,6 +2473,16 @@ def _destination() -> str:
     return chosen
 
 
+def _place(conn) -> int | None:
+    """A default place from the form: a venue row's id, or none."""
+    chosen = _field("place").strip()
+    if not chosen:
+        return None
+    if not chosen.isdigit() or repo.get_venue(conn, int(chosen)) is None:
+        raise Refused("choose a place from the venue list")
+    return int(chosen)
+
+
 def _field(name: str, default: str = "") -> str:
     """One form value, decoded as UTF-8.
 
@@ -2664,6 +2684,8 @@ def _category_table(conn, source, report) -> dict:
             "also": [_describe_rule(rules[i]) for i in routing.matching_rules(label, config)
                      if i != index],
             "new": routing.is_new(label, config),
+            "own_place": _own_place(label, config),
+            "place": routing.default_place(label, config),
         })
     settings = Settings.load(conn)
     holding = {s.staging_collection for s in repo.list_sources(conn) if s.staging_collection}
@@ -2685,6 +2707,12 @@ def _readable(report):
         raise Refused("the feed could not be read just now, so what a rule "
                       "change would move is unknown; try again shortly")
     return report
+
+
+def _own_place(label: str, config: dict) -> int | None:
+    wanted = " ".join(label.split()).casefold()
+    return next((v for k, v in (config.get("places") or {}).items()
+                 if " ".join(k.split()).casefold() == wanted), None)
 
 
 def _describe_rule(rule: dict) -> str:
@@ -2726,13 +2754,13 @@ def _rule_moves(before: dict, after: dict, report) -> list[dict]:
     return moves
 
 
-def _changed_rules(rules: list[dict]) -> list[dict]:
+def _changed_rules(rules: list[dict], place: int | None) -> list[dict]:
     """The rule list with the form's one change applied: add, edit, up, down
-    or delete."""
+    or delete. ``place`` is the form's default place, for add and edit."""
     op = _field("op")
     if op == "add":
         rules.append({"match": _field("match"), "text": _field("text"),
-                      "destination": _destination()})
+                      "destination": _destination(), "place": place})
     else:
         try:
             index = int(_field("index"))
@@ -2741,7 +2769,7 @@ def _changed_rules(rules: list[dict]) -> list[dict]:
             raise Refused("which rule?") from None
         if op == "edit":
             rules[index] = {"match": _field("match"), "text": _field("text"),
-                            "destination": _destination()}
+                            "destination": _destination(), "place": place}
         elif op == "up" and index > 0:
             rules[index - 1], rules[index] = rules[index], rules[index - 1]
         elif op == "down" and index < len(rules) - 1:
