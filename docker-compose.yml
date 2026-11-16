@@ -125,7 +125,7 @@ services:
              "import urllib.request;urllib.request.urlopen('http://localhost:8732/inbound/v1')"]
 
   proxy:
-    image: caddy:2.11.7-alpine
+    image: caddy:2.11.9-alpine
     restart: unless-stopped
     ports:
       - 8730:80
